@@ -132,16 +132,13 @@ builds `COCFARM.exe` from the source on a Windows runner with PyInstaller
 
 - **Every push and pull request:** the build is attached to the workflow run as
   the **COCFARM-windows** artifact (kept 30 days), handy for testing a branch.
-- **Publishing a release:** push a version tag, and the workflow creates a
-  GitHub Release with `COCFARM-windows.zip` and generated release notes:
-
-  ```sh
-  git tag v1.0.0
-  git push origin v1.0.0
-  ```
-
-  Or run the workflow from the **Actions** tab (**Run workflow**) and enter a
-  version such as `v1.0.0`.
+- **Every push to `main`** (for example merging a pull request): the workflow
+  also publishes a GitHub Release with `COCFARM-windows.zip`, tagged
+  `v<version>-<run number>` (for example `v0.1.0-7`, version from
+  `pyproject.toml`), and marks it as the latest. Nothing to do by hand.
+- **A named version:** push a tag such as `v1.0.0`
+  (`git tag v1.0.0 && git push origin v1.0.0`), or run the workflow from the
+  **Actions** tab (**Run workflow**) and enter the version.
 
 ## The control window
 
