@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.venv/
+screens/
+farmbot.toml
+attacks.csv
+build/
+dist/
+
+# Game screenshots (show other players): kept locally, never published
+tests/fixtures/*.webp
+docs/*.png
+
+# Not published: tests, docs, third-party samples
+tests/
+docs/
+samples/

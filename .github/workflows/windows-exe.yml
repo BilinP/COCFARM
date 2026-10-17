@@ -1,0 +1,28 @@
+name: windows-exe
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e . pyinstaller
+      - run: python packaging/build.py
+      - name: Self-test the built exe
+        shell: pwsh
+        run: |
+          $p = Start-Process dist/COCFARM/COCFARM.exe -ArgumentList "--self-test" -WorkingDirectory dist/COCFARM -Wait -PassThru
+          if (Test-Path dist/COCFARM/farmbot.log) { Get-Content dist/COCFARM/farmbot.log }
+          if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
+          Remove-Item dist/COCFARM/farmbot.log, dist/COCFARM/selftest.toml -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: COCFARM-windows
+          path: dist/COCFARM/
+          retention-days: 30

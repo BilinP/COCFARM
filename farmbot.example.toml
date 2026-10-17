@@ -1,0 +1,137 @@
+# farmbot settings. Copy to farmbot.toml (the GUI writes this file for you).
+#
+# Coordinates are for a screen scaled to 920 px tall; the bot scales every
+# screenshot. In [x, y, w, h] rectangles a negative x/y counts from the
+# right/bottom edge, and w/h of 0 or less reaches that edge.
+#
+# [search]   loot thresholds (also editable in the GUI)
+# [regions]  where the "Available Loot" numbers are while scouting
+# [attack]   sides, deploy pacing, fallback deploy lines
+# [bar]      troop bar card detection
+# [zone]     deploy ring around the base's building area
+# [redline]  red-line detection (used when the game shows the line)
+# [clan]     troop requests and donations
+# [schedule] active hours and daily attack limit
+
+[device]
+mode = "bluestacks"
+bluestacks_instance = ""
+launch_emulator = true
+launch_timeout = 120.0
+serial = "127.0.0.1:5555"
+adb_path = "adb"
+package = "com.supercell.clashofclans"
+
+[regions]
+loot_gold = [195, 92, 150, 34]
+loot_elixir = [195, 134, 150, 34]
+loot_dark = [195, 175, 150, 34]
+own_gold = [-320, 25, 130, 32]
+own_elixir = [-320, 78, 130, 32]
+own_dark = [-285, 130, 95, 32]
+
+[search]
+min_gold = 300000
+min_elixir = 300000
+min_dark = 0
+match_any = false
+max_searches = 150
+next_delay = 2.5
+dead_base = false
+dead_base_collectors = 2
+sound_on_match = false
+min_own_gold = 50000
+maintain_only = false
+
+[attack]
+sides = ["nw", "ne", "sw", "se"]
+waves = 1
+troop_speed = 7
+wave_speed = 8
+use_cc = true
+hero_abilities = true
+hero_ability_delay = 10.0
+end_when_no_loot = true
+no_loot_seconds = 15.0
+taps_per_batch = 6
+max_batches_per_card = 12
+battle_timeout = 180.0
+spell_reach = 0.45
+
+[attack.deploy_lines]
+nw = [190, 380, 620, 90]
+ne = [1380, 90, 1800, 380]
+sw = [240, 560, 520, 690]
+se = [1480, 690, 1790, 520]
+
+[bar]
+band = [0, -160, 0, 110]
+card_width = 94
+width_tolerance = 0.12
+edge_contrast = 40
+edge_share = 0.5
+header_share = 0.2
+count_white_share = 0.08
+spell_hue = [118, 150]
+spent_ratio = 0.55
+count_font = "fonts/loot"
+
+[zone]
+enabled = true
+grass_hue = [30, 55]
+grass_min_saturation = 110
+grass_min_value = 160
+open_px = 5
+close_px = 15
+min_patch = 1500
+min_patches = 4
+offset_px = 30
+step_px = 24
+ground_window = 25
+max_blocked = 0.35
+exclude = [[0, 0, 360, 260], [-440, 0, 0, 180], [0, -270, 330, 90], [300, -260, 470, 70], [-370, -310, 250, 120], [0, -180, 0, 0]]
+
+[redline]
+enabled = true
+battlefield = [0, 60, 0, -190]
+ignore = [[0, -280, 340, 110], [-370, -310, 250, 120]]
+hue_ranges = [[0, 8], [172, 179]]
+min_saturation = 150
+min_value = 150
+join_px = 5
+min_blob = 8
+min_points = 40
+bins_per_side = 24
+min_side_points = 6
+offset_px = 12
+iso_ratio = 0.75
+min_radius_ratio = 0.6
+max_radius_ratio = 1.5
+max_jump = 0.2
+min_extent = 0.3
+center = []
+reveal_tap = false
+
+[clan]
+request_troops = false
+request_text = ""
+request_every_minutes = 30
+donate = false
+donate_troop = ""
+donate_siege = ""
+donate_spell = ""
+max_donations_per_request = 5
+
+[schedule]
+enabled = false
+active_hours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+daily_attack_limit = 0
+
+[bot]
+templates = "templates"
+threshold = 0.85
+collect_resources = true
+max_attacks = 0
+loop_delay = 3.0
+history = "attacks.csv"
+error_screens = "screens/errors"

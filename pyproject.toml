@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "farmbot"
+version = "0.1.0"
+description = "Clean-room Clash of Clans farming bot for Android emulators (ADB + OpenCV)"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+    "PySide6-Fluent-Widgets>=1.11",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+farmbot = "farmbot.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["farmbot*"]
+
+[tool.setuptools.package-data]
+farmbot = ["assets/*.png", "profiles/*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

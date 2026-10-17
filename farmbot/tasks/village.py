@@ -1,0 +1,211 @@
+"""Home-village chores: popups, resource collection, training."""
+
+from __future__ import annotations
+
+import logging
+from typing import Callable
+
+import cv2
+import numpy as np
+
+from farmbot.config import WallsConfig
+from farmbot.game import Game, T
+from farmbot.tasks.search import Loot
+
+log = logging.getLogger(__name__)
+
+# Buttons that dismiss interruptions, in the order they are tried.
+POPUP_BUTTONS = (T.TRY_AGAIN, T.RELOAD, T.RETURN_HOME, T.BB_RETURN_HOME, T.BB_OKAY, T.CONTINUE, T.OKAY, T.CLOSE)
+
+# The chest sits this far below the chest room's window picture, in the
+# picture's own heights. It opens after about four taps; tapping on once the
+# reward shows skips past its Continue button, so taps stop as soon as it appears.
+CHEST_BELOW_WINDOW = 1.2
+CHEST_MAX_TAPS = 6
+CHEST_MAX_REWARDS = 8
+
+
+def open_event_chests(game: Game, limit: int = 3) -> int:
+    """During events a chest can follow the battle result: tap it until the
+    reward shows, then press Continue. Returns how many were opened."""
+    if not game.has(T.EVENT_CHEST) or not game.has(T.CONTINUE):
+        return 0
+    opened = 0
+    for _ in range(limit):
+        room = game.wait_for(T.EVENT_CHEST, timeout=4)
+        if room is None:
+            break
+        log.info("Opening an event chest")
+        x, y = room.x, round(room.y + CHEST_BELOW_WINDOW * room.h)
+        for _ in range(CHEST_MAX_TAPS):
+            game.tap(x, y, jitter=5)
+            if game.wait_for(T.CONTINUE, timeout=1.5):
+                break
+        if not game.click_when_visible(T.CONTINUE, timeout=10):
+            log.info("No Continue button after the chest")
+        # A chest can hold several rewards, each with its own Continue.
+        for _ in range(CHEST_MAX_REWARDS):
+            game.wait(1)
+            if not game.click_when_visible(T.CONTINUE, timeout=3):
+                break
+        game.wait(2)
+        opened += 1
+    return opened
+
+
+def clear_popups(game: Game, rounds: int = 5) -> int:
+    """Press any known dismiss/reconnect button until none is visible."""
+    pressed = 0
+    for _ in range(rounds):
+        game.refresh()
+        if game.has(T.EVENT_CHEST) and game.find(T.EVENT_CHEST):
+            pressed += open_event_chests(game)
+            continue
+        hit = next((b for b in POPUP_BUTTONS if game.has(b) and game.click(b)), None)
+        if hit is None:
+            break
+        log.info("Dismissed popup via %s", hit)
+        pressed += 1
+        game.wait(1.5)
+    return pressed
+
+
+def leave_battle(game: Game) -> bool:
+    """If a scouting or battle screen is still showing (say, after an error
+    mid-search), end it and go home rather than failing until a restart."""
+    game.refresh()
+    if not game.find(T.END_BATTLE):
+        return False
+    log.warning("Still on a battle screen; ending it")
+    game.click(T.END_BATTLE)
+    # Scouting goes straight home; a started battle asks first, then shows results.
+    if game.has(T.SURRENDER_OK):
+        game.click_when_visible(T.SURRENDER_OK, timeout=4)
+    if game.has(T.RETURN_HOME):
+        game.click_when_visible(T.RETURN_HOME, timeout=10)
+    game.wait(3)
+    return True
+
+
+COLLECTOR_PICTURES = {"gold": T.COLLECT_GOLD, "elixir": T.COLLECT_ELIXIR, "dark": T.COLLECT_DARK}
+COLLECTOR_THRESHOLD = 0.8  # the bubbles sit over busy village art
+
+
+def collect_resources(game: Game, kinds: tuple[str, ...] = ("gold", "elixir", "dark")) -> list[str]:
+    """Empty full collectors: one tap on a bubble collects every collector
+    of that kind, so each kind in ``kinds`` with a bubble showing is tapped
+    once. Returns the kinds collected."""
+    collected = []
+    for kind in kinds:
+        name = COLLECTOR_PICTURES[kind]
+        if not game.has(name):
+            continue
+        game.refresh()
+        bubble = game.find(name, threshold=COLLECTOR_THRESHOLD)
+        if bubble is None:
+            continue
+        game.tap_match(bubble)
+        game.wait(0.8)
+        collected.append(kind)
+    if collected:
+        log.info("Collected %s", ", ".join(collected))
+    return collected
+
+
+WALL_ICON_OFFSET = (30, -50)  # cost icon (coin or drop) relative to an Upgrade button's text
+GOLD_HUE, ELIXIR_HUE = (15, 35), (135, 165)
+
+
+def _cost_kind(screen: np.ndarray, x: int, y: int, offset: tuple[int, int] = WALL_ICON_OFFSET) -> str | None:
+    """"gold" or "elixir": the colour of the cost icon above an Upgrade button."""
+    dx, dy = offset
+    patch = screen[max(y + dy - 5, 0):y + dy + 5, max(x + dx - 5, 0):x + dx + 5]
+    if patch.size == 0:
+        return None
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    hue, sat, val = (float(np.median(hsv[:, :, i])) for i in range(3))
+    if sat < 120 or val < 150:
+        return None  # pale: a button's background, not a coin or drop ("Upgrade More" has no price)
+    if GOLD_HUE[0] <= hue <= GOLD_HUE[1]:
+        return "gold"
+    if ELIXIR_HUE[0] <= hue <= ELIXIR_HUE[1]:
+        return "elixir"
+    return None
+
+
+def _wall_budget(cfg: WallsConfig, loot: Loot) -> list[str]:
+    """Resources that may go on walls, the one with most to spare first."""
+    spare = {"gold": loot.gold - cfg.min_gold, "elixir": loot.elixir - cfg.min_elixir}
+    allowed = [k for k in ("gold", "elixir") if cfg.use in (k, "both") and spare[k] > 0]
+    return sorted(allowed, key=lambda k: -spare[k])
+
+
+def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[[], Loot | None]) -> int:
+    """Spend spare gold or elixir on walls: Build → the cheapest "Wall x N"
+    suggestion (the game selects one of those walls) → Upgrade in the
+    resource with most to spare → Confirm. Stops at ``max_per_round``,
+    when nothing is spare, or when a step doesn't show. Returns how many
+    walls were upgraded."""
+    needed = (T.BUILD, T.WALL_SUGGESTION, T.UPGRADE, T.UPGRADE_CONFIRM, T.CLOSE)
+    if not cfg.enabled or not all(game.has(n) for n in needed):
+        return 0
+    done = 0
+    while done < cfg.max_per_round:
+        # Selecting a wall zooms in on it, and over busy buildings the
+        # resource numbers can't be read: zoom back out first.
+        game.zoom_out()
+        loot = read_resources()
+        budget = _wall_budget(cfg, loot) if loot else []
+        if not budget:
+            break
+        game.refresh()
+        if not game.click(T.BUILD) or not game.wait_for(T.WALL_SUGGESTION, timeout=4):
+            break
+        top = min(game.find_all(T.WALL_SUGGESTION), key=lambda m: m.y)  # suggested walls come first
+        game.tap_match(top)
+        if not game.wait_for(T.UPGRADE, timeout=4):
+            break
+        buttons = {_cost_kind(game.screen, m.x, m.y): m for m in game.find_all(T.UPGRADE)}
+        kind = next((k for k in budget if k in buttons), None)
+        if kind is None:
+            break
+        game.tap_match(buttons[kind])
+        if not game.click_when_visible(T.UPGRADE_CONFIRM, timeout=4):
+            break
+        game.wait(1.5)
+        game.zoom_out()
+        after = read_resources()
+        if loot and after and getattr(after, kind) >= getattr(loot, kind):
+            log.info("Wall upgrade didn't go through (no free builder?)")
+            break
+        done += 1
+        log.info("Upgraded a wall with %s", kind)
+    # Close whatever is still open: the confirm window, then Buildings & Heroes.
+    for _ in range(2):
+        game.refresh()
+        if not game.click(T.CLOSE):
+            break
+        game.wait(0.8)
+    return done
+
+
+CART_BELOW_LABEL = 1.9  # the cart sits this many label heights below its label
+
+
+def collect_loot_cart(game: Game) -> bool:
+    """Empty the loot cart (what defences won back) if its "Collect" label
+    shows: tap the cart, then the Collect button under it. What doesn't
+    fit in full storages stays in the cart. True if it was collected."""
+    if not (game.has(T.LOOT_CART) and game.has(T.LOOT_CART_COLLECT)):
+        return False
+    game.refresh()
+    label = game.find(T.LOOT_CART, threshold=COLLECTOR_THRESHOLD)
+    if label is None:
+        return False
+    game.tap(label.x, label.y + round(CART_BELOW_LABEL * label.h))
+    if not game.click_when_visible(T.LOOT_CART_COLLECT, timeout=3):
+        log.info("Loot cart tapped but its Collect button didn't show")
+        return False
+    game.wait(1.5)
+    log.info("Collected the loot cart")
+    return True

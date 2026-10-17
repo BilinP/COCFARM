@@ -1,0 +1,43 @@
+# COCFARM settings for BlueStacks 5 at 860 x 672, 240 DPI (the display
+# COCFARM sets up by itself). Written as farmbot.toml the first time COCFARM
+# runs without one; change anything here or in the window.
+
+[device]
+set_display = true
+display_width = 860
+display_height = 672
+display_dpi = 240
+ui_scale = 1.0
+window_scale = 0.94
+
+[device.picture_scales]
+"buttons/attack" = 0.66
+
+[regions]
+own_gold = [-195, 25, 130, 32]
+own_elixir = [-195, 78, 130, 32]
+own_dark = [-160, 130, 95, 32]
+# Left (empty) end of each resource bar: only coloured when that storage is full.
+full_gold = [-284, 33, 24, 14]
+full_elixir = [-284, 83, 24, 14]
+full_dark = [-215, 133, 24, 14]
+loot_gold = [63, 92, 150, 34]
+loot_elixir = [63, 134, 150, 34]
+loot_dark = [63, 175, 150, 34]
+
+[bar]
+band = [0, -130, 0, 110]
+card_width = 90
+# The emulator's capture is a little soft, so card edges are fainter.
+edge_contrast = 15
+
+[attack]
+# Measured on the 860 x 672 screen (1177 wide once scaled): used when
+# neither the red line nor the building area is found.
+deploy_lines_width = 1177
+
+[attack.deploy_lines]
+nw = [102, 397, 574, 77]
+ne = [598, 77, 1077, 409]
+sw = [98, 421, 258, 646]
+se = [786, 675, 1091, 457]
