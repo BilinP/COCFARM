@@ -4,8 +4,8 @@
     python packaging/build.py
 
 Run it on Windows to get a Windows exe (PyInstaller can't cross-compile);
-the GitHub Actions "windows-exe" workflow does that on every push and
-offers the folder as a download. The result is dist/COCFARM/ and
+the GitHub Actions "windows-exe" workflow does that on every push, and
+publishes the zip as a GitHub Release for every v* tag. The result is dist/COCFARM/ and
 dist/COCFARM-windows.zip.
 """
 
@@ -34,13 +34,13 @@ UNUSED_QT = [f"PySide6.{m}" for m in (
 START_HERE = """COCFARM
 =======
 
-1. Install BlueStacks 5 and Clash of Clans in it. COCFARM sets BlueStacks
-   up by itself: 860 x 672 display at 240 DPI, and ADB on. It restarts
-   BlueStacks once the first time to do that.
-2. Open Clash of Clans in BlueStacks.
+1. Install BlueStacks 5 or LDPlayer 9, and Clash of Clans in it. COCFARM
+   sets the emulator up by itself: 860 x 672 display at 240 DPI, and ADB
+   on. It restarts the emulator once the first time to do that.
+2. Open Clash of Clans in the emulator.
 3. Double-click COCFARM.exe (Windows may warn about an unknown publisher:
    More info > Run anyway).
-4. Settings page: Test connection, then "What the bot sees" while scouting a base.
+4. Settings page: pick BlueStacks or LDPlayer, Test connection, then "What the bot sees" while scouting a base.
 5. Set your loot minimums on Search, then press Start.
 
 Your settings (farmbot.toml), button pictures (templates), attack log
