@@ -143,7 +143,7 @@ def cmd_pictures(args: argparse.Namespace) -> int:
         print(f"  {mark:7} {p.name}{extra}: {p.where}")
     missing = catalog.missing(library, required_only=True)
     if missing:
-        print(f"\n{len(missing)} required picture(s) missing. Add them on the GUI's Pictures page, or with 'farmbot crop'.")
+        print(f"\n{len(missing)} required picture(s) missing. Add them under Advanced → Pictures in the window, or with 'farmbot crop'.")
     return 2 if missing else 0
 
 

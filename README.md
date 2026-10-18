@@ -21,16 +21,20 @@ Each cycle the bot:
    requests Clan Castle troops (when those pictures exist).
 3. Unless set to only maintain the village, or your gold is below your limit,
    goes **Battle → Find a Match → Attack!**. It reads each base's available
-   gold, elixir and dark elixir (optionally requiring full collectors, i.e. a
-   dead base) and presses **Next** until one meets your minimums.
-4. Deploys **everything in the troop bar**, split into 1–3 waves at the speed
+   gold, elixir and dark elixir and presses **Next** until one meets your minimums.
+4. Deploys **everything in the troop bar** (troops, then heroes, then spells;
+   a big army that doesn't fit is deployed a screenful at a time, scrolling the
+   bar; super and event troops count as troops; siege machines stay out unless
+   turned on, as they let the Clan Castle troops out), split into 1–3 waves at the speed
    you set: troops around the outside of the base, then all heroes and siege
    machines in one quick pass, then spells (all on one spot, or spread over the
    base). It fires hero abilities after a delay or once each hero is hurt,
    picks the rightmost event reward when offered, ends the battle once the loot
    stops dropping, and returns home.
-5. Optionally plays the **builder base** too: two-stage builder battles and
-   looking after the builder village.
+5. Optionally plays the **builder base** instead: two-stage builder battles
+   and looking after the builder village. **Auto switch** farms the village
+   you pick first until the storages you picked are full, then the other
+   one, and stops once both are full.
 
 It only plays during the hours you choose, up to a daily attack limit, and can
 take random breaks. It can message a Discord channel (through a webhook) when
@@ -74,11 +78,11 @@ Nothing but the emulator needs installing: the app bundles everything else.
    for something else on the screen. Until they're added, the bot leaves each
    battle by closing the game once the loot stops dropping (the attack keeps
    what it has won); that works but costs about 30 seconds per attack.
-6. Set your loot minimums on **Search**, then press **Start** (F5).
+6. Set your loot minimums (step 3 of **Setup**), then press **Start** (F5).
 
 Before the first Start, check the bot's vision without attacking: in the game,
-scout a base (Battle → Find a Match), then press **What the bot sees** on the
-Settings page. It shows the loot it reads, the troop cards it found and the
+scout a base (Battle → Find a Match), then press **What the bot sees** under
+**Advanced**. It shows the loot it reads, the troop cards it found and the
 deploy points, drawn on the screenshot.
 
 Settings (`farmbot.toml`), button pictures (`templates`), `attacks.csv` and
@@ -141,29 +145,32 @@ builds `COCFARM.exe` from the source on a Windows runner with PyInstaller
 ## The control window
 
 
-| Page | What you set |
+The first time it opens, the window goes to **Setup**: four numbered steps
+(pick the emulator, check the connection and the game, choose the loot you
+want, Start), each ticked off as it's done. A failed check says what's wrong
+in plain words, with a button for the fix.
+
+| Page | What's on it |
 |---|---|
-| Dashboard | Live view of the base being scouted (each resource ticked against your minimum), your resources, loot actually gained this session, colour-coded activity log |
-| Search | Minimum loot, all-or-any, dead bases only, sound on match, give-up limit, gold floor, maintain-only mode |
-| Attack | Sides (laid out like the map), 1–3 waves, troop and wave speed, Clan Castle troops, hero abilities, ending early when loot stops |
-| Village | Collecting resources and the loot cart, wall upgrades |
-| Clan | Default troop/siege/spell to donate, troop requests with a message, and which pictures are still missing |
-| Schedule | Active hours (click the 24-hour grid or use a preset), daily and per-session attack limits |
-| Pictures | Every button picture the bot uses, which are missing or recommended, and a screenshot you drag a box on to add one |
-| Builder base attack / village | Builder base battles and chores |
-| Settings | BlueStacks or LDPlayer (found automatically), which instance, emulator setup (ADB, display, CPU/memory), auto-start, **Test connection** and **What the bot sees** |
+| Home | A large status (Running, Attacking, Paused, Waiting until 17:00, Stopped, Problem) with one line on what it's doing and the button that fits (Start, Pause, Resume, or the fix for a problem); which village to farm; the base being looked at, this session's loot, the last attack; the step-by-step log under Details |
+| Home village | Tabs: **Bases to attack** (attack on/off, loot minimums, totals, gold floor), **Attacking** (sides laid out like the map, waves, speeds, spells, heroes, Clan Castle, when to leave), **Village** (collecting, loot cart, walls), **Clan** (donations, requests) |
+| Builder base | Tabs: **Attacking** (corner, hero, abilities, 4x speed) and **Village** (collecting, elixir cart, walls) |
+| When to play | Playing hours (24-hour grid with presets), random breaks, and when to stop: full storages, attacks per day, attacks per session |
+| History | Totals, loot per hour, the last two weeks as a chart, and every attack |
+| Setup | The four first-run steps, and Discord alerts |
+| Advanced | Theme (light, dark, follow Windows), emulator tuning (ADB, display, CPU/memory, LDPlayer instance, device address), deploy-point and timing details, **What the bot sees**, and the **Pictures** tool for adding button pictures |
 
 The window is built with [PySide6](https://doc.qt.io/qtforpython-6/) (Qt 6) and
-[Fluent Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets), in a dark Windows 11
-(Fluent Design) style. It is designed to keep you oriented and stop mistakes:
+[Fluent Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets), in a Windows 11
+(Fluent Design) style, light or dark. It is designed to keep you oriented and stop mistakes:
 
-- **Status is always visible.** The title bar shows a coloured state (Idle, Running, Attacking, Paused, Error), what the bot is doing, and Start/Stop.
+- **Status is always visible.** Home and the title bar show the state as a word, a symbol and a colour, plus what the bot is doing; problems come with a fix button, and the technical details are kept apart.
 - **Settings are laid out like Windows Settings.** Each one is a card with a short explanation, plus switches, sliders and segmented choices.
 - **Problems are caught as you type.** An invalid value replaces the card's explanation with the reason, and Start stays disabled until it is fixed.
 
 - **Settings that don't apply are greyed out**, such as the ability delay when hero abilities are off.
 - **Saving is automatic.** Valid changes save to `farmbot.toml` straight away, and a running bot picks them up at its next step.
-- **Shortcuts:** F5 starts, Esc pauses (press again to stop now), and Ctrl+1…9 switch pages.
+- **Keyboard:** F5 starts, Esc pauses (press again to stop now), Ctrl+1…7 switch pages, Tab moves between controls and Enter presses the focused button.
 - **Updates:** when a newer release is on GitHub, a banner offers the download.
 
 Fluent Widgets is free under GPLv3 for non-commercial use; a commercial project needs its paid licence.
@@ -213,6 +220,7 @@ These are for development and troubleshooting when working from the source
 | `farmbot/history.py` | The attack log: writing it, totals, loot per hour |
 | `farmbot/update.py` | Checks GitHub for a newer release |
 | `farmbot/gui.py`, `farmbot/form.py` | Fluent (PySide6) window and its settings model |
+| `farmbot/friendly.py` | Plain words for the window: what the bot is doing, and what went wrong with the fix |
 | `farmbot/config.py` | TOML settings (`farmbot.example.toml` lists them all) |
 | `templates/` | Button, collector and digit pictures the bot matches against |
 | `packaging/` | PyInstaller build of `COCFARM.exe` |
@@ -220,7 +228,7 @@ These are for development and troubleshooting when working from the source
 
 ## When something goes wrong
 
-The Activity log on the Dashboard says what failed, and the same log is kept in
+Home shows what went wrong in plain words, with a button for the fix. The step-by-step log (Home → Details) says exactly what failed, and the same log is kept in
 `logs/farmbot.log` (a new file each day, two weeks kept). Each time a round
 fails, the bot also saves the screen it was looking at in `screens/errors/`, so
 you can see exactly what it saw (and share it when asking for help).
@@ -238,5 +246,4 @@ Push a version tag (`git tag v0.2.0 && git push origin v0.2.0`) and the
 
 Supertroop activation, Town Hall level filter, army presets and a per-troop
 deploy order (the bot deploys troops, then heroes/siege, then spells), and
-dead-base pictures (the search supports them; add full-collector pictures on
-the Pictures page).
+dead-base search (only attacking bases with full collectors).

@@ -15,7 +15,7 @@ from farmbot.game import Game
 from farmbot.tasks.search import is_worth_attacking, own_resources, read_loot
 from farmbot.vision import Vision
 
-CARD_COLOURS = {"troop": (255, 200, 0), "spell": (255, 0, 255), "single": (0, 200, 255)}
+CARD_COLOURS = {"troop": (255, 200, 0), "spell": (255, 0, 255), "single": (0, 200, 255), "siege": (0, 120, 255)}
 
 
 class _Still:

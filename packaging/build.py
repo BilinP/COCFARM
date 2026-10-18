@@ -40,8 +40,8 @@ START_HERE = """COCFARM
 2. Open Clash of Clans in the emulator.
 3. Double-click COCFARM.exe (Windows may warn about an unknown publisher:
    More info > Run anyway).
-4. Settings page: pick BlueStacks or LDPlayer, Test connection, then "What the bot sees" while scouting a base.
-5. Set your loot minimums on Search, then press Start.
+4. COCFARM opens on Setup: follow its four steps (emulator, Check now,
+   the loot you want, Start).
 
 Your settings (farmbot.toml), button pictures (templates), attack log
 (attacks.csv) and error screenshots (screens) are kept in this folder.

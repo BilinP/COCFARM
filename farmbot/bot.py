@@ -19,6 +19,7 @@ from farmbot.tasks.search import Loot
 log = logging.getLogger(__name__)
 
 MAX_CONSECUTIVE_ERRORS = 3
+ERROR_SCREENS_KEPT = 200  # newest failed-round screens kept; older ones are deleted
 MAX_GAME_RESTARTS = 1  # game restarts without a good round before the emulator is restarted
 IDLE_WAIT = 60.0  # seconds between village rounds when not attacking
 STARTUP_TIMEOUT = 90  # seconds to wait for the home village after starting the game
@@ -59,6 +60,9 @@ class Bot:
         self.gained = Loot(0, 0, 0)
         self._pending: AttackRecord | None = None  # attack waiting for its "after" reading
         self.storage_full = False  # set when the storages in bot.stop_when_full are all full
+        # Mode "auto": the village being farmed now, and the ones whose storages are already full.
+        self.auto_village: str | None = None
+        self.full_villages: set[str] = set()
         self._since_cart = 0  # builder battles since the elixir cart was last emptied
         self._cart_due: int | None = None  # battles between cart visits, picked at random
         # Watchdog: restarting the game is tried first; if the errors carry on
@@ -252,12 +256,46 @@ class Bot:
                 # configured interval when it couldn't be read.
                 self._next_request = now + (wait + 30 if wait else cfg.clan.request_every_minutes * 60)
 
+    def playing(self) -> str:
+        """The village being farmed: "home" or "builder" (mode "auto" starts
+        at home and moves to the builder base once the storages are full)."""
+        mode = self.config.bot.mode
+        if mode == "auto":
+            return self.auto_village or self.config.bot.auto_first
+        return mode
+
+    def _village_full(self, village: str) -> bool:
+        """Mode "auto": this village's storages are full. Moves on to the
+        other village, or, once both are full, stops. Returns True if this
+        round should end here."""
+        self.full_villages.add(village)
+        other = "builder" if village == "home" else "home"
+        names = {"home": "home village", "builder": "builder base"}
+        if other in self.full_villages:
+            self.storage_full = True
+            log.info("Storage full in both villages: stopping")
+            self.notifier.send("storage full in both villages, so the bot stopped.", "on_storage_full")
+            self.status("Stopped: storage full in both villages")
+            return True
+        self.auto_village = other
+        log.info("Storage full in the %s: switching to the %s", names[village], names[other])
+        self.notifier.send(f"storage full in the {names[village]}, so the bot switched to the {names[other]}.",
+                           "on_storage_full")
+        self.status(f"Storage full: switching to the {names[other]}")
+        return True
+
     def builder_cycle(self) -> bool:
         """One builder base battle (sailing over first if needed)."""
         if screens.settle(self.game) is not screens.Screen.BUILDER:
             self.status("Sailing to the builder base")
             builder.go_to_builder_base(self.game)
         village.clear_popups(self.game)
+        if self.config.bot.mode == "auto":
+            # The builder base has gold and elixir storages (no dark elixir).
+            wanted = [k for k in self.config.bot.stop_when_full if k in ("gold", "elixir")]
+            if wanted and set(wanted) <= search.full_storages(self.game, self.config.regions):
+                self._village_full("builder")
+                return False
         bcfg = self.config.builder
         self.checkpoint()
         if bcfg.collect_resources:
@@ -308,7 +346,7 @@ class Bot:
         find a base and attack it. Returns True if an attack happened."""
         cfg = self.config
         self.ensure_game_running()
-        if cfg.bot.mode == "builder":
+        if self.playing() == "builder":
             return self.builder_cycle()
         where = screens.settle(self.game)  # deal with chests, rewards, results, popups...
         if where is screens.Screen.BUILDER:
@@ -320,6 +358,9 @@ class Bot:
         before = self.read_resources()
         wanted = cfg.bot.stop_when_full
         if wanted and set(wanted) <= search.full_storages(self.game, cfg.regions):
+            if cfg.bot.mode == "auto":  # on to the builder base instead of stopping
+                self._village_full("home")
+                return False
             self.storage_full = True
             log.info("Storage full (%s): stopping", ", ".join(wanted))
             self.notifier.send(f"storage full ({', '.join(wanted)}), so the bot stopped.", "on_storage_full")
@@ -363,6 +404,9 @@ class Bot:
         path = Path(folder) / f"{self._now():%Y%m%d-%H%M%S}.png"
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
+            old = sorted(path.parent.glob("[0-9]" * 8 + "-" + "[0-9]" * 6 + ".png"))  # only the bot's own
+            for stale in old[:max(0, len(old) - ERROR_SCREENS_KEPT + 1)]:
+                stale.unlink()
             cv2.imwrite(str(path), screen)
             log.info("Saved the screen to %s", path)
         except OSError as exc:
@@ -408,7 +452,7 @@ class Bot:
             self.notifier.send(f"the bot stopped with an error: {exc}", "on_stopped")
             raise
         self._settle_attack(None)
-        if self.config.bot.mode == "builder" and self.config.builder.return_home_after:
+        if self.playing() == "builder" and self.config.builder.return_home_after:
             try:
                 builder.go_to_home_village(self.game)
             except Exception as exc:  # the bot is stopping anyway

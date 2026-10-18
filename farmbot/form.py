@@ -18,7 +18,7 @@ SIDE_LABELS = {"nw": "Top-left (NW)", "ne": "Top-right (NE)", "sw": "Bottom-left
 @dataclass(frozen=True)
 class Field:
     path: str  # e.g. "search.min_gold"
-    kind: str  # amount | int | float | percent | bool | text | sides | resources | hours
+    kind: str  # amount | int | float | percent | bool | text | sides | resources | hours | units
     low: float | None = None
     high: float | None = None
 
@@ -32,8 +32,6 @@ FIELDS = [
     Field("search.min_total", "amount"),
     Field("search.dark_weight", "int", 0, 1000),
     Field("search.max_searches", "int", 1, 1000),
-    Field("search.dead_base", "bool"),
-    Field("search.dead_base_collectors", "int", 1, 7),
     Field("search.sound_on_match", "bool"),
     Field("search.min_own_gold", "amount"),
     Field("search.maintain_only", "bool"),
@@ -43,7 +41,7 @@ FIELDS = [
     Field("attack.troop_speed", "int", 1, 9),
     Field("attack.wave_speed", "int", 1, 9),
     Field("attack.spell_placement", "text"),
-    Field("attack.use_cc", "bool"),
+    Field("attack.use_siege", "bool"),
     Field("attack.hero_abilities", "bool"),
     Field("attack.hero_ability_delay", "float", 0, 120),
     Field("attack.ability_health", "percent", 0, 95),
@@ -62,6 +60,8 @@ FIELDS = [
     Field("bot.collect_loot_cart", "bool"),
     Field("bot.stop_when_full", "resources"),
     Field("bot.mode", "text"),
+    Field("bot.theme", "text"),
+    Field("bot.auto_first", "text"),
     Field("builder.corner", "text"),
     Field("builder.use_hero", "bool"),
     Field("builder.troop_delay", "float", 0, 30),
@@ -92,9 +92,9 @@ FIELDS = [
     Field("walls.max_per_round", "int", 1, 50),
     # Clan
     Field("clan.donate", "bool"),
-    Field("clan.donate_troop", "text"),
-    Field("clan.donate_siege", "text"),
-    Field("clan.donate_spell", "text"),
+    Field("clan.donate_main", "units"),
+    Field("clan.donate_spells", "units"),
+    Field("clan.donate_fill", "bool"),
     Field("clan.max_donations_per_request", "int", 1, 50),
     Field("clan.request_troops", "bool"),
     Field("clan.request_every_minutes", "int", 1, 600),
@@ -164,7 +164,7 @@ def _set(config: Config, path: str, value: Any) -> None:
 def _display(field: Field, value: Any) -> Any:
     if field.kind == "amount":
         return f"{value:,}"
-    if field.kind in ("sides", "resources", "hours"):
+    if field.kind in ("sides", "resources", "hours", "units"):
         return list(value)
     if field.kind == "float":
         return f"{value:g}"
@@ -192,6 +192,10 @@ def _parse(field: Field, raw: Any) -> Any:
         return sides
     if field.kind == "resources":
         return [k for k in RESOURCES if k in raw]
+    if field.kind == "units":
+        from farmbot.units import BY_NAME
+
+        return [name for name in dict.fromkeys(raw) if name in BY_NAME]  # in the order given
     if field.kind == "hours":
         hours = sorted({int(h) for h in raw})
         if any(not 0 <= h <= 23 for h in hours):
@@ -226,6 +230,8 @@ def validate(form: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
             errors[high] = "must be at least the 'from' number"
     if values.get("builder.cart_every_min", 0) > values.get("builder.cart_every_max", 10**9):
         errors["builder.cart_every_max"] = "must be at least the 'from' number"
+    if values.get("bot.mode") == "auto" and not values.get("bot.stop_when_full", ["gold"]):
+        errors["bot.stop_when_full"] = "pick the storages that make Auto switch to the other village"
     if values.get("schedule.enabled") and not values.get("schedule.active_hours", [1]):
         errors["schedule.active_hours"] = "pick at least one hour, or turn the schedule off"
     return values, errors

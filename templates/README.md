@@ -33,8 +33,6 @@ Optional (the GUI lists what is missing on the Army and Clan pages):
 |---|---|
 | `collectors/*.png` | Tapping full gold, elixir and dark collector bubbles |
 | `buttons/close` | Closing windows (walls, chests) |
-| `deadbase/*.png` | Dead-base search: pictures of **full** collectors on enemy bases |
-| `cards/clan_castle.png` | Leaving Clan Castle troops out (the CC icon on its troop-bar card) |
 | `buttons/open_chat`, `buttons/close_chat`, `buttons/donate` | Donations |
 | `donate/<name>.png` | Each unit you donate, as it looks in the donate window (e.g. `donate/yeti.png`); the name is what you pick in the GUI |
 | `buttons/open_chat`, `buttons/close_chat`, `buttons/no_clan`, `buttons/request`, `buttons/request_send` | Clan Castle requests from the clan chat |

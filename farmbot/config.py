@@ -91,10 +91,6 @@ class SearchConfig:
     dark_weight: int = 100
     max_searches: int = 150
     next_delay: float = 2.5  # seconds to wait for the next base to load
-    # Dead bases: only attack when this many full collectors are visible
-    # (needs pictures of full collectors in templates/deadbase/).
-    dead_base: bool = False
-    dead_base_collectors: int = 2
     sound_on_match: bool = False
     # Skip searching while your own gold is below this (0 = always search).
     min_own_gold: int = 50_000
@@ -107,7 +103,8 @@ class AttackConfig:
     waves: int = 1  # split each troop type over 1-3 waves
     troop_speed: int = 7  # 1 (slow) - 9 (fast): pause between single taps
     wave_speed: int = 8  # 1 (slow) - 9 (fast): pause between waves
-    use_cc: bool = True  # deploy the Clan Castle card (needs templates/cards/clan_castle.png to skip it)
+    # Siege machines let the Clan Castle troops out when destroyed; off leaves them in the bar.
+    use_siege: bool = False
     hero_abilities: bool = True
     hero_ability_delay: float = 10.0
     # Fire each hero's ability once its health drops to this share (0.5 =
@@ -165,6 +162,8 @@ class BarConfig:
     header_share: float = 0.2  # top part of a card holding the "xN" count
     count_white_share: float = 0.08
     spell_hue: list[int] = field(default_factory=lambda: [118, 150])
+    # A one-unit card on a light cyan background is a siege machine (heroes: blue to purple).
+    siege_hue: list[int] = field(default_factory=lambda: [85, 100])
     # Card frames are blue to purple; an empty slot shows the map instead.
     frame_hue: list[int] = field(default_factory=lambda: [85, 160])
     min_frame_share: float = 0.3  # of a card's left or right border in frame colour
@@ -252,10 +251,13 @@ class ClanConfig:
     request_troops: bool = False
     request_every_minutes: int = 10  # only when the cooldown on the button can't be read
     donate: bool = False
-    donate_troop: str = ""  # template name under templates/donate/, e.g. "yeti"
-    donate_siege: str = ""
-    donate_spell: str = ""
-    max_donations_per_request: int = 5
+    # Units to give first, in this order (names from farmbot/units.py, e.g.
+    # "Super Barbarian", "Battle Blimp"); then, with donate_fill, the space
+    # left goes to the biggest troops that still fit.
+    donate_main: list[str] = field(default_factory=list)
+    donate_spells: list[str] = field(default_factory=list)
+    donate_fill: bool = True
+    max_donations_per_request: int = 15  # units given to one request at most
 
 
 @dataclass
@@ -287,8 +289,12 @@ class NotifyConfig:
 
 @dataclass
 class BotConfig:
-    # What to farm: "home" (the home village) or "builder" (the builder base).
+    # What to farm: "home" (the home village), "builder" (the builder base) or
+    # "auto" (start in auto_first; once that village's stop_when_full storages
+    # are full, farm the other one; stop when both are full).
     mode: str = "home"
+    auto_first: str = "home"  # mode "auto": the village it starts with ("home" or "builder")
+    theme: str = "auto"  # the window's look: "auto" (follow Windows), "light" or "dark"
     templates: str = "templates"
     threshold: float = 0.85
     collect_resources: bool = True
@@ -321,7 +327,8 @@ class WallsConfig:
 
 
 WALL_RESOURCES = ("gold", "elixir", "both")
-MODES = ("home", "builder")
+MODES = ("home", "builder", "auto")  # auto: one village until its storages are full, then the other
+THEMES = ("auto", "light", "dark")
 BUILDER_CORNERS = ("auto", "left", "top", "right")
 BUILDER_HEROES = ("any", "machine", "copter")
 SPELL_PLACEMENTS = ("together", "spread")
@@ -399,6 +406,12 @@ class Config:
             raise ValueError(f"bot.stop_when_full: unknown {bad_kinds}; use {RESOURCES}")
         if self.bot.mode not in MODES:
             raise ValueError(f"bot.mode must be one of {MODES}")
+        if self.bot.mode == "auto" and not self.bot.stop_when_full:
+            raise ValueError('bot.mode "auto" needs bot.stop_when_full: the storages that trigger the switch')
+        if self.bot.auto_first not in ("home", "builder"):
+            raise ValueError('bot.auto_first must be "home" or "builder"')
+        if self.bot.theme not in THEMES:
+            raise ValueError(f"bot.theme must be one of {THEMES}")
         if self.schedule.break_every_min > self.schedule.break_every_max:
             raise ValueError("schedule.break_every_min can't be more than schedule.break_every_max")
         if self.schedule.break_minutes_min > self.schedule.break_minutes_max:
@@ -425,14 +438,29 @@ class Config:
             raise ValueError(f"no deploy_lines entry for side(s) {missing}")
 
 
-# Settings that existed once and were removed (the game dropped Quick Train):
-# older farmbot.toml files may still have them, so they're skipped quietly.
-REMOVED_SETTINGS = {"bot.quick_train", "bot.army_recipe", "clan.request_text"}
+# Settings that existed once and were removed (the game dropped Quick Train;
+# dead-base search is out for now; Clan Castle troops come with the siege machine): older farmbot.toml files may still have
+# them, so they're skipped quietly.
+REMOVED_SETTINGS = {"bot.quick_train", "bot.army_recipe", "clan.request_text", "search.dead_base",
+                    "search.dead_base_collectors", "attack.use_cc"}
+
+
+# One unit each to donate became lists: older files' choices carry over.
+DONATE_MOVED = {"clan.donate_troop": "donate_main", "clan.donate_siege": "donate_main",
+                "clan.donate_spell": "donate_spells"}
 
 
 def _merge(obj: Any, data: dict[str, Any], path: str) -> None:
     known = {f.name for f in fields(obj)}
     for key, value in data.items():
+        if f"{path}{key}" in DONATE_MOVED:
+            from farmbot.units import BY_NAME, BY_SLUG
+
+            unit = BY_SLUG.get(str(value).strip().lower()) or BY_NAME.get(str(value).strip())
+            target = getattr(obj, DONATE_MOVED[f"{path}{key}"])
+            if unit and unit.name not in target:
+                target.append(unit.name)
+            continue
         if f"{path}{key}" in REMOVED_SETTINGS:
             continue
         if key not in known:

@@ -1,6 +1,6 @@
 """Every picture the bot can use: what it is, where to find it, what it enables.
 
-The GUI's Pictures page, ``farmbot templates`` and the start-up check all
+The window's Pictures tool (Advanced → Pictures), ``farmbot templates`` and the start-up check all
 read this list, so a template added to :class:`farmbot.game.T` should get
 an entry here too.
 """
@@ -53,10 +53,6 @@ PICTURES: list[Picture] = [
             "\"Pick a Reward!\" on the red banner above the reward cards.", "Opening event chests"),
     Picture(T.CONTINUE, "Continue", "Under an event chest's reward: the word \"Continue\".", "Opening event chests"),
     # Optional extras
-    Picture(T.CC_CARD, "Clan Castle card", "Troop bar while scouting: the castle icon on the Clan Castle card.",
-            "Leaving Clan Castle troops out"),
-    Picture(T.DEAD_BASE, "Full collector (enemy)", "Scouting a base: a full gold or elixir collector.",
-            "Dead-base search", folder=True),
     Picture(T.COLLECT_GOLD, "Full gold mine bubble", "Home village: the gold coin bubble over a full gold mine.",
             "Collecting resources"),
     Picture(T.COLLECT_ELIXIR, "Full elixir collector bubble", "Home village: the pink drop bubble over a full "
@@ -108,7 +104,10 @@ PICTURES: list[Picture] = [
     Picture(T.NO_CLAN, "Join A Clan", "Chat panel when you're not in a clan: the words \"Join A Clan\".",
             "Requesting troops"),
     Picture(T.DONATE, "Donate", "Clan chat: the green \"Donate\" button on a request.", "Donating"),
-    Picture(T.DONATE_ITEM_DIR, "Unit to donate", "Donate window: the unit's picture. Save it under the unit's name.",
+    Picture(T.DONATE_WINDOW, "Donate window", "Clan chat → Donate: the words \"Donation Resource\" at the top of "
+            "the window.", "Donating"),
+    Picture(T.DONATE_ITEM_DIR, "Unit to donate", "Donate window: the top half of the unit's card (its picture, "
+            "without the level or price). Save it under the unit's name, e.g. super_yeti.",
             "Donating", folder=True),
     Picture(T.REQUEST, "Request", "Clan chat, bottom (right of Challenge): the castle with a plus.", "Requesting troops"),
     Picture(T.REQUEST_SEND, "Send request", "Request window: the word \"Send\".", "Requesting troops"),

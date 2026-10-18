@@ -114,36 +114,43 @@ def request_troops(game: Game, cfg: ClanConfig) -> tuple[bool, float | None]:
     return sent, wait
 
 
+CHAT_CLOSE_SPOT = (250, 150)  # a tap here, on the chat, closes the donate window
+
+
 def donate(game: Game, cfg: ClanConfig) -> int:
-    """Fill open requests in clan chat with the default troop, siege machine
-    and spell. Returns how many units were donated."""
-    wanted = [f"{T.DONATE_ITEM_DIR}/{name}" for name in (cfg.donate_troop, cfg.donate_siege, cfg.donate_spell) if name]
-    missing = _missing(game, (T.OPEN_CHAT, T.CLOSE_CHAT, T.DONATE, *wanted))
+    """Fill the open requests in clan chat: the main units first, then the
+    biggest that fit (see farmbot/tasks/donate.py). Returns units given."""
+    from farmbot.tasks.donate import donate_open_window
+
+    missing = _missing(game, (T.OPEN_CHAT, T.CLOSE_CHAT, T.DONATE, T.DONATE_WINDOW))
     if missing:
-        log.warning("Cannot donate; missing templates: %s", ", ".join(missing))
+        log.warning("Cannot donate; missing pictures: %s", ", ".join(missing))
         return 0
-    game.refresh()
-    if not game.click(T.OPEN_CHAT):
+    if not cfg.donate_main and not cfg.donate_spells and not cfg.donate_fill:
         return 0
-    game.wait(1.0)
-    donated = 0
-    game.refresh()
-    requests = sorted(game.find_all(T.DONATE), key=lambda m: m.y)
-    for request in requests:
+    if not _open_chat(game):
+        return 0
+    donated = done = 0
+    seen: list[int] = []  # requests already handled, by height in the chat
+    for _ in range(10):
+        requests = [m for m in sorted(game.find_all(T.DONATE), key=lambda m: m.y)
+                    if all(abs(m.y - y) > 30 for y in seen)]
+        if not requests:
+            break
+        request = requests[0]
+        seen.append(request.y)
         game.tap_match(request)
-        game.wait(1.0)
-        for item in wanted:
-            for _ in range(cfg.max_donations_per_request):
-                game.refresh()
-                if not game.click(item):
-                    break  # none left, or the request is full
-                donated += 1
-                game.wait(0.3)
-        game.refresh()
-        game.click(T.CLOSE)  # close the donate window
+        if not game.wait_for(T.DONATE_WINDOW, timeout=3):
+            continue
         game.wait(0.5)
-    game.refresh()
-    game.click(T.CLOSE_CHAT)
+        given = donate_open_window(game, cfg)
+        donated += given
+        done += given > 0
+        if game.find(T.DONATE_WINDOW):
+            game.tap(*CHAT_CLOSE_SPOT)
+            game.wait(0.8)
+        game.refresh()
+    _close_chat(game)
     if donated:
-        log.info("Donated %d unit(s) to %d request(s)", donated, len(requests))
+        log.info("Donated %d unit(s) to %d request(s)", donated, done)
     return donated

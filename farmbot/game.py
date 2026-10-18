@@ -94,8 +94,6 @@ class T:
     EVENT_CHEST = "buttons/event_chest"  # chest room shown after some battles during events
     CONTINUE = "buttons/continue"  # under the chest's reward
     PICK_REWARD = "buttons/pick_reward"  # "Pick a Reward!" banner over event reward cards
-    CC_CARD = "cards/clan_castle"  # optional: lets the bot leave CC troops out
-    DEAD_BASE = "deadbase"  # directory: full collectors, for dead-base search
     # Home village (optional)
     CLOSE = "buttons/close"
     BUILD = "buttons/build"  # home village, bottom right: opens Buildings & Heroes
@@ -137,7 +135,8 @@ class T:
     CLOSE_CHAT = "buttons/close_chat"
     NO_CLAN = "buttons/no_clan"  # "Join A Clan" in the chat panel: not in a clan
     DONATE = "buttons/donate"
-    DONATE_ITEM_DIR = "donate"  # donate/<name>.png: units in the donate window
+    DONATE_ITEM_DIR = "donate"  # donate/<unit slug>.png: units in the donate window
+    DONATE_WINDOW = "buttons/donate_window"  # the donate window's "Donation Resource" title
     # Digit glyphs (directory, made with ``farmbot learn-digits``)
     LOOT_FONT = "fonts/loot"
 

@@ -6,7 +6,10 @@ then classified:
 
 * ``troop`` – has an "xN" count in its top-right corner and a blue header,
 * ``spell`` – has a count and a purple header,
-* ``single`` – no count: a hero or a siege machine (deploys one unit).
+* ``single`` – no count: a hero (deploys one unit),
+* ``siege`` – no count, on the light cyan background every siege machine
+  card has (heroes' cards are blue to purple). Its Clan Castle troops come
+  out when it's destroyed.
 
 A card is *spent* once it greys out.
 """
@@ -40,7 +43,11 @@ class Card:
         return Rect(self.left, self.top, self.right - self.left, self.bottom - self.top)
 
 
-MAX_GAP = 20  # px between neighbouring cards
+GAP_FILL = 20  # px either side of a card filled in between two others
+RED_HUE = 8  # a super troop's red frame: hue within this of red
+COUNT_FROM = 0.6  # the "xN" count sits in the right part of the header (a siege picture can reach the middle)
+WIDTH_PENALTY = 20.0  # score lost per card width of size mismatch
+MAX_OVERLAP = 10  # px two cards may share (touching cards share an edge)
 
 
 def _edge_columns(gray: np.ndarray, cfg: BarConfig) -> list[int]:
@@ -61,12 +68,23 @@ def _saturation(hsv: np.ndarray, card: Rect) -> float:
     return float(inner.mean()) if inner.size else 0.0
 
 
+def _background_hue(hsv: np.ndarray, rect: Rect) -> float:
+    """The card's background colour: just inside its left and right frame,
+    over the middle of its height, where the picture rarely reaches."""
+    y0, y1 = rect.y + int(rect.h * 0.35), rect.y + int(rect.h * 0.65)
+    sides = [hsv[y0:y1, rect.x + 5:rect.x + 12], hsv[y0:y1, rect.x + rect.w - 12:rect.x + rect.w - 5]]
+    pixels = np.concatenate([s.reshape(-1, 3) for s in sides if s.size])
+    coloured = pixels[pixels[:, 1] > 150]  # siege backgrounds are strongly coloured
+    return float(np.median(coloured[:, 0])) if len(coloured) > len(pixels) // 3 else -1.0
+
+
 def _classify(hsv: np.ndarray, rect: Rect, cfg: BarConfig) -> str:
     header_h = max(6, int(rect.h * cfg.header_share))
-    corner = hsv[rect.y:rect.y + header_h, rect.x + rect.w // 2:rect.x + rect.w - 4]
+    corner = hsv[rect.y:rect.y + header_h, rect.x + int(rect.w * COUNT_FROM):rect.x + rect.w - 4]
     white = ((corner[:, :, 1] < 50) & (corner[:, :, 2] > 215)).mean() if corner.size else 0.0
     if white < cfg.count_white_share:
-        return "single"
+        lo, hi = cfg.siege_hue
+        return "siege" if lo <= _background_hue(hsv, rect) <= hi else "single"
     mid = hsv[rect.y + 2:rect.y + header_h, rect.x + int(rect.w * 0.45):rect.x + int(rect.w * 0.6)]
     coloured = mid[:, :, 1] > 80
     hue = float(np.median(mid[:, :, 0][coloured])) if coloured.any() else 0.0
@@ -74,20 +92,21 @@ def _classify(hsv: np.ndarray, rect: Rect, cfg: BarConfig) -> str:
     return "spell" if lo <= hue <= hi else "troop"
 
 
-def _frame_share(hsv: np.ndarray, rect: Rect, cfg: BarConfig) -> float:
-    """How much of the box's left or right border is a card frame (blue to
-    purple). Cards score well on at least one side; an empty slot at the
+def _frame_sides(hsv: np.ndarray, rect: Rect, cfg: BarConfig) -> tuple[float, float]:
+    """How much of the box's left and right borders is a card frame (blue to
+    purple, or red for a super troop). Cards score well on at least one side; an empty slot at the
     end of the bar, or a box that straddles two cards, shows the map or a
     portrait there instead."""
     rows = slice(rect.y + 15, rect.y + rect.h - 15)
     lo, hi = cfg.frame_hue
-    best = 0.0
+    shares = []
     for cols in (slice(rect.x + 2, rect.x + 9), slice(rect.x + rect.w - 9, rect.x + rect.w - 2)):
         side = hsv[rows, cols]
-        if side.size:
-            framed = (side[:, :, 0] >= lo) & (side[:, :, 0] <= hi) & (side[:, :, 1] > 80)
-            best = max(best, float(framed.mean()))
-    return best
+        hue, sat = side[:, :, 0], side[:, :, 1]
+        # Blue to purple (troops, heroes, spells, siege), or red (super troops).
+        framed = (((hue >= lo) & (hue <= hi)) | (hue <= RED_HUE) | (hue >= 180 - RED_HUE)) & (sat > 80)
+        shares.append(float(framed.mean()) if side.size else 0.0)
+    return shares[0], shares[1]
 
 
 SLOT_WHITE = 0.002  # share of white (a level number) below which a card's bottom has none
@@ -114,28 +133,35 @@ def find_cards(screen: np.ndarray, cfg: BarConfig) -> list[Card]:
     edges = _edge_columns(cv2.cvtColor(area, cv2.COLOR_BGR2GRAY), cfg)
     lo, hi = cfg.card_width * (1 - cfg.width_tolerance), cfg.card_width * (1 + cfg.width_tolerance)
     hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
-    cards: list[Card] = []
-
-    def right_edge(left: int) -> int | None:
-        return next((e for e in edges if lo <= e - left <= hi), None)
-
-    i = 0
-    while i < len(edges):
-        left = edges[i]
-        right = right_edge(left)
-        if right is None:
-            i += 1
-            continue
-        rect = Rect(band.x + left, band.y, right - left, band.h)
-        if _frame_share(hsv, rect, cfg) < cfg.min_frame_share or is_empty_slot(screen, rect):
-            i += 1  # not a card: the real one may start at the next edge
-            continue
-        cards.append(Card(rect.x, rect.x + rect.w, rect.y, rect.y + rect.h, _classify(hsv, rect, cfg), _saturation(hsv, rect)))
-        # The next card starts just after a small gap, or, when cards
-        # touch, at this card's own right edge.
-        j = edges.index(right)
-        after_gap = j + 1 < len(edges) and edges[j + 1] - right <= MAX_GAP and right_edge(edges[j + 1]) is not None
-        i = j + 1 if after_gap else j
+    # Every pair of edges a card's width apart that frames a real card is a
+    # candidate; where candidates overlap (one straddling a gap and part of
+    # the next card), the one closest to a card's width, then the best
+    # framed on both sides, wins.
+    candidates: list[tuple[float, Rect]] = []
+    for left in edges:
+        for right in edges:
+            if not lo <= right - left <= hi:
+                continue
+            rect = Rect(band.x + left, band.y, right - left, band.h)
+            sides = _frame_sides(hsv, rect, cfg)
+            if max(sides) < cfg.min_frame_share or is_empty_slot(screen, rect):
+                continue
+            candidates.append((sum(sides) / 2 - WIDTH_PENALTY * abs(rect.w - cfg.card_width) / cfg.card_width, rect))
+    picked: list[Rect] = []
+    for _, rect in sorted(candidates, key=lambda c: -c[0]):
+        if all(min(rect.x + rect.w, p.x + p.w) - max(rect.x, p.x) <= MAX_OVERLAP for p in picked):
+            picked.append(rect)
+    # A card-sized space between two cards holds a card whose edges didn't
+    # show (a red super troop's, or a picture that covers its frame).
+    picked.sort(key=lambda r: r.x)
+    for a, b in zip(picked, picked[1:]):
+        space = b.x - (a.x + a.w)
+        if cfg.card_width * 0.85 <= space <= cfg.card_width + 2 * GAP_FILL:
+            rect = Rect(a.x + a.w + (space - cfg.card_width) // 2, a.y, cfg.card_width, a.h)
+            if not is_empty_slot(screen, rect) and max(_frame_sides(hsv, rect, cfg)) >= cfg.min_frame_share / 2:
+                picked.append(rect)
+    cards = [Card(r.x, r.x + r.w, r.y, r.y + r.h, _classify(hsv, r, cfg), _saturation(hsv, r))
+             for r in sorted(picked, key=lambda r: r.x)]
     return cards
 
 

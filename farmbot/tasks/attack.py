@@ -7,6 +7,8 @@ import logging
 import math
 from typing import Iterator
 
+import numpy as np
+
 from farmbot import armybar, deployzone, redline as rl, text
 from farmbot.armybar import Card
 from farmbot.config import Config
@@ -145,7 +147,7 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
     """Select ``card`` and deploy until it greys out. True if it emptied.
     If the game refuses ``points``, the ``fallback`` points are tried."""
     acfg = cfg.attack
-    if card.kind == "single":  # a hero or siege machine: one unit
+    if card.kind in ("single", "siege"):  # a hero or siege machine: one unit
         return place_single(game, card, points, cfg, fallback)
     stalled = 0
     before = game.refresh()
@@ -249,17 +251,6 @@ def read_count(game: Game, card: Card, cfg: Config) -> int | None:
     return count if 0 < count <= 400 else None
 
 
-def skip_clan_castle(game: Game, cards: list[Card], cfg: Config) -> list[Card]:
-    """Drop the Clan Castle card when it should not be used."""
-    if cfg.attack.use_cc or not game.has(T.CC_CARD):
-        return cards
-    marks = game.find_all(T.CC_CARD, threshold=0.8)
-    keep = [c for c in cards if not any(c.left <= m.x <= c.right and c.top <= m.y <= c.bottom for m in marks)]
-    if len(keep) < len(cards):
-        log.info("Leaving the Clan Castle troops out")
-    return keep
-
-
 def deploy_taps(game: Game, card: Card, points: Iterator[Point], taps: int, cfg: Config) -> None:
     game.tap(*card.center)
     game.wait(0.15)
@@ -335,56 +326,134 @@ def _not_more(loot: Loot, before: Loot) -> bool:
     return loot.gold <= before.gold and loot.elixir <= before.elixir and loot.dark <= before.dark
 
 
+BAR_PAGES = 6  # screenfuls of the bar at most
+BAR_SAME = 0.6  # the middle of the bar still matches this well where it was: it didn't scroll
+
+
+def _bar_strip(game: Game, cfg: Config) -> np.ndarray:
+    """The lower half of the troop bar in grey: the cards' level badges and
+    pictures, which stay put when a card is selected, placed or hurt."""
+    import cv2
+
+    w, h = game.size
+    band = Rect.from_list(cfg.bar.band).resolve(w, h)
+    lower = game.refresh()[band.y + band.h // 2:band.y + band.h]
+    return cv2.cvtColor(lower, cv2.COLOR_BGR2GRAY)
+
+
+def bar_scrolled(before: np.ndarray, after: np.ndarray) -> bool:
+    """True if the bar's cards slid sideways between the two strips (not just
+    changed: a placed hero's card shows its health, a spent one greys out)."""
+    import cv2
+
+    if before.shape != after.shape or float(np.abs(before.astype(np.int16) - after).mean()) < 1:
+        return False  # nothing changed at all
+    w = before.shape[1]
+    middle = before[:, int(w * 0.3):int(w * 0.7)]
+    found = cv2.matchTemplate(after, middle, cv2.TM_CCOEFF_NORMED)
+    _, score, _, (x, _) = cv2.minMaxLoc(found)
+    return not (score >= BAR_SAME and abs(x - int(w * 0.3)) <= 10)
+
+
+def scroll_bar(game: Game, cfg: Config, forward: bool = True) -> bool:
+    """Swipe the troop bar on to the next cards (or back). True if it moved:
+    a big army doesn't fit on the screen, and the bar scrolls."""
+    w, h = game.size
+    band = Rect.from_list(cfg.bar.band).resolve(w, h)
+    y = band.y + band.h // 2
+    before = _bar_strip(game, cfg)
+    if forward:
+        game.swipe(int(w * 0.85), y, int(w * 0.25), y, 400)
+    else:
+        game.swipe(int(w * 0.17), y, int(w * 0.93), y, 400)
+    game.wait(0.8)
+    return bar_scrolled(before, _bar_strip(game, cfg))
+
+
+def rewind_bar(game: Game, cfg: Config) -> None:
+    for _ in range(BAR_PAGES):
+        if not scroll_bar(game, cfg, forward=False):
+            return
+
+
+def _bar_cards(game: Game, cfg: Config) -> list[Card]:
+    acfg = cfg.attack
+    cards = armybar.find_cards(game.refresh(), cfg.bar)
+    if not acfg.use_siege and any(c.kind == "siege" for c in cards):
+        log.info("Leaving the siege machine out (turn on Use siege machines to deploy it)")
+        cards = [c for c in cards if c.kind != "siege"]
+    return cards
+
+
 def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
     """Attack the base on screen; ``target`` is its loot as scouted.
-    Returns the share of it taken, when the loot could be read."""
+    Returns the share of it taken, when the loot could be read.
+
+    The bar goes troops, siege machines, heroes, spells. When it holds more
+    than fits on the screen, it's deployed a screenful at a time, in that
+    order, scrolling on until its end."""
     acfg = cfg.attack
     game.zoom_out()
-    cards = skip_clan_castle(game, armybar.find_cards(game.refresh(), cfg.bar), cfg)
-    if not cards:
-        raise RuntimeError("no cards found in the troop bar")
-    counts = {card: read_count(game, card, cfg) for card in cards if card.kind != "single"}
-    log.info("Troop bar: %s", ", ".join(
-        f"{c.kind} x{counts[c]}" if counts.get(c) else c.kind for c in cards))
     edges, center = deploy_edges(game, cfg)
     edge_points = cycle_points(edges, acfg.sides)
     fixed_points = cycle_points(fixed_lines(game.size[0], cfg), acfg.sides)
     over_base = spell_points(edges, center, acfg.spell_reach)
-
-    troops = [c for c in cards if c.kind == "troop"]
-    singles = [c for c in cards if c.kind == "single"]
-    spells = [c for c in cards if c.kind == "spell"]
-
-    # Troops in waves: earlier waves send a share of each card (by its
-    # count, or one batch when unreadable); the last wave empties them.
-    remaining = dict(counts)
-    for wave in range(acfg.waves):
-        if acfg.waves > 1:
-            log.info("Wave %d of %d", wave + 1, acfg.waves)
-        last = wave == acfg.waves - 1
-        for card in troops:
-            if last:
-                deploy_card(game, card, edge_points, cfg, fixed_points)
-                continue
-            left = remaining.get(card)
-            share = math.ceil(left / (acfg.waves - wave)) if left else acfg.taps_per_batch
-            deploy_taps(game, card, edge_points, share, cfg)
-            if left:
-                remaining[card] = left - share
-        if not last:
-            game.wait(acfg.wave_delay)
-
-    placed = place_singles(game, singles, edge_points, cfg, fixed_points)
     spot = center or base_center(edges)
-    for card in spells:
-        if acfg.spell_placement == "together":
-            cast_together(game, card, spot, counts.get(card), cfg)
-        else:
-            deploy_card(game, card, over_base, cfg)
-    # One more go for any hero that was refused, now on other points.
-    placed += place_singles(game, [c for c in singles if c not in placed], edge_points, cfg, fixed_points)
-    if singles:
-        log.info("Placed %d of %d hero/siege card(s)", len(placed), len(singles))
+
+    scrolls = scroll_bar(game, cfg)
+    if scrolls:
+        log.info("The troop bar scrolls: deploying it a screenful at a time")
+        rewind_bar(game, cfg)
+    waves = 1 if scrolls else acfg.waves  # waves only when the whole army is on show
+
+    placed: list[Card] = []
+    singles_seen = 0
+    for page in range(BAR_PAGES):
+        cards = _bar_cards(game, cfg)
+        if not cards and page == 0:
+            raise RuntimeError("no cards found in the troop bar")
+        counts = {card: read_count(game, card, cfg) for card in cards if card.kind not in ("single", "siege")}
+        log.info("Troop bar%s: %s", f" (screen {page + 1})" if scrolls else "", ", ".join(
+            f"{c.kind} x{counts[c]}" if counts.get(c) else c.kind for c in cards))
+        troops = [c for c in cards if c.kind == "troop"]
+        singles = [c for c in cards if c.kind in ("single", "siege")]
+        spells = [c for c in cards if c.kind == "spell"]
+
+        # Troops in waves: earlier waves send a share of each card (by its
+        # count, or one batch when unreadable); the last wave empties them.
+        remaining = dict(counts)
+        for wave in range(waves):
+            if waves > 1:
+                log.info("Wave %d of %d", wave + 1, waves)
+            last = wave == waves - 1
+            for card in troops:
+                if last:
+                    deploy_card(game, card, edge_points, cfg, fixed_points)
+                    continue
+                left = remaining.get(card)
+                share = math.ceil(left / (waves - wave)) if left else acfg.taps_per_batch
+                deploy_taps(game, card, edge_points, share, cfg)
+                if left:
+                    remaining[card] = left - share
+            if not last:
+                game.wait(acfg.wave_delay)
+
+        here = place_singles(game, singles, edge_points, cfg, fixed_points)
+        for card in spells:
+            if acfg.spell_placement == "together":
+                cast_together(game, card, spot, counts.get(card), cfg)
+            else:
+                deploy_card(game, card, over_base, cfg)
+        # One more go for any hero that was refused, now on other points.
+        here += place_singles(game, [c for c in singles if c not in here], edge_points, cfg, fixed_points)
+        singles_seen += len(singles)
+        # Abilities are fired from the cards on show at the end: earlier
+        # screens' cards have scrolled away.
+        placed = here if scrolls else placed + here
+        if not scrolls or not scroll_bar(game, cfg):
+            break
+    if singles_seen:
+        log.info("Placed %d of %d hero/siege card(s)", len(placed), singles_seen)
 
     if placed and acfg.hero_abilities:
         # Heroes: a second tap fires the ability. Siege machines: it

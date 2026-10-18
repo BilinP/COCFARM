@@ -118,13 +118,6 @@ def full_storages(game: Game, regions: RegionsConfig) -> set[str]:
     return full
 
 
-def full_collectors(game: Game) -> int | None:
-    """How many full collectors are visible (``None`` without templates)."""
-    if not game.has(T.DEAD_BASE):
-        return None
-    return len(game.find_all(T.DEAD_BASE, threshold=0.8))
-
-
 def start_search(game: Game) -> None:
     """Home village → Battle → Find a Match → Attack! (army screen)."""
     game.refresh()
@@ -167,13 +160,6 @@ def search(game: Game, criteria: SearchConfig, regions: RegionsConfig, on_base: 
             continue
         unreadable = 0
         accepted = is_worth_attacking(loot, criteria)
-        if accepted and criteria.dead_base:
-            collectors = full_collectors(game)
-            if collectors is None:
-                log.warning("Dead-base search is on but templates/deadbase/ is empty; ignoring it")
-            elif collectors < criteria.dead_base_collectors:
-                log.info("Base %d has enough loot but only %d full collector(s)", count, collectors)
-                accepted = False
         log.info("Base %d: gold %s, elixir %s, dark %s%s", count, f"{loot.gold:,}", f"{loot.elixir:,}",
                  f"{loot.dark:,}", "  → attack" if accepted else "")
         if on_base:

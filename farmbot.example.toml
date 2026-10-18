@@ -37,8 +37,6 @@ min_dark = 0
 match_any = false
 max_searches = 150
 next_delay = 2.5
-dead_base = false
-dead_base_collectors = 2
 sound_on_match = false
 min_own_gold = 50000
 maintain_only = false
@@ -48,7 +46,6 @@ sides = ["nw", "ne", "sw", "se"]
 waves = 1
 troop_speed = 7
 wave_speed = 8
-use_cc = true
 hero_abilities = true
 hero_ability_delay = 10.0
 speed_up = true  # press the 1x button in the last minute so the battle plays at 4x
@@ -121,10 +118,12 @@ request_troops = false
 request_text = ""
 request_every_minutes = 30
 donate = false
-donate_troop = ""
-donate_siege = ""
-donate_spell = ""
-max_donations_per_request = 5
+# Units to give first, in order (names as in farmbot/units.py); then the space
+# left goes to the biggest troops that fit (donate_fill).
+donate_main = []  # e.g. ["Super Barbarian", "Battle Blimp"]
+donate_spells = []  # e.g. ["Rage Spell"]
+donate_fill = true
+max_donations_per_request = 15
 
 [schedule]
 enabled = false
@@ -147,6 +146,10 @@ on_emulator_restart = true
 daily_summary = true
 
 [bot]
+mode = "home"  # "home", "builder", or "auto": one village until its stop_when_full storages are full, then the other
+auto_first = "home"  # mode "auto": start with "home" or "builder"
+stop_when_full = []  # e.g. ["gold", "elixir"]
+theme = "auto"  # the window: "auto" follows Windows, or "light" / "dark"
 templates = "templates"
 threshold = 0.85
 collect_resources = true
