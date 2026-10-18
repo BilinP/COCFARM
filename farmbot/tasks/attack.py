@@ -13,7 +13,7 @@ from farmbot.config import Config
 from farmbot.game import Game, T
 from farmbot.geometry import Point, Rect, points_along
 from farmbot.tasks.search import Loot, loot_value, read_loot
-from farmbot.tasks.village import open_event_chests
+from farmbot.tasks.village import open_event_chests, pick_reward
 
 log = logging.getLogger(__name__)
 
@@ -117,10 +117,27 @@ def cycle_points(edges: dict[str, list[Point]], sides: list[str]) -> Iterator[Po
 def spell_points(edges: dict[str, list[Point]], center: Point | None, reach: float) -> Iterator[Point]:
     """Points part-way from the centre towards the edge, i.e. over the base."""
     every = [p for pts in edges.values() for p in pts]
-    if center is None:
-        center = (sum(p[0] for p in every) // len(every), sum(p[1] for p in every) // len(every))
-    cx, cy = center
+    cx, cy = center or base_center(edges)
     return itertools.cycle([(round(cx + (x - cx) * reach), round(cy + (y - cy) * reach)) for x, y in every])
+
+
+def base_center(edges: dict[str, list[Point]]) -> Point:
+    every = [p for pts in edges.values() for p in pts]
+    return sum(p[0] for p in every) // len(every), sum(p[1] for p in every) // len(every)
+
+
+SPELL_BURST = 11  # taps in one go when a spell card's count can't be read
+
+
+def cast_together(game: Game, card: Card, spot: Point, count: int | None, cfg: Config) -> None:
+    """Every spell on ``card`` at once, on one spot: one burst of as many
+    taps as the card holds, then more only if some are left."""
+    game.tap(*card.center)
+    game.wait(0.1)
+    game.tap_many([spot] * (count or SPELL_BURST), jitter=4, pause=0.0)
+    game.wait(0.3)
+    if not armybar.is_spent(game.refresh(), card, cfg.bar):
+        deploy_card(game, card, itertools.repeat(spot), cfg)
 
 
 def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
@@ -138,6 +155,8 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
         game.tap_many([next(points) for _ in range(acfg.taps_per_batch)], jitter=3, pause=acfg.tap_delay)
         game.wait(0.3)
         after = game.refresh()
+        if pick_reward(game):
+            after = game.screen
         if armybar.is_spent(after, card, cfg.bar):
             return True
         # The count on the card changes as units go out; if it stays the
@@ -175,10 +194,41 @@ def place_single(game: Game, card: Card, points: Iterator[Point], cfg: Config,
         game.tap(*next(source), jitter=3)
         game.wait(0.6)
         after = game.refresh()
+        if pick_reward(game):
+            after = game.screen
         if armybar.unit_on_field(before, after, card) or armybar.is_spent(after, card, cfg.bar):
             return True
     log.warning("Hero/siege card at x=%d was not placed after %d tries", card.left, SINGLE_TRIES)
     return False
+
+
+def place_singles(game: Game, cards: list[Card], points: Iterator[Point], cfg: Config,
+                  fallback: Iterator[Point] | None = None) -> list[Card]:
+    """Put every hero and siege machine down in one quick pass (card, point,
+    next card...), then check them all on one screenshot; any the game
+    refused get another point. Returns the cards that went out."""
+    before = game.refresh()
+    placed: list[Card] = []
+    waiting = list(cards)
+    for attempt in range(SINGLE_TRIES):
+        if not waiting:
+            break
+        source = fallback if fallback is not None and attempt >= SINGLE_TRIES // 2 else points
+        for card in waiting:
+            game.tap(*card.center)
+            game.wait(0.08)
+            game.tap(*next(source), jitter=3)
+            game.wait(0.08)
+        game.wait(0.5)
+        after = game.refresh()
+        if pick_reward(game):
+            after = game.refresh()
+        out = [c for c in waiting if armybar.unit_on_field(before, after, c) or armybar.is_spent(after, c, cfg.bar)]
+        placed += out
+        waiting = [c for c in waiting if c not in out]
+    for card in waiting:
+        log.warning("Hero/siege card at x=%d was not placed after %d tries", card.left, SINGLE_TRIES)
+    return placed
 
 
 def read_count(game: Game, card: Card, cfg: Config) -> int | None:
@@ -237,8 +287,13 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None) -> float 
     can_return = game.has(T.RETURN_HOME) and game.has(T.SURRENDER_OK)
     while True:
         game.refresh()
+        if pick_reward(game):
+            continue
         if can_return and game.find(T.RETURN_HOME):
             break
+        if acfg.speed_up and game.has(T.SPEED) and game.click(T.SPEED):
+            log.info("Battle speed: 4x")
+            game.refresh()
         now = game.clock()
         loot = loot_left(game, cfg) if acfg.end_when_no_loot or (target and acfg.end_at_loot_share) else None
         # Loot only goes down in a battle: a higher reading is a misread.
@@ -269,7 +324,9 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None) -> float 
     if taken is not None:
         log.info("Took %d%% of the base's loot", taken * 100)
     game.wait(1.0)
-    game.click_when_visible(T.RETURN_HOME, timeout=5)
+    # The 100% reward can show over the results.
+    if not game.click_when_visible(T.RETURN_HOME, timeout=5) and pick_reward(game):
+        game.click_when_visible(T.RETURN_HOME, timeout=5)
     open_event_chests(game)
     return taken
 
@@ -317,20 +374,54 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
         if not last:
             game.wait(acfg.wave_delay)
 
-    placed = [card for card in singles if place_single(game, card, edge_points, cfg, fixed_points)]
+    placed = place_singles(game, singles, edge_points, cfg, fixed_points)
+    spot = center or base_center(edges)
     for card in spells:
-        deploy_card(game, card, over_base, cfg)
+        if acfg.spell_placement == "together":
+            cast_together(game, card, spot, counts.get(card), cfg)
+        else:
+            deploy_card(game, card, over_base, cfg)
     # One more go for any hero that was refused, now on other points.
-    placed += [card for card in singles if card not in placed and place_single(game, card, edge_points, cfg, fixed_points)]
+    placed += place_singles(game, [c for c in singles if c not in placed], edge_points, cfg, fixed_points)
     if singles:
         log.info("Placed %d of %d hero/siege card(s)", len(placed), len(singles))
 
     if placed and acfg.hero_abilities:
         # Heroes: a second tap fires the ability. Siege machines: it
         # releases the troops inside.
-        game.wait(acfg.hero_ability_delay)
-        for card in placed:
-            game.tap(*card.center)
-            game.wait(0.2)
+        if acfg.ability_health > 0:
+            fire_abilities_when_hurt(game, placed, cfg)
+        else:
+            game.wait(acfg.hero_ability_delay)
+            for card in placed:
+                game.tap(*card.center)
+                game.wait(0.2)
         log.info("Activated %d hero/siege card(s)", len(placed))
     return finish_battle(game, cfg, target)
+
+
+ABILITY_CHECK = 0.5  # seconds between looks at the heroes' health
+
+
+def fire_abilities_when_hurt(game: Game, cards: list[Card], cfg: Config) -> None:
+    """Watch each placed hero's health bar and fire its ability once it drops
+    to ``ability_health``, or when its bar disappears (about to fall), or at
+    ``ability_max_wait`` at the latest."""
+    acfg = cfg.attack
+    waiting = list(cards)
+    deadline = game.clock() + acfg.ability_max_wait
+    while waiting:
+        screen = game.refresh()
+        if pick_reward(game):
+            continue
+        late = game.clock() >= deadline
+        for card in list(waiting):
+            health = armybar.hero_health(screen, card)
+            if late or health is None or health <= acfg.ability_health:
+                game.tap(*card.center)
+                game.wait(0.15)
+                waiting.remove(card)
+                log.info("Ability at x=%d: %s", card.left, "time's up" if late else
+                         "health gone" if health is None else f"health {health:.0%}")
+        if waiting:
+            game.wait(ABILITY_CHECK)

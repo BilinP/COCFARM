@@ -310,7 +310,19 @@ class AdbDevice:
         self.shell("input", "text", safe.replace(" ", "%s"))
 
     def start_app(self, package: str) -> None:
-        self.shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
+        # `am start` on the launcher activity: LDPlayer's Android has no
+        # `monkey`. Android 6 and older can't resolve it, so fall back there.
+        try:
+            out = self.shell("cmd", "package", "resolve-activity", "--brief",
+                             "-c", "android.intent.category.LAUNCHER", package)
+        except DeviceError:
+            out = ""
+        activity = next((line.strip() for line in reversed(out.splitlines())
+                         if line.strip().startswith(package + "/")), None)
+        if activity:
+            self.shell("am", "start", "-n", activity)
+        else:
+            self.shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
 
     def stop_app(self, package: str) -> None:
         self.shell("am", "force-stop", package)

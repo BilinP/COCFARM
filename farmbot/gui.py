@@ -7,7 +7,7 @@
 * Settings save automatically as soon as they are valid, and a running
   bot picks them up at its next step.
 
-Shortcuts: F5 start · Esc stop · Ctrl+1…9 switch page.
+Shortcuts: F5 start/resume · Esc pause, then Esc again to stop now · Ctrl+1…9 switch page.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (QApplication, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QListWidgetItem,
                                QSizePolicy,
@@ -32,7 +32,7 @@ from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox,
                             NavigationItemPosition, PlainTextEdit, PrimaryPushButton, PushButton, SegmentedWidget,
                             SettingCard, SettingCardGroup, SimpleCardWidget, Slider, SmoothScrollArea,
                             StrongBodyLabel, SubtitleLabel, SwitchButton, Theme, TitleLabel, TogglePushButton,
-                            setTheme, setThemeColor)
+                            setCustomStyleSheet, setTheme, setThemeColor)
 
 from farmbot import catalog
 from farmbot.config import Config, ensure_config, load_config, save_config
@@ -61,7 +61,7 @@ STATES = {  # chip text colour, chip background
     "paused": ("#1b1b1b", "#e3b341"),
     "error": ("#ffffff", "#c42b1c"),
 }
-PAGES = ("Dashboard", "Search", "Attack", "Village", "Clan", "Builder attack", "Builder village", "Schedule",
+PAGES = ("Dashboard", "History", "Search", "Attack", "Village", "Clan", "Builder attack", "Builder village", "Schedule",
          "Pictures", "Settings")
 
 
@@ -167,6 +167,7 @@ class Page(SmoothScrollArea):
         self.layout_.addWidget(TitleLabel(title))
         if subtitle:
             sub = BodyLabel(subtitle)
+            sub.setWordWrap(True)  # never wider than the window, however small
             sub.setTextColor(QColor(MUTED), QColor(MUTED))
             self.layout_.addWidget(sub)
         self.setWidget(body)
@@ -176,16 +177,92 @@ class Page(SmoothScrollArea):
         return widget
 
 
+CARD_HEIGHT = 70  # a setting card's usual height
+
+
+def _relayout_group(group: "SettingCardGroup") -> None:
+    """Re-place a group's cards after one changed height, and resize the group."""
+    group._relayout_due = False
+    cards = group.cardLayout
+    cards.setGeometry(cards.geometry())  # moves every card under the one above it
+    height = group.layout().totalHeightForWidth(group.width()) if group.layout().hasHeightForWidth() else 0
+    if height and height != group.height():
+        group.setMinimumHeight(height)
+        group.resize(group.width(), height)
+    group.updateGeometry()
+
+
 class Card(SettingCard):
     """A setting card whose description doubles as its error line."""
 
     def __init__(self, icon, title: str, help_text: str, control: QWidget | None = None, *extra: QWidget):
         super().__init__(icon, title, help_text or " ")
         self.help_text = help_text
-        for w in ([control] if control else []) + list(extra):
-            self.hBoxLayout.addWidget(w, 0, Qt.AlignRight)
+        self.controls = ([control] if control else []) + list(extra)
+        for w in self.controls:
+            self.hBoxLayout.addWidget(w, 0, Qt.AlignRight | Qt.AlignVCenter)
             self.hBoxLayout.addSpacing(8)
         self.hBoxLayout.addSpacing(8)
+        # The title and explanation wrap instead of widening the window, and
+        # the card grows to fit them (SettingCard is a fixed 70 px otherwise).
+        # Their column takes the spare width (the base class gives it to a
+        # stretch after it, and pins the labels to their one-line width).
+        for label in (self.titleLabel, self.contentLabel):
+            label.setWordWrap(True)
+            self.vBoxLayout.setAlignment(label, Qt.Alignment())
+        # Centre the text with stretches: the layouts' own centring goes by a
+        # wrapping label's preferred size, which Qt makes narrow and tall.
+        self.hBoxLayout.setAlignment(Qt.Alignment())
+        self.vBoxLayout.setAlignment(Qt.Alignment())
+        self.vBoxLayout.insertStretch(0, 1)
+        self.vBoxLayout.addStretch(1)
+        self.hBoxLayout.setStretch(2, 1)  # the title/explanation column
+        self.hBoxLayout.setStretch(4, 0)  # the base class's stretch
+        # Measure once the labels have their new width (the card's own resize
+        # comes before its layout moves them).
+        self.titleLabel.installEventFilter(self)
+        for w in self.controls:
+            if isinstance(w, QLabel) and w.wordWrap():
+                w.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Resize:
+            self._fit_soon()
+        return super().eventFilter(obj, event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._fit_soon()
+
+    def setContent(self, content: str) -> None:
+        super().setContent(content)
+        self._fit_soon()
+
+    def _fit_soon(self) -> None:
+        # Not in the middle of a layout pass: a height set there isn't laid out.
+        if not getattr(self, "_fit_due", False):
+            self._fit_due = True
+            QTimer.singleShot(0, self._fit_height)
+
+    def _fit_height(self) -> None:
+        self._fit_due = False
+        width = self.titleLabel.width()
+        if width <= 0:
+            return
+        text = self.contentLabel.heightForWidth(width) if self.contentLabel.text().strip() else 0
+        needed = max(CARD_HEIGHT, self.titleLabel.heightForWidth(width) + text + 26)
+        for w in self.controls:  # a wrapping label used as the control (e.g. what was found)
+            if isinstance(w, QLabel) and w.wordWrap() and w.width() > 0:
+                needed = max(needed, w.heightForWidth(w.width()) + 24)
+        if needed != self.height():
+            self.setFixedHeight(needed)
+            self.hBoxLayout.setGeometry(self.rect())
+            # The group's layout only follows a card's height when its width
+            # didn't change too: have it place its cards and measure again.
+            group = self.parentWidget()
+            if isinstance(group, SettingCardGroup) and not getattr(group, "_relayout_due", False):
+                group._relayout_due = True
+                QTimer.singleShot(0, lambda: _relayout_group(group))
 
     def show_error(self, message: str | None) -> None:
         if message:
@@ -299,13 +376,15 @@ class FarmbotWindow(FluentWindow):
     def __init__(self, config_path: str, serial: str | None = None):
         super().__init__()
         self.config_path = Path(config_path)
-        if ensure_config(self.config_path):
+        self.first_run = ensure_config(self.config_path)
+        if self.first_run:
             log.info("First run: created %s with the settings for BlueStacks at 860 x 672", self.config_path)
         self.config = load_config(self.config_path)
         if serial:
             self.config.device.serial = serial
         self.events: queue.Queue = queue.Queue()
         self.stop_event: threading.Event | None = None
+        self.pause_event = threading.Event()  # Pause: the bot waits at its next safe point
         self.thread: threading.Thread | None = None
         self.bindings: dict[str, Binding] = {}
         self.cards: dict[str, Card] = {}
@@ -327,6 +406,7 @@ class FarmbotWindow(FluentWindow):
         self._build_title_bar()
         self.pages: dict[str, QWidget] = {}
         self._add_page(self._dashboard(), FIF.HOME, "Dashboard")
+        self._add_page(self._history(), FIF.HISTORY, "History")
         nav = self.navigationInterface
         nav.addItemHeader("Home village")
         self._add_page(self._search(), FIF.SEARCH, "Search")
@@ -357,6 +437,9 @@ class FarmbotWindow(FluentWindow):
         self.clock_timer = QTimer(self, interval=1000, timeout=self._tick)
         self.clock_timer.start()
         QShortcut(QKeySequence("F5"), self, activated=self.start)
+        if self.first_run:
+            QTimer.singleShot(300, self._welcome)
+        self._check_for_update()
         QShortcut(QKeySequence("Esc"), self, activated=self.stop)
         for i, name in enumerate(PAGES[:9], start=1):
             QShortcut(QKeySequence(f"Ctrl+{i}"), self, activated=lambda n=name: self.show_page(n))
@@ -391,9 +474,9 @@ class FarmbotWindow(FluentWindow):
         self.start_button = PrimaryPushButton(FIF.PLAY, "Start")
         self.start_button.setToolTip("Start farming (F5)")
         self.start_button.clicked.connect(self.start)
-        self.stop_button = PushButton(FIF.PAUSE, "Stop")
-        self.stop_button.setToolTip("Stop after the current step (Esc)")
+        self.stop_button = PushButton(FIF.PAUSE, "Pause")
         self.stop_button.clicked.connect(self.stop)
+        self._show_pause_button()
         self.stop_button.setEnabled(False)
         for w in (self.state_chip, self.status_label, self.save_label, self.start_button, self.stop_button):
             layout.addWidget(w)
@@ -523,6 +606,10 @@ class FarmbotWindow(FluentWindow):
             head.setStyleSheet(f"color: {colour};")
         value = TitleLabel("—") if big else SubtitleLabel("0")
         note = _muted(CaptionLabel(""))
+        note.setWordWrap(True)  # stat tiles share a row: wrap rather than widen the page
+        for label in (head, value, note):
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        card.setMinimumWidth(120)
         layout.addWidget(head)
         layout.addWidget(value)
         layout.addWidget(note)
@@ -534,23 +621,30 @@ class FarmbotWindow(FluentWindow):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(4)
-        layout.addWidget(StrongBodyLabel("Loot gained"))
+        layout.addWidget(StrongBodyLabel("Loot gained this session"))
         row = QHBoxLayout()
         row.setSpacing(24)
         self.gained_value: dict[str, QLabel] = {}
+        self.gained_today: dict[str, QLabel] = {}
         for key, name in (("gold", "Gold"), ("elixir", "Elixir"), ("dark", "Dark elixir")):
             column = QVBoxLayout()
             column.setSpacing(0)
             label = CaptionLabel(name)
             label.setStyleSheet(f"color: {RESOURCE_COLOURS[key]};")
             value = SubtitleLabel("0")
+            today = _muted(CaptionLabel(""))
             column.addWidget(label)
             column.addWidget(value)
+            column.addWidget(today)
             row.addLayout(column)
             self.gained_value[key] = value
+            self.gained_today[key] = today
         row.addStretch(1)
         layout.addLayout(row)
-        layout.addWidget(_muted(CaptionLabel("From your resource bar")))
+        self.gained_note = _muted(CaptionLabel(""))
+        self.gained_note.setWordWrap(True)
+        self.gained_note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        layout.addWidget(self.gained_note)
         return card
 
     def _dashboard(self) -> Page:
@@ -633,6 +727,153 @@ class FarmbotWindow(FluentWindow):
         self.log_view.setPlaceholderText("Nothing yet. Press Start (F5) and the bot's progress will appear here.")
         page.add(self.log_view)
         return page
+
+    # ------------------------------------------------------------ history
+    HISTORY_DAYS = 14  # days in the chart
+    HISTORY_ROWS = 300  # latest attacks in the table
+
+    def _history(self) -> Page:
+        page = Page("history", "History", "Every attack from your history file: totals, loot per hour, the last "
+                    "two weeks, and each attack.")
+        top = QHBoxLayout()
+        top.addStretch(1)
+        refresh = PushButton(FIF.SYNC, "Refresh")
+        refresh.clicked.connect(self._show_history)
+        open_file = PushButton(FIF.DOCUMENT, "Open the CSV")
+        open_file.setToolTip("Opens the history file in your spreadsheet app (Excel, Google Sheets import...)")
+        open_file.clicked.connect(self._open_history_file)
+        top.addWidget(refresh)
+        top.addWidget(open_file)
+        page.layout_.addLayout(top)
+
+        grid = QGridLayout()
+        grid.setSpacing(16)
+        self.history_value: dict[str, QLabel] = {}
+        self.history_note: dict[str, QLabel] = {}
+        for col, (key, name) in enumerate((("today", "Today"), ("week", "Last 7 days"), ("all", "All time"),
+                                           ("hour", "Per hour of play"))):
+            card, value, note = self._stat(name, big=False)
+            self.history_value[key], self.history_note[key] = value, note
+            grid.addWidget(card, 0, col)
+        page.layout_.addLayout(grid)
+
+        from PySide6.QtCharts import QChart, QChartView
+        from PySide6.QtGui import QPainter
+
+        self.history_chart = QChart()
+        self.history_chart.setTheme(QChart.ChartThemeDark)
+        self.history_chart.setBackgroundVisible(False)
+        self.history_chart.legend().setAlignment(Qt.AlignBottom)
+        self.history_chart.setTitle(f"Loot gained per day (last {self.HISTORY_DAYS} days)")
+        view = QChartView(self.history_chart)
+        view.setRenderHint(QPainter.Antialiasing)
+        view.setMinimumHeight(300)
+        view.setStyleSheet("background: transparent;")
+        page.add(view)
+
+        from qfluentwidgets import TableWidget
+
+        self.history_table = TableWidget()
+        headers = ["Time", "Offered gold", "Offered elixir", "Offered dark", "Gained gold", "Gained elixir",
+                   "Gained dark"]
+        self.history_table.setColumnCount(len(headers))
+        self.history_table.setHorizontalHeaderLabels(headers)
+        self.history_table.verticalHeader().hide()
+        self.history_table.setEditTriggers(TableWidget.NoEditTriggers)
+        self.history_table.setMinimumHeight(360)
+        self.history_table.horizontalHeader().setStretchLastSection(True)
+        page.add(self.history_table)
+        self._show_history()
+        return page
+
+    def _show_history(self) -> None:
+        from datetime import date, timedelta
+
+        from PySide6.QtCharts import QBarCategoryAxis, QBarSeries, QBarSet, QValueAxis
+        from PySide6.QtWidgets import QTableWidgetItem
+
+        from farmbot import history
+        from farmbot.tasks.search import Loot
+
+        path = self.config.bot.history
+        rows = history.read_all(path) if path else []
+        days = history.daily_totals(rows)
+        today = date.today()
+
+        def total(since: date | None) -> tuple[int, Loot]:
+            count, sum_ = 0, Loot(0, 0, 0)
+            for day, (n, loot) in days.items():
+                if since is None or day >= since:
+                    count, sum_ = count + n, history.add(sum_, loot)
+            return count, sum_
+
+        def loot_text(loot: Loot) -> str:
+            return f"gold {_short(loot.gold)} · elixir {_short(loot.elixir)} · dark {_short(loot.dark)}"
+
+        for key, since in (("today", today), ("week", today - timedelta(days=6)), ("all", None)):
+            count, loot = total(since)
+            self.history_value[key].setText(f"{count:,} attacks")
+            self.history_note[key].setText(loot_text(loot) if count else "Nothing yet")
+        recent = [r for r in rows if r.time.date() >= today - timedelta(days=6)]
+        hourly = history.per_hour(recent)
+        self.history_value["hour"].setText(_short(hourly.gold + hourly.elixir) if hourly else "—")
+        self.history_note["hour"].setText(loot_text(hourly) + " (last 7 days)" if hourly
+                                          else "Needs a few attacks in a row")
+
+        chart = self.history_chart
+        chart.removeAllSeries()
+        for axis in chart.axes():
+            chart.removeAxis(axis)
+        span = [today - timedelta(days=i) for i in range(self.HISTORY_DAYS - 1, -1, -1)]
+        series = QBarSeries()
+        top = 0.0
+        for key, name in (("gold", "Gold"), ("elixir", "Elixir"), ("dark", "Dark elixir ×100")):
+            bars = QBarSet(name)
+            bars.setColor(QColor(RESOURCE_COLOURS[key]))
+            for day in span:
+                value = getattr(days.get(day, (0, Loot(0, 0, 0)))[1], key)
+                value = value * 100 if key == "dark" else value  # dark is ~100x scarcer: same scale
+                value /= 1_000_000  # the axis is in millions
+                bars.append(max(value, 0))
+                top = max(top, value)
+            series.append(bars)
+        chart.addSeries(series)
+        x = QBarCategoryAxis()
+        x.append([str(d.day) for d in span])  # day of the month: fits at the window's smallest
+        x.setTitleText(f"{span[0]:%b %d} – {span[-1]:%b %d}")
+        y = QValueAxis()
+        y.setRange(0, max(top, 0.1) * 1.1)
+        y.setLabelFormat("%.1f")
+        y.setTitleText("Millions")
+        chart.addAxis(x, Qt.AlignBottom)
+        chart.addAxis(y, Qt.AlignLeft)
+        series.attachAxis(x)
+        series.attachAxis(y)
+
+        table = self.history_table
+        latest = rows[::-1][:self.HISTORY_ROWS]
+        table.setRowCount(len(latest))
+        for r, row in enumerate(latest):
+            gained = row.gained
+            cells = [f"{row.time:%Y-%m-%d %H:%M}", f"{row.target.gold:,}", f"{row.target.elixir:,}",
+                     f"{row.target.dark:,}"] + ([f"{gained.gold:+,}", f"{gained.elixir:+,}", f"{gained.dark:+,}"]
+                                                if gained else ["?", "?", "?"])
+            for c, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if c:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                table.setItem(r, c, item)
+        table.resizeColumnsToContents()
+
+    def _open_history_file(self) -> None:
+        import os
+
+        path = Path(self.config.bot.history) if self.config.bot.history else None
+        if not path or not path.is_file():
+            InfoBar.warning("No history yet", "The file appears after the first attack.", duration=4000,
+                            position=InfoBarPosition.TOP_RIGHT, parent=self)
+            return
+        os.startfile(str(path.resolve()))  # Windows: opens with the default app for .csv
 
     def _builder_dashboard(self) -> QWidget:
         """Builder base mode: the current battle, this session's builder loot,
@@ -799,14 +1040,25 @@ class FarmbotWindow(FluentWindow):
         self.switch(deploy, "zone.enabled", FIF.LAYOUT, "Otherwise deploy around the buildings",
                     "Off: use the fixed deploy lines from the config file.")
 
+        self.segments(deploy, "attack.spell_placement", FIF.ALBUM, "Spells",
+                      "One spot: every spell at once on the middle of the base. Spread: over the base.",
+                      {"together": "One spot", "spread": "Spread"}, width=90)
+
         heroes = page.add(SettingCardGroup("Heroes and Clan Castle"))
         self.switch(heroes, "attack.use_cc", FIF.PEOPLE, "Use Clan Castle troops",
                     "To leave them out, add templates/cards/clan_castle.png.")
         self.switch(heroes, "attack.hero_abilities", FIF.CALORIES, "Activate hero abilities")
         self.number(heroes, "attack.hero_ability_delay", FIF.STOP_WATCH, "Ability delay", "Seconds after the heroes land.", "s")
-        self.depends("attack.hero_abilities", "attack.hero_ability_delay")
+        self.number(heroes, "attack.ability_health", FIF.HEART, "Or when health drops to",
+                    "Fire each hero's ability once it's this hurt instead of after the delay. 0% uses the delay.", "%")
+        self.number(heroes, "attack.ability_max_wait", FIF.HISTORY, "At the latest after",
+                    "Heroes still unhurt by then fire anyway.", "s")
+        self.depends("attack.hero_abilities", "attack.hero_ability_delay", "attack.ability_health",
+                     "attack.ability_max_wait")
 
         end = page.add(SettingCardGroup("Ending the battle"))
+        self.switch(end, "attack.speed_up", FIF.SPEED_HIGH, "Play the last minute at 4x",
+                    "Presses the 1x button when it shows, with a minute of the battle left.")
         self.switch(end, "attack.end_when_no_loot", FIF.CANCEL, "End early when no loot is gained")
         self.number(end, "attack.no_loot_seconds", FIF.STOP_WATCH, "No loot for", "Seconds without the loot dropping.", "s")
         self.depends("attack.end_when_no_loot", "attack.no_loot_seconds")
@@ -824,11 +1076,14 @@ class FarmbotWindow(FluentWindow):
         self.switch(deploy, "builder.use_hero", FIF.PEOPLE, "Hero goes first", "Off: troops only.")
         self.number(deploy, "builder.troop_delay", FIF.STOP_WATCH, "Troops follow after",
                     "Seconds after the hero lands.", "s")
+        self.segments(deploy, "builder.first_hero", FIF.PEOPLE, "First hero",
+                      "The hero for the first base. Keep: whichever is set in the game.",
+                      {"any": "Keep", "machine": "Battle Machine", "copter": "Battle Copter"}, width=120)
         self.switch(deploy, "builder.switch_hero", FIF.SYNC, "Switch hero when hurt",
                     "Before a base, swap to your other builder hero if this one's health is low.")
         self.number(deploy, "builder.switch_below", FIF.HEART if hasattr(FIF, "HEART") else FIF.SYNC,
                     "Switch below", "Hero health that triggers the swap.", "%")
-        self.depends("builder.use_hero", "builder.troop_delay", "builder.switch_hero")
+        self.depends("builder.use_hero", "builder.troop_delay", "builder.first_hero", "builder.switch_hero")
         self.depends("builder.switch_hero", "builder.switch_below")
 
         abilities = page.add(SettingCardGroup("Abilities"))
@@ -856,7 +1111,7 @@ class FarmbotWindow(FluentWindow):
     def _builder_village(self) -> Page:
         page = Page("builder_village", "Builder base village", "Looking after the builder base between battles.")
         loot = page.add(SettingCardGroup("Collecting"))
-        self.switch(loot, "builder.collect_resources", FIF.BASKETBALL, "Collect the gold mines and elixir collectors",
+        self.switch(loot, "builder.collect_resources", FIF.BASKETBALL, "Collect the gold mines, elixir collectors and gem mine",
                     "Before each builder battle.")
         self.switch(loot, "builder.collect_cart", FIF.SHOPPING_CART, "Collect the elixir cart",
                     "The cart by the dock that holds your defense rewards.")
@@ -965,6 +1220,15 @@ class FarmbotWindow(FluentWindow):
         limits = page.add(SettingCardGroup("Limits"))
         self.number(limits, "schedule.daily_attack_limit", FIF.FLAG, "Attacks per day", "0 = no limit. Resets at midnight.")
         self.number(limits, "bot.max_attacks", FIF.POWER_BUTTON, "Stop after", "Attacks this session. 0 = until you press Stop.")
+
+        breaks = page.add(SettingCardGroup("Breaks"))
+        self.switch(breaks, "schedule.breaks", FIF.CAFE, "Take breaks",
+                    "Rest now and then, at random, to play more like a person.")
+        self.number_range(breaks, "schedule.break_every_min", "schedule.break_every_max", FIF.SYNC,
+                          "Every", "A new random number after each break.", "attacks")
+        self.number_range(breaks, "schedule.break_minutes_min", "schedule.break_minutes_max", FIF.STOP_WATCH,
+                          "For", "Minutes, picked at random.", "min")
+        self.depends("schedule.breaks", "schedule.break_every_min", "schedule.break_minutes_min")
         return page
 
     def _pictures(self) -> Page:
@@ -973,7 +1237,7 @@ class FarmbotWindow(FluentWindow):
         body = QHBoxLayout()
         body.setSpacing(16)
         self.picture_list = ListWidget()
-        self.picture_list.setFixedWidth(270)
+        self.picture_list.setFixedWidth(240)
         self.picture_list.setMinimumHeight(480)
         self.picture_list.currentRowChanged.connect(lambda _: self._picture_selected())
         body.addWidget(self.picture_list)
@@ -981,6 +1245,7 @@ class FarmbotWindow(FluentWindow):
         right = QVBoxLayout()
         right.setSpacing(10)
         self.picture_title = SubtitleLabel("")
+        self.picture_title.setWordWrap(True)
         self.picture_where = BodyLabel("")
         self.picture_where.setWordWrap(True)
         self.picture_status = CaptionLabel("")
@@ -1006,12 +1271,16 @@ class FarmbotWindow(FluentWindow):
         self.variant_name.textChanged.connect(lambda _: self._crop_changed())
         self.save_picture_button = PrimaryPushButton(FIF.SAVE, "Save picture")
         self.save_picture_button.clicked.connect(self._save_picture)
+        # Two rows, so the panel fits beside the list at the window's smallest.
         for w in (self.capture_button, open_button):
             buttons.addWidget(w)
         buttons.addStretch(1)
-        buttons.addWidget(self.variant_name)
-        buttons.addWidget(self.save_picture_button)
         right.addLayout(buttons)
+        save_row = QHBoxLayout()
+        save_row.addWidget(self.variant_name)
+        save_row.addWidget(self.save_picture_button)
+        save_row.addStretch(1)
+        right.addLayout(save_row)
 
         self.canvas = CropCanvas()
         self.canvas.on_change = self._crop_changed
@@ -1107,7 +1376,7 @@ class FarmbotWindow(FluentWindow):
         self.crop_info.setStyleSheet(f"color: {MUTED};")
 
         def work() -> None:
-            from farmbot.bluestacks import open_device
+            from farmbot.bluestacks import open_device, restart_emulator
             from farmbot.game import normalize_screen
             from farmbot.vision import Vision
 
@@ -1166,7 +1435,8 @@ class FarmbotWindow(FluentWindow):
                       {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer"}, width=110)
         self.bluestacks_info = BodyLabel("")
         self.bluestacks_info.setWordWrap(True)
-        self.bluestacks_info.setMinimumWidth(520)  # long install paths stay on one line
+        self.bluestacks_info.setMinimumWidth(240)
+        self.bluestacks_info.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         refresh = PushButton(FIF.SYNC, "Find")
         refresh.setToolTip("Look for BlueStacks and LDPlayer again")
         refresh.clicked.connect(self._find_bluestacks)
@@ -1247,8 +1517,74 @@ class FarmbotWindow(FluentWindow):
         for w in (self.seen_text, self.seen_view):
             w.hide()
             page.add(w)
+
+        notify = page.add(SettingCardGroup("Notifications"))
+        self.text(notify, "notify.discord_webhook", FIF.MESSAGE, "Discord webhook",
+                  "Server Settings → Integrations → Webhooks → New Webhook → Copy Webhook URL.", width=320)
+        self.switch(notify, "notify.on_storage_full", FIF.FLAG, "When storage is full")
+        self.switch(notify, "notify.on_stopped", FIF.POWER_BUTTON, "When the bot stops", "After a run, or by an error.")
+        self.switch(notify, "notify.on_emulator_restart", FIF.SYNC, "When the emulator is restarted")
+        self.switch(notify, "notify.daily_summary", FIF.CALENDAR, "Daily summary",
+                    "Yesterday's attacks and loot, sent after midnight.")
+        test_notify = PushButton(FIF.SEND, "Send a test")
+        test_notify.clicked.connect(self._test_notify)
+        self.notify_result = CaptionLabel("")
+        self._card(notify, None, FIF.CHAT, "Test", "Sends a message to the webhook above.",
+                   self.notify_result, test_notify)
         self._find_bluestacks()
         return page
+
+    def _welcome(self) -> None:
+        """First run: open Settings and say what to do, with a button for the first step."""
+        self.show_page("Settings")
+        bar = InfoBar.info(
+            "Welcome to COCFARM",
+            "1. Pick your emulator and press Connect now (COCFARM sets it up). 2. Open Clash of Clans and sign in. "
+            "3. Set your loot minimums on Search. 4. Press Start.",
+            duration=-1, position=InfoBarPosition.TOP, parent=self)
+        go = PrimaryPushButton("Connect now")
+        go.clicked.connect(lambda: (self._test_connection(), bar.close()))
+        bar.addWidget(go)
+
+    def _check_for_update(self) -> None:
+        repo = self.config.bot.update_repo
+        if not repo:
+            return
+
+        def work() -> None:
+            from farmbot.update import newer_release
+
+            release = newer_release(repo)
+            if release:
+                self.events.put(("update", release))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_update(self, release) -> None:
+        import webbrowser
+
+        bar = InfoBar.success("Update available", f"COCFARM {release.version} is out.", duration=-1,
+                              position=InfoBarPosition.TOP_RIGHT, parent=self)
+        get = PushButton(FIF.DOWNLOAD, "Download")
+        get.clicked.connect(lambda: webbrowser.open(release.url))
+        bar.addWidget(get)
+
+    def _test_notify(self) -> None:
+        if not self._autosave():
+            return
+        from farmbot.notify import Notifier
+
+        notifier = Notifier(self.config.notify)
+        if not notifier.configured:
+            self.notify_result.setText("Set a Discord webhook first.")
+            return
+        self.notify_result.setText("Sending…")
+
+        def work() -> None:
+            ok = notifier.test()
+            self.events.put(("notify", ok))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _inspect_screen(self) -> None:
         if not self._autosave():
@@ -1344,7 +1680,7 @@ class FarmbotWindow(FluentWindow):
                   else form.get(controller) in when if isinstance(when, tuple) else form.get(controller) == when)
             for b in bindings:
                 b.enable(on)
-        self.start_button.setEnabled(not errors and not self._running())
+        self.start_button.setEnabled(not errors and (not self._running() or self.pause_event.is_set()))
         if errors:
             self.save_label.setText(f"⚠ Fix {len(errors)} setting{'s' if len(errors) > 1 else ''}")
             self.save_label.setStyleSheet(f"color: {BAD};")
@@ -1372,6 +1708,11 @@ class FarmbotWindow(FluentWindow):
     def start(self) -> None:
         self.save_timer.stop()
         if self._running():
+            if self.pause_event.is_set():  # Resume
+                self.pause_event.clear()
+                self._show_pause_button()
+                self.start_button.setEnabled(False)
+                self._set_state("running", "Resuming…")
             return
         if not self._autosave():
             InfoBar.error("Can't start yet", "Some settings need fixing first.", duration=3000,
@@ -1387,6 +1728,8 @@ class FarmbotWindow(FluentWindow):
             self._pictures_bar(InfoBar.info, "Tip", "Without the Return Home and Okay pictures the bot closes "
                                "the game to leave each battle, which takes about 30 s longer.")
         self.stop_event = threading.Event()
+        self.pause_event.clear()
+        self._show_pause_button()
         self.session_start = time.monotonic()
         self.thread = threading.Thread(target=self._run_bot, args=(self.stop_event,), daemon=True)
         self.thread.start()
@@ -1396,9 +1739,43 @@ class FarmbotWindow(FluentWindow):
         self.show_page("Dashboard")
 
     def stop(self) -> None:
-        if self.stop_event and self._running():
+        """First press: pause once the current action is done. Second
+        press (the button is red by then): stop now, even mid-battle."""
+        if not (self.stop_event and self._running()):
+            return
+        if not self.pause_event.is_set():
+            self.pause_event.set()
+            self._show_stop_now_button()
+            self.start_button.setText("Resume")
+            self.start_button.setIcon(FIF.PLAY)
+            self.start_button.setToolTip("Carry on farming (F5)")
+            self.start_button.setEnabled(True)
+            self._set_state("paused", "Pausing after the current action…")
+        else:
             self.stop_event.set()
-            self._set_state("paused", "Stopping after the current step…")
+            self.stop_button.setEnabled(False)
+            self.start_button.setEnabled(False)
+            self._set_state("paused", "Stopping now…")
+
+    def _show_pause_button(self) -> None:
+        self.stop_button.setText("Pause")
+        self.stop_button.setIcon(FIF.PAUSE)
+        self.stop_button.setToolTip("Pause once the current action is done (Esc)")
+        if self.stop_button.property("red"):
+            self.stop_button.setProperty("red", False)
+            setCustomStyleSheet(self.stop_button, "", "")
+        self.start_button.setText("Start")
+        self.start_button.setToolTip("Start farming (F5)")
+
+    def _show_stop_now_button(self) -> None:
+        self.stop_button.setText("Stop now")
+        self.stop_button.setIcon(FIF.CLOSE)
+        self.stop_button.setToolTip("Stop straight away, even in the middle of a battle (Esc)")
+        red = ("PushButton { background: #c42b1c; color: white; border: 1px solid #a3261a; }"
+               "PushButton:hover { background: #d13438; }"
+               "PushButton:pressed { background: #a3261a; color: rgba(255,255,255,0.8); }")
+        self.stop_button.setProperty("red", True)
+        setCustomStyleSheet(self.stop_button, red, red)
 
     def _pictures_bar(self, kind, title: str, text: str) -> None:
         bar = kind(title, text, duration=8000, position=InfoBarPosition.TOP_RIGHT, parent=self)
@@ -1424,7 +1801,10 @@ class FarmbotWindow(FluentWindow):
                       on_base=lambda loot, ok: self.events.put(("base", (loot, ok, game.screen))),
                       on_resources=lambda loot: self.events.put(("resources", loot)),
                       on_attack=lambda record: self.events.put(("attack", record)),
-                      on_builder=lambda battle: self.events.put(("builder", battle)))
+                      on_builder=lambda battle: self.events.put(("builder", battle)),
+                      pause_event=self.pause_event,
+                      reopen_device=(lambda: restart_emulator(self.config.device))
+                      if self.config.device.mode in ("bluestacks", "ldplayer") else None)
             bot.run()
         except Exception as exc:  # shown in the window instead of a silent thread death
             log.error("Bot stopped: %s", exc)
@@ -1528,12 +1908,18 @@ class FarmbotWindow(FluentWindow):
                             self.gained[key] += getattr(data.gained, key)
                         self._update_stats()
                     self._show_today()
+                    self._show_history()
                 elif kind == "seen":
                     self._show_seen(data)
                 elif kind == "screen":
                     self._show_screen(data)
                 elif kind == "game":
                     self._show_game(*data)
+                elif kind == "update":
+                    self._show_update(data)
+                elif kind == "notify":
+                    self.notify_result.setText("✓ Sent" if data else "✗ Not sent: see the Activity log")
+                    self.notify_result.setStyleSheet(f"color: {GOOD if data else BAD};")
                 elif kind == "device":
                     ok, message = data
                     self.device_result.setText(message)
@@ -1546,6 +1932,8 @@ class FarmbotWindow(FluentWindow):
                         full = self.status_label.text().startswith("Stopped: storage full")
                         self._set_state("idle", self.status_label.text() if full else "Stopped. Press Start to go again.")
                     self.stop_button.setEnabled(False)
+                    self.pause_event.clear()
+                    self._show_pause_button()
                     self._changed(save=False)
         except queue.Empty:
             pass
@@ -1609,10 +1997,15 @@ class FarmbotWindow(FluentWindow):
 
         if not self.config.bot.history:
             self.stat_note["attacks"].setText("")
+            for label in self.gained_today.values():
+                label.setText("")
             return
         count, gained = history.totals_for(self.config.bot.history, date.today())
-        self.stat_note["attacks"].setText(f"Today: {count} · gained {_short(gained.gold + gained.elixir)}")
+        self.stat_note["attacks"].setText(f"Today: {count}")
         self.stat_note["attacks"].setToolTip(f"Every attack is logged to {self.config.bot.history}")
+        for key, label in self.gained_today.items():
+            label.setText(f"Today {_short(getattr(gained, key))}")
+        self.gained_note.setText(f"Today in total: {_short(gained.gold + gained.elixir + gained.dark)}")
 
     def _update_stats(self) -> None:
         self.stat_value["bases"].setText(f"{self.stats['bases']:,}")

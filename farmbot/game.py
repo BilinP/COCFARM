@@ -89,9 +89,11 @@ class T:
     NEXT = "buttons/next"
     END_BATTLE = "buttons/end_battle"  # directory: "End Battle", or "Surrender" once units are out
     SURRENDER_OK = "buttons/okay"
+    SPEED = "buttons/speed_1x"  # "1x" in the last minute of a home battle: tap for 4x
     RETURN_HOME = "buttons/return_home"  # directory: "Return Home", or "Claim Reward" after a star bonus
     EVENT_CHEST = "buttons/event_chest"  # chest room shown after some battles during events
     CONTINUE = "buttons/continue"  # under the chest's reward
+    PICK_REWARD = "buttons/pick_reward"  # "Pick a Reward!" banner over event reward cards
     CC_CARD = "cards/clan_castle"  # optional: lets the bot leave CC troops out
     DEAD_BASE = "deadbase"  # directory: full collectors, for dead-base search
     # Home village (optional)
@@ -110,9 +112,12 @@ class T:
     BB_RETURN_HOME = "builder/return_home"  # builder battle result
     BB_OKAY = "builder/okay"  # Star Bonus window after a builder battle
     BB_CHANGE_HEROES = "builder/change_heroes"  # the hero picker that opens from the hero card's swap button
+    BB_HERO_MACHINE = "builder/hero_machine"  # the Battle Machine's card art
+    BB_HERO_COPTER = "builder/hero_copter"  # the Battle Copter's card art
     BB_SPEED = "builder/speed_1x"  # "1x" during a builder battle: tap for 4x
     BB_COLLECT_GOLD = "builder/collect_gold"  # bubbles over full builder base collectors
     BB_COLLECT_ELIXIR = "builder/collect_elixir"  # (the elixir cart's tag looks the same)
+    BB_COLLECT_GEMS = "builder/collect_gems"  # the green gem over a full gem mine
     BB_CART_COLLECT = "builder/cart_collect"  # Collect in the Elixir Cart window
     BB_UPGRADE = "builder/upgrade"  # under a selected builder base building
     BB_UPGRADE_TITLE = "builder/upgrade_title"  # "Upgrade to level N?" window (price on a green button)
@@ -183,7 +188,10 @@ class Game:
     def wait(self, seconds: float) -> None:
         if self.stop_event.is_set():
             raise Stopped
-        self._sleep(seconds)
+        if self._sleep is time.sleep:
+            self.stop_event.wait(seconds)  # "Stop now" cuts the wait short
+        else:
+            self._sleep(seconds)
         if self.stop_event.is_set():
             raise Stopped
 

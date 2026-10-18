@@ -351,3 +351,19 @@ def open_window(install: Install, instance: Instance, cfg: DeviceConfig,
                 raise DeviceError(f"the BlueStacks window {instance.display_name!r} did not open "
                                   f"within {cfg.launch_timeout:.0f}s") from None
         sleep(3)
+
+
+def restart_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep) -> Device:
+    """Close the emulator and open it again (the watchdog's last resort when
+    the game or ADB stops answering). Returns the new connection."""
+    if cfg.mode == "ldplayer":
+        from farmbot import ldplayer
+
+        ldplayer.quit_instance(cfg)
+    elif cfg.mode == "bluestacks":
+        log.warning("Closing BlueStacks to start it again")
+        stop_player(sleep)
+    else:
+        raise DeviceError("can't restart a device given by its ADB address")
+    sleep(5)
+    return open_device(cfg, sleep=sleep)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 import cv2
@@ -17,10 +19,10 @@ log = logging.getLogger(__name__)
 # Buttons that dismiss interruptions, in the order they are tried.
 POPUP_BUTTONS = (T.TRY_AGAIN, T.RELOAD, T.RETURN_HOME, T.BB_RETURN_HOME, T.BB_OKAY, T.CONTINUE, T.OKAY, T.CLOSE)
 
-# The chest sits this far below the chest room's window picture, in the
-# picture's own heights. It opens after about four taps; tapping on once the
+# The chest sits this far below the chest room's window picture (the top
+# half of the window: a chest's glow covers the rest), in the picture's own heights. It opens after about four taps; tapping on once the
 # reward shows skips past its Continue button, so taps stop as soon as it appears.
-CHEST_BELOW_WINDOW = 1.2
+CHEST_BELOW_WINDOW = 3.0
 CHEST_MAX_TAPS = 6
 CHEST_MAX_REWARDS = 8
 
@@ -53,11 +55,82 @@ def open_event_chests(game: Game, limit: int = 3) -> int:
     return opened
 
 
+# "Pick a Reward!": event cards offered in battle (at 30%, 50% and 100%
+# damage). The rightmost card is always taken; cards are found by their
+# frames (light grey, or gold for a special one), which run their full
+# height (the rewards themselves vary).
+REWARD_CARDS = (150, 480)  # band below the banner centre the frames span, bot px
+REWARD_FRAME_LIGHT = 190  # a frame pixel's lowest channel
+REWARD_FRAME_SHARE = 0.9  # of the band a frame column is light for
+REWARD_RIGHTMOST = (315, 315)  # fallback: rightmost card's centre from the banner's
+
+
+def reward_cards(screen: np.ndarray, banner_x: int, banner_y: int) -> list[tuple[int, int]]:
+    """Centres of the reward cards (left to right) under the banner."""
+    top, bottom = banner_y + REWARD_CARDS[0], min(banner_y + REWARD_CARDS[1], screen.shape[0])
+    if bottom - top < 50:
+        return []
+    band = screen[top:bottom]
+    hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+    # Frames are light grey, or gold on a special reward.
+    gold = (hsv[:, :, 0] >= 15) & (hsv[:, :, 0] <= 30) & (hsv[:, :, 1] > 100) & (hsv[:, :, 2] > 220)
+    light = ((band.min(axis=2) > REWARD_FRAME_LIGHT) | gold).mean(axis=0) >= REWARD_FRAME_SHARE
+    edges = []
+    xs = np.flatnonzero(light)
+    for run in np.split(xs, np.flatnonzero(np.diff(xs) > 1) + 1) if xs.size else []:
+        edges.append(int(run.mean()))
+    # Frames come in pairs (a card's left and right side), cards 150+ px wide.
+    cards = []
+    i = 0
+    while i + 1 < len(edges):
+        if edges[i + 1] - edges[i] >= 150:
+            cards.append(((edges[i] + edges[i + 1]) // 2, (top + bottom) // 2))
+            i += 2
+        else:
+            i += 1
+    return cards
+
+
+REWARD_SCREENS = Path("screens/rewards")  # the last few reward screens, to check the pick
+REWARD_SCREENS_KEPT = 10
+
+
+def _keep_reward_screen(screen: np.ndarray) -> None:
+    try:
+        REWARD_SCREENS.mkdir(parents=True, exist_ok=True)
+        old = sorted(REWARD_SCREENS.glob("*.png"))
+        for path in old[:max(0, len(old) - REWARD_SCREENS_KEPT + 1)]:
+            path.unlink()
+        cv2.imwrite(str(REWARD_SCREENS / f"{datetime.now():%Y%m%d-%H%M%S}.png"), screen)
+    except OSError:
+        pass
+
+
+def pick_reward(game: Game) -> bool:
+    """On a "Pick a Reward!" screen, take the rightmost reward. True if it did."""
+    if not game.has(T.PICK_REWARD):
+        return False
+    banner = game.find(T.PICK_REWARD)
+    if banner is None:
+        return False
+    cards = reward_cards(game.screen, banner.x, banner.y)
+    x, y = cards[-1] if cards else (banner.x + REWARD_RIGHTMOST[0], banner.y + REWARD_RIGHTMOST[1])
+    log.info("Picking the rightmost reward (of %s) at x=%d", len(cards) or "?", x)
+    _keep_reward_screen(game.screen)
+    game.tap(x, y, jitter=10)
+    game.wait(1.5)
+    game.refresh()
+    return True
+
+
 def clear_popups(game: Game, rounds: int = 5) -> int:
     """Press any known dismiss/reconnect button until none is visible."""
     pressed = 0
     for _ in range(rounds):
         game.refresh()
+        if pick_reward(game):
+            pressed += 1
+            continue
         if game.has(T.EVENT_CHEST) and game.find(T.EVENT_CHEST):
             pressed += open_event_chests(game)
             continue

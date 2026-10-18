@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable
 
-from farmbot import history
+from farmbot import history, screens
+from farmbot.notify import Notifier
 from farmbot.config import Config
 from farmbot.game import Game, Stopped, T
 from farmbot.history import AttackRecord
@@ -17,6 +19,7 @@ from farmbot.tasks.search import Loot
 log = logging.getLogger(__name__)
 
 MAX_CONSECUTIVE_ERRORS = 3
+MAX_GAME_RESTARTS = 1  # game restarts without a good round before the emulator is restarted
 IDLE_WAIT = 60.0  # seconds between village rounds when not attacking
 STARTUP_TIMEOUT = 90  # seconds to wait for the home village after starting the game
 
@@ -32,6 +35,9 @@ class Bot:
         on_resources: Callable[[Loot], None] | None = None,
         on_attack: Callable[[AttackRecord], None] | None = None,
         on_builder: Callable[[dict], None] | None = None,
+        pause_event: threading.Event | None = None,
+        reopen_device: Callable[[], object] | None = None,
+        notifier: Notifier | None = None,
     ):
         self.game = game
         self.config = config
@@ -48,12 +54,20 @@ class Bot:
         self._on_resources = on_resources
         self._on_attack = on_attack
         self._on_builder = on_builder
+        self.pause_event = pause_event or threading.Event()  # set: wait at the next safe point
         self.resources: Loot | None = None  # last reading of your resource bar
         self.gained = Loot(0, 0, 0)
         self._pending: AttackRecord | None = None  # attack waiting for its "after" reading
         self.storage_full = False  # set when the storages in bot.stop_when_full are all full
         self._since_cart = 0  # builder battles since the elixir cart was last emptied
         self._cart_due: int | None = None  # battles between cart visits, picked at random
+        # Watchdog: restarting the game is tried first; if the errors carry on
+        # (or ADB itself fails), the emulator is closed and opened again.
+        self._reopen_device = reopen_device
+        self._game_restarts = 0  # game restarts since the last good round
+        self.notifier = notifier or Notifier(config.notify)
+        self._since_break = 0  # attacks since the last break
+        self._break_due: int | None = None  # attacks between breaks, picked at random
 
     def status(self, text: str) -> None:
         log.debug("Status: %s", text)
@@ -65,12 +79,32 @@ class Bot:
         if self._on_base:
             self._on_base(loot, accepted)
 
+    def checkpoint(self) -> None:
+        """A safe point between actions (never mid-battle): while paused,
+        wait here. Stop still works, since ``game.wait`` raises it."""
+        if not self.pause_event.is_set():
+            return
+        log.info("Paused")
+        self.status("Paused by you: press Resume to carry on")
+        while self.pause_event.is_set():
+            self.game.wait(0.5)
+        log.info("Resumed")
+        self.status("Resuming")
+
+    def _rest(self, seconds: float) -> None:
+        """Wait between rounds, cut short when Pause is pressed."""
+        end = self.game.clock() + seconds
+        while not self.pause_event.is_set() and self.game.clock() < end:
+            self.game.wait(min(1.0, end - self.game.clock()))
+
     # -- schedule -------------------------------------------------------
     def pause_reason(self) -> str | None:
         """Why the bot should not play right now, or ``None``."""
         sched = self.config.schedule
         now = self._now()
         if self._today != now.date():
+            if self._today is not None:
+                self._daily_summary(self._today)
             self._today, self.attacks_today = now.date(), 0
         if not sched.enabled:
             return None
@@ -88,15 +122,68 @@ class Bot:
             log.info("Starting %s", package)
             device.start_app(package)
             self.game.wait(5)
-            # Loading takes 10-60 s depending on the PC; wait for the home
-            # village rather than a fixed time (popups are cleared next).
-            if not self.game.wait_for(T.BATTLE, timeout=STARTUP_TIMEOUT, interval=2):
-                log.info("Home village not seen after %ds; carrying on", STARTUP_TIMEOUT)
+            # Loading takes 10-60 s depending on the PC: wait until the game
+            # shows something known (a village, wherever it was left, or a
+            # chest room or popup, which the round deals with next).
+            deadline = self.game.clock() + STARTUP_TIMEOUT
+            while (screen := screens.identify(self.game)) is screens.Screen.UNKNOWN:
+                if self.game.clock() >= deadline:
+                    log.info("Nothing known on screen after %ds; carrying on", STARTUP_TIMEOUT)
+                    return
+                self.game.wait(2)
+            log.info("Game loaded: %s", screen.value)
+
+    def _daily_summary(self, day: date) -> None:
+        if not self.config.bot.history:
+            return
+        count, gained = history.totals_for(self.config.bot.history, day)
+        self.notifier.send(f"{day:%a %d %b}: {count} attack(s), gained gold {gained.gold:,}, "
+                           f"elixir {gained.elixir:,}, dark {gained.dark:,}.", "daily_summary")
+
+    def take_break(self) -> None:
+        """After a random number of attacks, rest a random number of minutes
+        (schedule.breaks), as a person would."""
+        sched = self.config.schedule
+        if not sched.breaks:
+            return
+        rng = self.game.rng
+        if self._break_due is None:
+            self._break_due = rng.randint(sched.break_every_min, sched.break_every_max)
+        if self._since_break < self._break_due:
+            return
+        minutes = rng.randint(sched.break_minutes_min, sched.break_minutes_max)
+        log.info("Taking a %d-minute break after %d attacks", minutes, self._since_break)
+        self.status(f"Taking a break: {minutes} min")
+        self._since_break, self._break_due = 0, None
+        self._rest(minutes * 60)
 
     def restart_game(self) -> None:
         log.warning("Restarting the game after repeated errors")
         self.game.device.stop_app(self.config.device.package)
         self.game.wait(3)
+        self.ensure_game_running()
+
+    def recover(self) -> None:
+        """After repeated failed rounds: restart the game, or, if that was
+        already tried (or the device doesn't answer), the emulator."""
+        if self._game_restarts < MAX_GAME_RESTARTS:
+            self._game_restarts += 1
+            try:
+                self.restart_game()
+                return
+            except Stopped:
+                raise
+            except Exception as exc:  # ADB gone, say: the emulator needs restarting
+                log.error("Couldn't restart the game: %s", exc)
+        if self._reopen_device is None:
+            log.error("The game keeps failing and the emulator can't be restarted from here")
+            return
+        log.warning("Restarting the emulator")
+        self.status("Restarting the emulator")
+        self.notifier.send("the game kept failing, so the emulator is being restarted.", "on_emulator_restart")
+        self.game.device = self._reopen_device()
+        self.game.screen = None
+        self._game_restarts = 0
         self.ensure_game_running()
 
     def read_resources(self) -> Loot | None:
@@ -137,11 +224,13 @@ class Bot:
         if self._pending:
             # Before collecting or training, which would blur the gain.
             self._settle_attack(self.read_resources())
+        self.checkpoint()
         if cfg.bot.collect_resources:
             kinds = tuple(k for k in ("gold", "elixir", "dark") if getattr(cfg.bot, f"collect_{k}"))
             village.collect_resources(self.game, kinds)
         if cfg.bot.collect_loot_cart:
             village.collect_loot_cart(self.game)
+        self.checkpoint()
         if cfg.walls.enabled:
             self.status("Upgrading walls")
             village.upgrade_walls(self.game, cfg.walls, self.read_resources)
@@ -150,6 +239,7 @@ class Bot:
             if self._in_clan is False:
                 log.info("Not in a clan: skipping troop requests and donations (join one in the game)")
         clan_ok = self._in_clan is not False
+        self.checkpoint()
         if cfg.clan.donate and clan_ok:
             self.status("Donating")
             clan.donate(self.game, cfg.clan)
@@ -164,12 +254,12 @@ class Bot:
 
     def builder_cycle(self) -> bool:
         """One builder base battle (sailing over first if needed)."""
-        village.leave_battle(self.game)
-        village.clear_popups(self.game)
-        self.status("Sailing to the builder base")
-        builder.go_to_builder_base(self.game)
+        if screens.settle(self.game) is not screens.Screen.BUILDER:
+            self.status("Sailing to the builder base")
+            builder.go_to_builder_base(self.game)
         village.clear_popups(self.game)
         bcfg = self.config.builder
+        self.checkpoint()
         if bcfg.collect_resources:
             builder.collect_resources(self.game)
         walls = 0
@@ -184,6 +274,7 @@ class Bot:
                 cart = builder.collect_elixir_cart(self.game)
                 self._since_cart = 0
                 self._cart_due = self.game.rng.randint(bcfg.cart_every_min, bcfg.cart_every_max)
+        self.checkpoint()
         self.game.zoom_out()
         before = self.read_resources()
         started = self.game.clock()
@@ -194,6 +285,7 @@ class Bot:
         self._since_cart += 1
         self.attacks += 1
         self.attacks_today += 1
+        self._since_break += 1
         log.info("Builder attack #%d done (%d stage(s))", self.attacks, result.stages)
         village.clear_popups(self.game)  # the Star Bonus window
         self.game.zoom_out()
@@ -218,14 +310,19 @@ class Bot:
         self.ensure_game_running()
         if cfg.bot.mode == "builder":
             return self.builder_cycle()
-        if builder.in_builder_base(self.game):
-            builder.go_to_home_village(self.game)
+        where = screens.settle(self.game)  # deal with chests, rewards, results, popups...
+        if where is screens.Screen.BUILDER:
+            # The game can open in the builder base (it opens where it was left).
+            self.status("Sailing to the home village")
+            if not builder.go_to_home_village(self.game):
+                raise builder.BuilderError("couldn't sail back to the home village")
         self.maintain_village()
         before = self.read_resources()
         wanted = cfg.bot.stop_when_full
         if wanted and set(wanted) <= search.full_storages(self.game, cfg.regions):
             self.storage_full = True
             log.info("Storage full (%s): stopping", ", ".join(wanted))
+            self.notifier.send(f"storage full ({', '.join(wanted)}), so the bot stopped.", "on_storage_full")
             self.status(f"Stopped: storage full ({', '.join(wanted)})")
             return False
         if cfg.search.maintain_only:
@@ -235,6 +332,7 @@ class Bot:
             if gold is not None and gold < cfg.search.min_own_gold:
                 self.status(f"Saving up: {gold:,} gold is below {cfg.search.min_own_gold:,}")
                 return False
+        self.checkpoint()
         self.status("Searching for a base")
         search.start_search(self.game)
         target = search.search(self.game, cfg.search, cfg.regions, self._base_seen)
@@ -243,12 +341,15 @@ class Bot:
         self._pending.taken = attack.attack(self.game, cfg, target)
         self.attacks += 1
         self.attacks_today += 1
+        self._since_break += 1
         log.info("Attack #%d done", self.attacks)
         # Read the gain as soon as we're home, so the last attack of a run
         # is logged with it too.
         if self.game.wait_for(T.BATTLE, timeout=20, interval=1):
             village.clear_popups(self.game)
-            self._settle_attack(self.read_resources())
+            after = self.read_resources()
+            if after is not None:  # otherwise the next round's reading settles it
+                self._settle_attack(after)
         self.status(f"Attack {self.attacks} done")
         return True
 
@@ -271,15 +372,17 @@ class Bot:
         limit = self.config.bot.max_attacks
         try:
             while not limit or self.attacks < limit:
+                self.checkpoint()
                 reason = self.pause_reason()
                 if reason:
                     self.status(f"Paused: {reason}")
-                    self.game.wait(IDLE_WAIT)
+                    self._rest(IDLE_WAIT)
                     continue
                 attacked = False
                 try:
                     attacked = self.cycle()
                     self.errors = 0
+                    self._game_restarts = 0
                     if self.storage_full:
                         break
                 except Stopped:
@@ -289,12 +392,21 @@ class Bot:
                     log.error("Cycle failed (%d in a row): %s", self.errors, exc)
                     self._save_error_screen()
                     if self.errors >= MAX_CONSECUTIVE_ERRORS:
-                        self.restart_game()
                         self.errors = 0
+                        try:
+                            self.recover()
+                        except Stopped:
+                            raise
+                        except Exception as exc:  # try again after the next failures
+                            log.error("Recovery failed: %s", exc)
+                self.take_break()
                 self.status("Waiting")
-                self.game.wait(self.config.bot.loop_delay if attacked else max(self.config.bot.loop_delay, IDLE_WAIT))
+                self._rest(self.config.bot.loop_delay if attacked else max(self.config.bot.loop_delay, IDLE_WAIT))
         except Stopped:
             log.info("Stopped")
+        except Exception as exc:
+            self.notifier.send(f"the bot stopped with an error: {exc}", "on_stopped")
+            raise
         self._settle_attack(None)
         if self.config.bot.mode == "builder" and self.config.builder.return_home_after:
             try:
@@ -304,3 +416,7 @@ class Bot:
         if not self.storage_full:
             self.status("Stopped")
         log.info("Finished after %d attack(s)", self.attacks)
+        if not self.storage_full:
+            g = self.gained
+            self.notifier.send(f"stopped after {self.attacks} attack(s); gained gold {g.gold:,}, "
+                               f"elixir {g.elixir:,}, dark {g.dark:,}.", "on_stopped")

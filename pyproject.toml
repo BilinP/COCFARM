@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "farmbot"
-version = "0.1.0"
+version = "0.2.0"
 description = "Clean-room Clash of Clans farming bot for Android emulators (ADB + OpenCV)"
 requires-python = ">=3.11"
 dependencies = [
@@ -18,6 +18,9 @@ dev = ["pytest>=7"]
 
 [project.scripts]
 farmbot = "farmbot.cli:main"
+
+[project.gui-scripts]
+cocfarm = "farmbot.cli:gui_main"  # the GUI without a console window
 
 [tool.setuptools.packages.find]
 include = ["farmbot*"]

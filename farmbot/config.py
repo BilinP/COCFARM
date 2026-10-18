@@ -110,6 +110,12 @@ class AttackConfig:
     use_cc: bool = True  # deploy the Clan Castle card (needs templates/cards/clan_castle.png to skip it)
     hero_abilities: bool = True
     hero_ability_delay: float = 10.0
+    # Fire each hero's ability once its health drops to this share (0.5 =
+    # half), instead of after hero_ability_delay; 0 uses the timer. Heroes
+    # still unhurt after ability_max_wait seconds fire anyway.
+    ability_health: float = 0.0
+    ability_max_wait: float = 45.0
+    speed_up: bool = True  # press the 1x button (last minute of a battle) so it plays at 4x
     # End the battle once the available loot has not dropped for this long.
     end_when_no_loot: bool = True
     no_loot_seconds: float = 15.0
@@ -118,7 +124,10 @@ class AttackConfig:
     taps_per_batch: int = 6  # deploy taps between checks of the troop card
     max_batches_per_card: int = 12
     battle_timeout: float = 180.0
-    # Spells are cast this far from the base centre towards the edge (0-1).
+    # "together": every spell in one burst on one spot (the base centre);
+    # "spread": spread over the base, spell_reach of the way from its centre
+    # towards the edge (0-1).
+    spell_placement: str = "together"
     spell_reach: float = 0.45
     # Last-resort deploy lines per side, [x1, y1, x2, y2], used when neither
     # the red line nor the building area can be found. They were measured on
@@ -256,6 +265,24 @@ class ScheduleConfig:
     enabled: bool = False
     active_hours: list[int] = field(default_factory=lambda: list(range(24)))  # 0-23, local time
     daily_attack_limit: int = 0  # 0 = no limit
+    # Breaks, to play more like a person: after a random number of attacks
+    # (between the two "every" numbers), rest a random number of minutes.
+    breaks: bool = False
+    break_every_min: int = 15
+    break_every_max: int = 25
+    break_minutes_min: int = 5
+    break_minutes_max: int = 20
+
+
+@dataclass
+class NotifyConfig:
+    """Messages to your phone through a Discord webhook (see ``farmbot/notify.py``)."""
+
+    discord_webhook: str = ""
+    on_storage_full: bool = True
+    on_stopped: bool = True  # the bot stopped: by an error, or after a run
+    on_emulator_restart: bool = True
+    daily_summary: bool = True  # yesterday's attacks and loot, sent after midnight
 
 
 @dataclass
@@ -277,6 +304,8 @@ class BotConfig:
     loop_delay: float = 3.0
     history: str = "attacks.csv"  # one line per attack; "" turns it off
     error_screens: str = "screens/errors"  # screenshot saved when a round fails; "" turns it off
+    # Look for a newer COCFARM on GitHub when the window opens ("" = never).
+    update_repo: str = "BilinP/COCFARM"
 
 
 @dataclass
@@ -294,6 +323,8 @@ class WallsConfig:
 WALL_RESOURCES = ("gold", "elixir", "both")
 MODES = ("home", "builder")
 BUILDER_CORNERS = ("auto", "left", "top", "right")
+BUILDER_HEROES = ("any", "machine", "copter")
+SPELL_PLACEMENTS = ("together", "spread")
 
 
 @dataclass
@@ -304,6 +335,7 @@ class BuilderConfig:
     use_hero: bool = True
     # Swap to the other builder hero before a base when the current one's
     # health is below this share (it carries its damage into the second base).
+    first_hero: str = "any"  # hero for the first base: "any" (keep the one set), "machine" or "copter"
     switch_hero: bool = True
     switch_below: float = 0.5
     troop_delay: float = 3.0  # seconds between the hero landing and the troops
@@ -314,7 +346,7 @@ class BuilderConfig:
     ability_delay: float = 5.0  # seconds between batches
     stage_delay: float = 2.0  # wait for the second base to settle before deploying
     speed_up: bool = True  # press the 1x button so the battle plays at 4x
-    collect_resources: bool = True  # empty the builder base gold mines and elixir collectors
+    collect_resources: bool = True  # empty the builder base gold mines, elixir collectors and gem mine
     # Empty the elixir cart (defense rewards) every N battles, N picked at
     # random between these two each time.
     collect_cart: bool = True
@@ -349,6 +381,7 @@ class Config:
     redline: RedLineConfig = field(default_factory=RedLineConfig)
     clan: ClanConfig = field(default_factory=ClanConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
+    notify: NotifyConfig = field(default_factory=NotifyConfig)
     bot: BotConfig = field(default_factory=BotConfig)
     walls: WallsConfig = field(default_factory=WallsConfig)
     builder: BuilderConfig = field(default_factory=BuilderConfig)
@@ -366,10 +399,18 @@ class Config:
             raise ValueError(f"bot.stop_when_full: unknown {bad_kinds}; use {RESOURCES}")
         if self.bot.mode not in MODES:
             raise ValueError(f"bot.mode must be one of {MODES}")
+        if self.schedule.break_every_min > self.schedule.break_every_max:
+            raise ValueError("schedule.break_every_min can't be more than schedule.break_every_max")
+        if self.schedule.break_minutes_min > self.schedule.break_minutes_max:
+            raise ValueError("schedule.break_minutes_min can't be more than schedule.break_minutes_max")
         if self.builder.cart_every_min > self.builder.cart_every_max:
             raise ValueError("builder.cart_every_min can't be more than builder.cart_every_max")
         if self.builder.walls_use not in WALL_RESOURCES:
             raise ValueError(f"builder.walls_use must be one of {WALL_RESOURCES}")
+        if self.attack.spell_placement not in SPELL_PLACEMENTS:
+            raise ValueError(f"attack.spell_placement must be one of {SPELL_PLACEMENTS}")
+        if self.builder.first_hero not in BUILDER_HEROES:
+            raise ValueError(f"builder.first_hero must be one of {BUILDER_HEROES}")
         if self.builder.corner not in BUILDER_CORNERS:
             raise ValueError(f"builder.corner must be one of {BUILDER_CORNERS}")
         if self.walls.use not in WALL_RESOURCES:

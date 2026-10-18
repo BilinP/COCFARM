@@ -47,8 +47,10 @@ PICTURES: list[Picture] = [
             QUICK_EXIT),
     Picture(T.RETURN_HOME, "Return Home", "Battle result screen: the words \"Return Home\" "
             "(or \"Claim Reward\" when a star bonus is due).", QUICK_EXIT, folder=True),
-    Picture(T.EVENT_CHEST, "Event chest room", "After some battles during events: the arched window "
+    Picture(T.EVENT_CHEST, "Event chest room", "After some battles during events: the top half of the arched window "
             "above the chest.", "Opening event chests"),
+    Picture(T.PICK_REWARD, "Pick a Reward", "During event battles (at 30%, 50% and 100% damage): the words "
+            "\"Pick a Reward!\" on the red banner above the reward cards.", "Opening event chests"),
     Picture(T.CONTINUE, "Continue", "Under an event chest's reward: the word \"Continue\".", "Opening event chests"),
     # Optional extras
     Picture(T.CC_CARD, "Clan Castle card", "Troop bar while scouting: the castle icon on the Clan Castle card.",
@@ -76,11 +78,19 @@ PICTURES: list[Picture] = [
     Picture(T.BB_OKAY, "Okay (Star Bonus)", "Builder base Star Bonus window: the word \"Okay\".", "Builder base"),
     Picture(T.BB_CHANGE_HEROES, "Change Heroes", "Builder battle, after the hero card's swap button: the words "
             "\"Change Heroes\".", "Builder base"),
+    Picture(T.SPEED, "1x speed (home)", "Home battle, last minute, right side: the green \"1x\" button.",
+            "Battle speed"),
+    Picture(T.BB_HERO_MACHINE, "Battle Machine card", "Builder battle, bottom left: the Battle Machine's hero card "
+            "(below its health bar).", "Builder base"),
+    Picture(T.BB_HERO_COPTER, "Battle Copter card", "Builder battle, bottom left: the Battle Copter's hero card "
+            "(below its health bar).", "Builder base"),
     Picture(T.BB_SPEED, "1x speed", "Builder battle, right side: the green \"1x\" button.", "Builder base"),
     Picture(T.BB_COLLECT_GOLD, "Builder gold bubble", "Builder base: the gold bar bubble over a full gold mine.",
             "Builder base"),
     Picture(T.BB_COLLECT_ELIXIR, "Builder elixir bubble", "Builder base: the purple drop bubble over a full "
             "elixir collector (the elixir cart shows the same).", "Builder base"),
+    Picture(T.BB_COLLECT_GEMS, "Builder gem bubble", "Builder base: the green gem bubble over a full gem mine.",
+            "Builder base"),
     Picture(T.BB_CART_COLLECT, "Elixir Cart Collect", "Elixir Cart window: the word \"Collect\".", "Builder base"),
     Picture(T.BB_UPGRADE, "Upgrade (builder)", "Builder base, a selected wall: the word \"Upgrade\".",
             "Builder base walls"),

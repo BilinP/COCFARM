@@ -42,9 +42,13 @@ FIELDS = [
     Field("attack.waves", "int", 1, 3),
     Field("attack.troop_speed", "int", 1, 9),
     Field("attack.wave_speed", "int", 1, 9),
+    Field("attack.spell_placement", "text"),
     Field("attack.use_cc", "bool"),
     Field("attack.hero_abilities", "bool"),
     Field("attack.hero_ability_delay", "float", 0, 120),
+    Field("attack.ability_health", "percent", 0, 95),
+    Field("attack.ability_max_wait", "float", 5, 180),
+    Field("attack.speed_up", "bool"),
     Field("attack.end_when_no_loot", "bool"),
     Field("attack.no_loot_seconds", "float", 3, 180),
     Field("attack.end_at_loot_share", "percent", 0, 100),
@@ -67,6 +71,7 @@ FIELDS = [
     Field("builder.ability_batch", "int", 1, 10),
     Field("builder.ability_delay", "float", 0, 60),
     Field("builder.stage_delay", "float", 0, 30),
+    Field("builder.first_hero", "text"),
     Field("builder.switch_hero", "bool"),
     Field("builder.switch_below", "percent", 1, 100),
     Field("builder.return_home_after", "bool"),
@@ -97,6 +102,16 @@ FIELDS = [
     Field("schedule.enabled", "bool"),
     Field("schedule.active_hours", "hours"),
     Field("schedule.daily_attack_limit", "int", 0, 1000),
+    Field("schedule.breaks", "bool"),
+    Field("schedule.break_every_min", "int", 1, 500),
+    Field("schedule.break_every_max", "int", 1, 500),
+    Field("schedule.break_minutes_min", "int", 1, 600),
+    Field("schedule.break_minutes_max", "int", 1, 600),
+    Field("notify.discord_webhook", "text"),
+    Field("notify.on_storage_full", "bool"),
+    Field("notify.on_stopped", "bool"),
+    Field("notify.on_emulator_restart", "bool"),
+    Field("notify.daily_summary", "bool"),
     Field("bot.max_attacks", "int", 0, 100000),
     # Device
     Field("device.mode", "text"),
@@ -205,6 +220,10 @@ def validate(form: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
             values[path] = _parse(field, raw)
         except ValueError as exc:
             errors[path] = str(exc)
+    for low, high in (("schedule.break_every_min", "schedule.break_every_max"),
+                      ("schedule.break_minutes_min", "schedule.break_minutes_max")):
+        if values.get(low, 0) > values.get(high, 10**9):
+            errors[high] = "must be at least the 'from' number"
     if values.get("builder.cart_every_min", 0) > values.get("builder.cart_every_max", 10**9):
         errors["builder.cart_every_max"] = "must be at least the 'from' number"
     if values.get("schedule.enabled") and not values.get("schedule.active_hours", [1]):

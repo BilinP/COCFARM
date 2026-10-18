@@ -12,6 +12,7 @@ dist/
 # Game screenshots (show other players): kept locally, never published
 tests/fixtures/*.webp
 docs/*.png
+logs/
 
 # Not published: tests, docs, third-party samples
 tests/

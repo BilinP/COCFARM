@@ -160,9 +160,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     device = _device(args, cfg)
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
+    reopen = (lambda: bluestacks.restart_emulator(cfg.device)) if cfg.device.mode in ("bluestacks", "ldplayer") else None
     Bot(Game(device, _vision(cfg), stop_event=stop, ui_scale=cfg.device.ui_scale,
              window_scale=cfg.device.window_scale,
-             picture_scales=cfg.device.picture_scales), cfg).run()
+             picture_scales=cfg.device.picture_scales), cfg, reopen_device=reopen).run()
     return 0
 
 
@@ -224,6 +225,30 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+LOG_FILE = "logs/farmbot.log"
+LOG_DAYS = 14
+
+
+def log_to_file(path: str) -> None:
+    """Keep the activity log on disk too: a new file each midnight, the last
+    ``LOG_DAYS`` days kept, so a problem can be looked at after the fact."""
+    from logging.handlers import TimedRotatingFileHandler
+
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        handler = TimedRotatingFileHandler(path, when="midnight", backupCount=LOG_DAYS, encoding="utf-8")
+    except OSError as exc:
+        logging.getLogger(__name__).warning("Not logging to %s: %s", path, exc)
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(handler)
+
+
+def gui_main() -> int:
+    """``cocfarm``: open the GUI (a windowed program, so no console opens)."""
+    return main(["gui", *sys.argv[1:]])
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     # Windows consoles default to a code page without characters like "→".
@@ -235,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(message)s",
         datefmt="%H:%M:%S",
     )
+    if args.func in (cmd_run, cmd_gui):
+        log_to_file(LOG_FILE)
     try:
         return args.func(args)
     except (DeviceError, FileNotFoundError, ValueError) as exc:

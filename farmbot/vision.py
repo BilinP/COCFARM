@@ -117,16 +117,25 @@ def _resized(image: np.ndarray, scale: float) -> np.ndarray:
     return cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
 
 
+ADAPTIVE_NEAR = 0.15  # a picture this close to matching at the window size gets the fine size search
+ADAPTIVE_REST = 20  # misses before a fine size search that found nothing is tried again
+
+
+def _score(screen: np.ndarray, template: np.ndarray, region: Rect | None = None) -> float:
+    """Best match score of ``template`` anywhere in ``screen`` (or ``region``)."""
+    area, _, _ = _crop(screen, region)
+    if template.shape[0] > area.shape[0] or template.shape[1] > area.shape[1] or min(template.shape[:2]) < 4:
+        return 0.0
+    return float(cv2.minMaxLoc(cv2.matchTemplate(area, template, cv2.TM_CCOEFF_NORMED))[1])
+
+
 def best_scale(screen: np.ndarray, template: np.ndarray, sizes: list[float], region: Rect | None = None) -> tuple[float, float]:
     """``(scale, score)`` of the template size near one of ``sizes`` that
     matches ``screen`` best."""
     area, _, _ = _crop(screen, region)
 
     def score(scale: float) -> float:
-        t = _resized(template, scale)
-        if t.shape[0] > area.shape[0] or t.shape[1] > area.shape[1] or min(t.shape[:2]) < 4:
-            return 0.0
-        return float(cv2.minMaxLoc(cv2.matchTemplate(area, t, cv2.TM_CCOEFF_NORMED))[1])
+        return _score(area, _resized(template, scale))
 
     candidates = sorted({round(size + 0.01 * i, 2) for size in sizes for i in range(-3, 4)})
     best = max(candidates, key=score)
@@ -144,6 +153,7 @@ class Vision:
         self.window_scale = 1.0
         self.scales: dict[str, float] = {}
         self.fixed_scales: set[str] = set()  # set in the config: never second-guessed
+        self._rest: dict[str, int] = {}  # template name -> misses left before its next fine size search
 
     def font(self, name: str) -> Font:
         if name not in self._fonts:
@@ -171,13 +181,27 @@ class Vision:
                 found = match_template(screen, image, threshold, region, tname)
                 if found:
                     self.scales[tname] = 1.0
-            if not found and self.adaptive and tname not in self.scales and self.window_scale != 1.0:
+            if not found and self.adaptive and tname not in self.scales and self.window_scale != 1.0 \
+                    and self._ready(tname) \
+                    and _score(screen, _resized(image, self.window_scale), region) >= threshold - ADAPTIVE_NEAR:
+                # Most misses are buttons that simply aren't on screen: one
+                # look at the window size rules them out before the fine search.
                 scale, score = best_scale(screen, image, [1.0, self.window_scale], region)
                 if score >= threshold:
                     self.scales[tname] = scale
                     found = match_template(screen, _resized(image, scale), threshold, region, tname)
+                else:
+                    self._rest[tname] = ADAPTIVE_REST
             matches.extend(found)
         return sorted(matches, key=lambda m: -m.score)
+
+    def _ready(self, tname: str) -> bool:
+        """Whether a fine size search for ``tname`` may run now (after one
+        found nothing, it rests for a number of misses)."""
+        left = self._rest.get(tname, 0)
+        if left:
+            self._rest[tname] = left - 1
+        return not left
 
     def find(
         self,

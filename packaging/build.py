@@ -26,7 +26,7 @@ UNUSED_QT = [f"PySide6.{m}" for m in (
     "QtWebEngineCore", "QtWebEngineWidgets", "QtWebEngineQuick", "QtWebChannel", "QtWebSockets",
     "QtMultimedia", "QtMultimediaWidgets", "QtSpatialAudio", "QtQuick", "QtQuickWidgets", "QtQuick3D",
     "QtQml", "QtQuickControls2", "QtPositioning", "QtLocation", "QtPdf", "QtPdfWidgets", "Qt3DCore",
-    "Qt3DRender", "QtCharts", "QtDataVisualization", "QtGraphs", "QtBluetooth", "QtNfc", "QtSensors",
+    "Qt3DRender", "QtDataVisualization", "QtGraphs", "QtBluetooth", "QtNfc", "QtSensors",
     "QtSerialPort", "QtSql", "QtTest", "QtDesigner", "QtHelp", "QtUiTools", "QtTextToSpeech",
     "QtRemoteObjects", "QtScxml", "QtStateMachine", "QtHttpServer", "QtNetworkAuth", "QtOpenGLWidgets",
 )] + ["qfluentwidgets.multimedia", "PIL", "tkinter"]

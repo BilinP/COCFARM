@@ -90,6 +90,21 @@ def _frame_share(hsv: np.ndarray, rect: Rect, cfg: BarConfig) -> float:
     return best
 
 
+SLOT_WHITE = 0.002  # share of white (a level number) below which a card's bottom has none
+
+
+def is_empty_slot(screen: np.ndarray, rect: Rect) -> bool:
+    """An unused slot of the bar (a dashed outline over the battlefield),
+    not a card: every card has a white level number on a dark badge along
+    its bottom; an empty slot shows only the battlefield there. (Only for
+    cards that aren't greyed out yet: the bar is read before deploying.)"""
+    gray = cv2.cvtColor(screen[rect.y + int(rect.h * 0.7):rect.y + rect.h - 2, rect.x + 6:rect.x + rect.w - 6],
+                        cv2.COLOR_BGR2GRAY)
+    if gray.size == 0:
+        return False
+    return float((gray > 220).mean()) < SLOT_WHITE
+
+
 def find_cards(screen: np.ndarray, cfg: BarConfig) -> list[Card]:
     h, w = screen.shape[:2]
     band = Rect.from_list(cfg.band).resolve(w, h)
@@ -112,7 +127,7 @@ def find_cards(screen: np.ndarray, cfg: BarConfig) -> list[Card]:
             i += 1
             continue
         rect = Rect(band.x + left, band.y, right - left, band.h)
-        if _frame_share(hsv, rect, cfg) < cfg.min_frame_share:
+        if _frame_share(hsv, rect, cfg) < cfg.min_frame_share or is_empty_slot(screen, rect):
             i += 1  # not a card: the real one may start at the next edge
             continue
         cards.append(Card(rect.x, rect.x + rect.w, rect.y, rect.y + rect.h, _classify(hsv, rect, cfg), _saturation(hsv, rect)))
@@ -136,6 +151,22 @@ def _health_bar_share(screen: np.ndarray, card: Card) -> float:
     hsv = cv2.cvtColor(screen[max(card.top - 30, 0):card.top + 25, card.left + 8:card.right - 8], cv2.COLOR_BGR2HSV)
     green = (hsv[:, :, 0] >= 45) & (hsv[:, :, 0] <= 85) & (hsv[:, :, 1] > 150) & (hsv[:, :, 2] > 150)
     return float(green.mean()) if green.size else 0.0
+
+
+def hero_health(screen: np.ndarray, card: Card) -> float | None:
+    """A placed hero's health (0-1) from the length of the green bar on its
+    card, or ``None`` if no bar shows (not placed, or gone)."""
+    top = max(card.top - 30, 0)
+    left, right = card.left + 8, card.right - 8
+    hsv = cv2.cvtColor(screen[top:card.top + 25, left:right], cv2.COLOR_BGR2HSV)
+    green = (hsv[:, :, 0] >= 45) & (hsv[:, :, 0] <= 85) & (hsv[:, :, 1] > 150) & (hsv[:, :, 2] > 150)
+    if not green.size:
+        return None
+    row = green[int(green.sum(axis=1).argmax())]
+    xs = np.flatnonzero(row)
+    if xs.size < 3:
+        return None
+    return min(1.0, (int(xs.max()) + 1) / row.size)
 
 
 def unit_on_field(before: np.ndarray, after: np.ndarray, card: Card, min_gain: float = 0.06) -> bool:

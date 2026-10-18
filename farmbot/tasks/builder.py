@@ -61,6 +61,7 @@ def in_builder_base(game: Game) -> bool:
 
 BOAT_SIZES = (0.9, 1.0, 1.1, 1.2, 1.3)  # the village isn't always zoomed all the way out
 BOAT_THRESHOLD = 0.85
+BOAT_DRAG = (500, 250, 400, 600, 600)  # x1, y1, x2, y2, ms: pulls the builder base's dock down into view
 
 
 def _find_scaled(game: Game, name: str) -> tuple[int, int] | None:
@@ -100,9 +101,20 @@ def go_to_home_village(game: Game) -> bool:
     if not in_builder_base(game):
         return False
     game.zoom_out()
-    if not game.click(T.BB_BUILDER_BOAT):
+    boat = _find_scaled(game, T.BB_BUILDER_BOAT)
+    if boat is None:
+        # Fresh from loading, the dock sits under the resource bars (top
+        # right): drag the map down to bring it into view.
+        game.swipe(*BOAT_DRAG)
+        game.wait(1)
+        boat = _find_scaled(game, T.BB_BUILDER_BOAT)
+    if boat is None:
+        log.info("Boat to the home village not visible")
         return False
-    game.wait_for(T.BATTLE, timeout=20)
+    game.tap(*boat)
+    if not game.wait_for(T.BATTLE, timeout=20):
+        log.info("Home village didn't load")
+        return False
     log.info("Sailed back to the home village")
     return True
 
@@ -114,12 +126,12 @@ def _in_cart_area(x: int, y: int) -> bool:
 
 
 def collect_resources(game: Game, tries: int = 4) -> list[str]:
-    """Empty the builder base's full gold mines and elixir collectors by
-    tapping their bubbles (never the elixir cart's tag). Returns what was
-    collected."""
+    """Empty the builder base's full gold mines, elixir collectors and gem
+    mine by tapping their bubbles (never the elixir cart's tag). Returns what
+    was collected."""
     collected = []
     game.zoom_out()
-    for kind, name in (("gold", T.BB_COLLECT_GOLD), ("elixir", T.BB_COLLECT_ELIXIR)):
+    for kind, name in (("gold", T.BB_COLLECT_GOLD), ("elixir", T.BB_COLLECT_ELIXIR), ("gems", T.BB_COLLECT_GEMS)):
         if not game.has(name):
             continue
         for _ in range(tries):
@@ -132,7 +144,7 @@ def collect_resources(game: Game, tries: int = 4) -> list[str]:
             if kind not in collected:
                 collected.append(kind)
     if collected:
-        log.info("Collected builder base %s", " and ".join(collected))
+        log.info("Collected builder base %s", ", ".join(collected))
     return collected
 
 
@@ -319,12 +331,14 @@ def card_state(screen: np.ndarray, x: int, cfg: BuilderConfig) -> str:
 
 
 def hero_out(screen: np.ndarray, cfg: BuilderConfig) -> bool:
-    """The hero has been on the field: a health bar (green, or yellow/red
-    when hurt) shows over its card."""
+    """The hero is on the field: its card pops up and the health bar
+    (green, or yellow/red when hurt) shows above it. A hero carried hurt to
+    the second base also has a bar, but inside the top of its card (lower
+    down), and still has to be placed."""
     x, y = cfg.hero_x, cfg.card_y
-    band = cv2.cvtColor(screen[y - 68:y - 28, x - 38:x + 40], cv2.COLOR_BGR2HSV).reshape(-1, 3)
+    band = cv2.cvtColor(screen[y - 66:y - 40, x - 38:x + 40], cv2.COLOR_BGR2HSV).reshape(-1, 3)
     bar = (band[:, 1] > 160) & (band[:, 2] > 190) & ((band[:, 0] <= 60) | (band[:, 0] >= 170))
-    # Not out: up to ~0.011 (bright card art); out: 0.025 (badly hurt) to 0.2.
+    # Not out (or waiting at the second base): 0; out: 0.04 (badly hurt) to 0.26.
     return float(bar.mean()) > 0.018
 
 
@@ -372,21 +386,28 @@ def _picker_right_edge(screen: np.ndarray, tx: int, ty: int) -> int:
     return tx + int(columns[0]) if len(columns) else screen.shape[1]
 
 
-def switch_hero(game: Game, cfg: BuilderConfig) -> bool:
-    """Open the hero picker from the swap button and choose the hero that
-    looks least like the one on the card now. True if it switched."""
+def _likeness(image: np.ndarray, art: np.ndarray, sizes=np.arange(0.5, 1.25, 0.05)) -> float:
+    """How well ``art`` (grey) shows up somewhere in ``image`` (grey), at the
+    best of a few sizes."""
+    best = 0.0
+    for k in sizes:
+        t = cv2.resize(art, None, fx=k, fy=k)
+        if t.shape[0] < image.shape[0] and t.shape[1] < image.shape[1]:
+            best = max(best, float(cv2.matchTemplate(image, t, cv2.TM_CCOEFF_NORMED).max()))
+    return best
+
+
+def _open_picker(game: Game, cfg: BuilderConfig) -> list[tuple[np.ndarray, tuple[int, int]]] | None:
+    """Tap the swap button and return the picker's hero portraits (grey) with
+    where to tap each; ``None`` if it didn't open."""
     if not game.has(T.BB_CHANGE_HEROES):
-        return False
-    x, y = cfg.hero_x, cfg.card_y
-    # The card shows a close-up of the hero: matched at a few sizes against
-    # each picker portrait, it looks most like its own.
-    current = cv2.cvtColor(game.refresh()[y - 35:y + 40, x - 33:x + 33], cv2.COLOR_BGR2GRAY)
+        return None
     dx, dy = SWAP_BUTTON
-    game.tap(x + dx, y + dy)
+    game.tap(cfg.hero_x + dx, cfg.card_y + dy)
     title = game.wait_for(T.BB_CHANGE_HEROES, timeout=3)
     if title is None:
         log.info("The hero picker didn't open")
-        return False
+        return None
     screen = game.screen
     right = _picker_right_edge(screen, title.x, title.y)
     options = []
@@ -397,19 +418,75 @@ def switch_hero(game: Game, cfg: BuilderConfig) -> bool:
         portrait = cv2.cvtColor(screen[max(py - 50, 0):py + 55, max(px - 50, 0):px + 50], cv2.COLOR_BGR2GRAY)
         if portrait.shape[0] < 100 or portrait.shape[1] < 100 or float(portrait[25:80, 20:80].std()) < 25:
             continue  # no hero in this slot
-        likeness = 0.0
-        for k in np.arange(0.5, 1.25, 0.05):
-            t = cv2.resize(current, None, fx=k, fy=k)
-            if t.shape[0] < portrait.shape[0] and t.shape[1] < portrait.shape[1]:
-                likeness = max(likeness, float(cv2.matchTemplate(portrait, t, cv2.TM_CCOEFF_NORMED).max()))
-        options.append((likeness, (px, py)))
-    if len(options) < 2:
-        game.tap(x + dx, y + dy)  # close the picker
+        options.append((portrait, (px, py)))
+    return options
+
+
+def _close_picker(game: Game, cfg: BuilderConfig) -> None:
+    dx, dy = SWAP_BUTTON
+    game.tap(cfg.hero_x + dx, cfg.card_y + dy)
+
+
+def switch_hero(game: Game, cfg: BuilderConfig) -> bool:
+    """Open the hero picker from the swap button and choose the hero that
+    looks least like the one on the card now. True if it switched."""
+    x, y = cfg.hero_x, cfg.card_y
+    # The card shows a close-up of the hero: matched at a few sizes against
+    # each picker portrait, it looks most like its own.
+    current = cv2.cvtColor(game.refresh()[y - 35:y + 40, x - 33:x + 33], cv2.COLOR_BGR2GRAY)
+    options = _open_picker(game, cfg)
+    if options is None:
         return False
-    _, point = min(options)
+    if len(options) < 2:
+        _close_picker(game, cfg)
+        return False
+    _, point = min((_likeness(portrait, current), point) for portrait, point in options)
     game.tap(*point)
     game.wait(0.8)
     log.info("Switched hero")
+    return True
+
+
+HEROES = {"machine": T.BB_HERO_MACHINE, "copter": T.BB_HERO_COPTER}
+HERO_NAMES = {"machine": "Battle Machine", "copter": "Battle Copter"}
+HERO_MATCH = 0.7  # its own card art scores 0.88+ (card or picker), the other hero's 0.45 or less
+
+
+def _hero_art(game: Game, key: str) -> list[np.ndarray]:
+    name = HEROES[key]
+    if not game.has(name):
+        return []
+    return [cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) for _, image in game.vision.library.get(name)]
+
+
+def current_hero(game: Game, screen: np.ndarray, cfg: BuilderConfig) -> str | None:
+    """Which hero is on the card ("machine" or "copter"), or ``None``."""
+    x, y = cfg.hero_x, cfg.card_y
+    area = cv2.cvtColor(screen[y - 35:y + 50, x - 43:x + 43], cv2.COLOR_BGR2GRAY)
+    sizes = np.arange(0.85, 1.16, 0.05)
+    scores = {key: max((_likeness(area, art, sizes) for art in _hero_art(game, key)), default=0.0) for key in HEROES}
+    key = max(scores, key=scores.get)
+    return key if scores[key] >= HERO_MATCH else None
+
+
+def choose_hero(game: Game, cfg: BuilderConfig, want: str) -> bool:
+    """Put ``want`` ("machine" or "copter") on the hero card, from the
+    picker, if another hero is there. True if it changed the hero."""
+    have = current_hero(game, game.refresh(), cfg)
+    if have is None or have == want:
+        return False
+    art = _hero_art(game, want)
+    options = _open_picker(game, cfg) if art else None
+    if not options:
+        return False
+    score, point = max((max(_likeness(portrait, a) for a in art), point) for portrait, point in options)
+    if score < HERO_MATCH:
+        log.info("The %s isn't in the hero picker", HERO_NAMES[want])
+        _close_picker(game, cfg)
+        return False
+    game.tap(*point)
+    game.wait(0.8)
+    log.info("Chose the %s for the first base", HERO_NAMES[want])
     return True
 
 
@@ -496,10 +573,13 @@ def place_first(game: Game, slot: Slot, start: tuple[int, int], centre: tuple[in
     return None
 
 
-def deploy_stage(game: Game, cfg: BuilderConfig) -> tuple[float, list[Slot]]:
+def deploy_stage(game: Game, cfg: BuilderConfig, first: bool = False) -> tuple[float, list[Slot]]:
     """Hero at the far corner, then (``troop_delay`` s later) every ready
-    troop there too. Returns when the hero landed and the troops sent."""
+    troop there too. Returns when the hero landed and the troops sent.
+    On the ``first`` base, the hero is set to ``cfg.first_hero`` first."""
     game.zoom_out()
+    if first and cfg.use_hero and cfg.first_hero in HEROES:
+        choose_hero(game, cfg, cfg.first_hero)
     screen = game.refresh()
     side, point = pick_corner(screen, cfg)
     centre = base_centre(screen)
@@ -590,7 +670,7 @@ def attack(game: Game, cfg: BuilderConfig, on_stage: Callable[[int], None] | Non
     while stages < MAX_STAGES:
         if on_stage:
             on_stage(stages + 1)
-        landed, troops = deploy_stage(game, cfg)
+        landed, troops = deploy_stage(game, cfg, first=stages == 0)
         stages += 1
         batches = [troops[i:i + cfg.ability_batch] for i in range(0, len(troops), max(cfg.ability_batch, 1))]
         next_batch = game.clock() + cfg.ability_delay

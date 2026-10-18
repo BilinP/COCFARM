@@ -51,11 +51,15 @@ wave_speed = 8
 use_cc = true
 hero_abilities = true
 hero_ability_delay = 10.0
+speed_up = true  # press the 1x button in the last minute so the battle plays at 4x
 end_when_no_loot = true
 no_loot_seconds = 15.0
 taps_per_batch = 6
 max_batches_per_card = 12
 battle_timeout = 180.0
+ability_health = 0.0  # fire a hero's ability at this health share (0.5 = half); 0 = after hero_ability_delay
+ability_max_wait = 45.0
+spell_placement = "together"  # "together": all on one spot at once; "spread": over the base
 spell_reach = 0.45
 
 [attack.deploy_lines]
@@ -126,6 +130,21 @@ max_donations_per_request = 5
 enabled = false
 active_hours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
 daily_attack_limit = 0
+# Rest now and then: after 15-25 attacks (random), for 5-20 minutes (random).
+breaks = false
+break_every_min = 15
+break_every_max = 25
+break_minutes_min = 5
+break_minutes_max = 20
+
+[notify]
+# Messages to your phone through a Discord webhook (Server Settings →
+# Integrations → Webhooks → New Webhook → Copy Webhook URL).
+discord_webhook = ""
+on_storage_full = true
+on_stopped = true
+on_emulator_restart = true
+daily_summary = true
 
 [bot]
 templates = "templates"

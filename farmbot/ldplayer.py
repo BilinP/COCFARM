@@ -260,3 +260,13 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
             raise DeviceError(f"{install.name} did not answer over ADB within {cfg.launch_timeout:.0f}s"
                               + (f": {last_error}" if last_error else ""))
         sleep(3)
+
+
+def quit_instance(cfg: DeviceConfig, run: Runner = _run) -> None:
+    """Close the configured LDPlayer instance (it is started again by
+    ``open_device``)."""
+    install = pick_install(cfg, find_installs())
+    if install is None:
+        raise DeviceError("LDPlayer was not found")
+    log.warning("Closing %s (instance %d) to start it again", install.name, cfg.ldplayer_index)
+    run([str(install.console), "quit", "--index", str(cfg.ldplayer_index)])

@@ -13,7 +13,9 @@ double-click it.
 
 Each cycle the bot:
 
-1. Starts the emulator and the game if needed, and dismisses popups.
+1. Starts the game if needed and works out which screen it's on (home village,
+   builder base, battle, results, chest room, reward picker, popup), then gets
+   back to the village from any of them.
 2. Looks after the village: collects resources and the loot cart, upgrades
    walls with spare loot (if turned on), donates to clan requests, and
    requests Clan Castle troops (when those pictures exist).
@@ -22,18 +24,25 @@ Each cycle the bot:
    gold, elixir and dark elixir (optionally requiring full collectors, i.e. a
    dead base) and presses **Next** until one meets your minimums.
 4. Deploys **everything in the troop bar**, split into 1–3 waves at the speed
-   you set: troops around the outside of the base, then heroes and siege
-   machines, then spells over the base. It fires hero abilities after a delay,
-   ends the battle once the loot stops dropping, and returns home.
+   you set: troops around the outside of the base, then all heroes and siege
+   machines in one quick pass, then spells (all on one spot, or spread over the
+   base). It fires hero abilities after a delay or once each hero is hurt,
+   picks the rightmost event reward when offered, ends the battle once the loot
+   stops dropping, and returns home.
 5. Optionally plays the **builder base** too: two-stage builder battles and
    looking after the builder village.
 
-It only plays during the hours you choose, up to a daily attack limit.
+It only plays during the hours you choose, up to a daily attack limit, and can
+take random breaks. It can message a Discord channel (through a webhook) when
+storage is full, when it stops, when it restarts the emulator, and with a
+daily summary.
 
 Every attack is logged to `attacks.csv`, with the base's loot, your resources
 before the attack, and what you actually gained (read from your resource bar
 once back home, so it includes the star bonus). Open it in Excel or Google
-Sheets to see which loot settings pay off.
+Sheets to see which loot settings pay off. The **History** page shows today's,
+the last week's and all-time totals, loot per hour of play, a 14-day chart and
+every attack.
 
 > Automating Clash of Clans breaks Supercell's Terms of Service. Use it on an
 > account you are willing to lose.
@@ -154,7 +163,8 @@ The window is built with [PySide6](https://doc.qt.io/qtforpython-6/) (Qt 6) and
 
 - **Settings that don't apply are greyed out**, such as the ability delay when hero abilities are off.
 - **Saving is automatic.** Valid changes save to `farmbot.toml` straight away, and a running bot picks them up at its next step.
-- **Shortcuts:** F5 starts, Esc stops, and Ctrl+1…9 switch pages.
+- **Shortcuts:** F5 starts, Esc pauses (press again to stop now), and Ctrl+1…9 switch pages.
+- **Updates:** when a newer release is on GitHub, a banner offers the download.
 
 Fluent Widgets is free under GPLv3 for non-commercial use; a commercial project needs its paid licence.
 
@@ -197,7 +207,11 @@ These are for development and troubleshooting when working from the source
 | `farmbot/armybar.py` | Troop bar cards |
 | `farmbot/redline.py`, `farmbot/deployzone.py` | Deploy point detection |
 | `farmbot/tasks/` | Village chores, clan, search, attack, builder base |
-| `farmbot/bot.py` | Main loop with error recovery and status events |
+| `farmbot/screens.py` | Names the screen on show and gets back to a village from it |
+| `farmbot/bot.py` | Main loop with error recovery, the watchdog and status events |
+| `farmbot/notify.py` | Discord webhook messages |
+| `farmbot/history.py` | The attack log: writing it, totals, loot per hour |
+| `farmbot/update.py` | Checks GitHub for a newer release |
 | `farmbot/gui.py`, `farmbot/form.py` | Fluent (PySide6) window and its settings model |
 | `farmbot/config.py` | TOML settings (`farmbot.example.toml` lists them all) |
 | `templates/` | Button, collector and digit pictures the bot matches against |
@@ -206,13 +220,23 @@ These are for development and troubleshooting when working from the source
 
 ## When something goes wrong
 
-The Activity log on the Dashboard says what failed. Each time a round fails,
-the bot also saves the screen it was looking at in `screens/errors/`, so you
-can see exactly what it saw (and share it when asking for help). After three
-failed rounds in a row it restarts the game.
+The Activity log on the Dashboard says what failed, and the same log is kept in
+`logs/farmbot.log` (a new file each day, two weeks kept). Each time a round
+fails, the bot also saves the screen it was looking at in `screens/errors/`, so
+you can see exactly what it saw (and share it when asking for help).
+
+The watchdog: after three failed rounds in a row it restarts the game; if that
+doesn't help (or the emulator stops answering), it closes and reopens the
+emulator.
+
+## Releases
+
+Push a version tag (`git tag v0.2.0 && git push origin v0.2.0`) and the
+`windows-exe` workflow builds COCFARM.exe and publishes it as a GitHub release.
 
 ## Not yet done
 
-Supertroop activation, Town Hall level filter, Telegram
-control, and a per-troop deploy order (the bot deploys troops, then
-heroes/siege, then spells).
+Supertroop activation, Town Hall level filter, army presets and a per-troop
+deploy order (the bot deploys troops, then heroes/siege, then spells), and
+dead-base pictures (the search supports them; add full-collector pictures on
+the Pictures page).
