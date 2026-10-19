@@ -12,6 +12,12 @@ double-click it.
 
 **[⬇ Download the latest release](https://github.com/BilinP/COCFARM/releases/latest)** · [All releases](https://github.com/BilinP/COCFARM/releases)
 
+> [!WARNING]
+> **Using this bot can get your Clash of Clans account banned.** Automating the
+> game breaks Supercell's Terms of Service, and Supercell bans accounts it
+> catches botting, temporarily or for good. Use it with caution, and only on an
+> account you are willing to lose.
+
 Each cycle the bot:
 
 1. Starts the game if needed and works out which screen it's on (home village,
@@ -51,8 +57,6 @@ Sheets to see which loot settings pay off. The **History** page shows today's,
 the last week's and all-time totals, loot per hour of play, a 14-day chart (hover a bar for the exact amount; all loot,
 or gold, elixir or dark elixir on its own) and every attack.
 
-> Automating Clash of Clans breaks Supercell's Terms of Service. Use it on an
-> account you are willing to lose.
 
 ## Download and install
 
