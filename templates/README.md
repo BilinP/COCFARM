@@ -5,38 +5,21 @@ with digit shapes learned from screenshots. All of them are taken from
 screens scaled to **920 px tall**; `farmbot screenshot` saves screens at that
 size, so crop coordinates from its output can be used directly.
 
-## Already included
+## What's included
 
-Taken from the screenshots in `tests/fixtures/`:
+Every picture the bot uses ships in this folder (`farmbot pictures` lists them
+and flags any that are missing):
 
-| Name | From |
+| Folder | What |
 |---|---|
-| `buttons/battle` | "Battle" button, home village |
-| `buttons/find_match` | "Find a Match" text (matches both buttons; the bot taps the left, regular one) |
-| `buttons/attack` | "Attack!" on the army screen |
-| `buttons/next` | "Next" while scouting |
-| `buttons/end_battle` | "End Battle" while scouting/attacking |
-| `fonts/loot/0.png` … `9.png` | Digits from the "Available Loot" numbers |
+| `buttons/` | Home village and battle buttons: Battle, Find a Match, Attack!, Next, End Battle, Okay, Return Home, rewards, event chests, walls, clan chat, requests, donations, disconnect popups |
+| `builder/` | Builder base: the boats, Builder Battle, Find Now!, battle start/end, hero cards, speed, collector bubbles, the elixir cart, walls |
+| `collectors/` | Full gold mine, elixir collector and dark elixir drill bubbles |
+| `donate/` | Each donatable unit as it looks in the donate window (`donate/<name>.png`, the name as in `farmbot/units.py`; `name@2.png` is a second look of the same unit) |
+| `fonts/loot/` | Digit shapes for reading loot numbers |
 
-## Recommended
-
-Without these two the bot leaves each battle by closing the game (slower, but it works):
-
-| Name | What to crop |
-|---|---|
-| `buttons/return_home` | "Return Home" on the battle result screen |
-| `buttons/okay` | "Okay" in the End Battle / surrender confirmation |
-
-Optional (the GUI lists what is missing on the Army and Clan pages):
-
-| Name | Enables |
-|---|---|
-| `collectors/*.png` | Tapping full gold, elixir and dark collector bubbles |
-| `buttons/close` | Closing windows (walls, chests) |
-| `buttons/open_chat`, `buttons/close_chat`, `buttons/donate` | Donations |
-| `donate/<name>.png` | Each unit you donate, as it looks in the donate window (e.g. `donate/yeti.png`); the name is what you pick in the GUI |
-| `buttons/open_chat`, `buttons/close_chat`, `buttons/no_clan`, `buttons/request`, `buttons/request_send` | Clan Castle requests from the clan chat |
-| `buttons/try_again`, `buttons/reload` | Recovering from disconnect popups |
+A picture that is a folder (for example `buttons/battle/`, `buttons/okay/`)
+holds several variants of one button; any of them counts as a match.
 
 ## Making one
 
