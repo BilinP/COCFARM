@@ -7,12 +7,15 @@ Android emulator (BlueStacks or LDPlayer): it attacks, collects your loot and
 looks after your village, in **both the home village and the builder base**.
 
 [![windows-exe](https://github.com/BilinP/COCFARM/actions/workflows/windows-exe.yml/badge.svg)](https://github.com/BilinP/COCFARM/actions/workflows/windows-exe.yml)
-[![Latest release](https://img.shields.io/github/v/release/BilinP/COCFARM)](https://github.com/BilinP/COCFARM/releases/latest)
+
+**[⬇ Download the latest release](https://github.com/BilinP/COCFARM/releases/latest)** · [All releases](https://github.com/BilinP/COCFARM/releases)
+
+> [!WARNING]
+> **Using this bot can get your Clash of Clans account banned.** Botting breaks
+> Supercell's Terms of Service, and Supercell bans accounts it catches,
+> temporarily or for good. Only use it on an account you're willing to lose.
 
 ![The COCFARM Dashboard](readme/dashboard.png)
-
-> ⚠️ Botting breaks Supercell's Terms of Service. Only use COCFARM on an account
-> you're willing to lose.
 
 ## What it does
 
@@ -85,9 +88,10 @@ farmbot inspect     # show the loot, troop cards and deploy points it sees
 farmbot pictures    # list the button pictures and which are missing
 ```
 
-**Releases:** pushing a version tag (`v1.2.3`) makes the
+**Releases:** every push to `main` makes the
 [`windows-exe`](.github/workflows/windows-exe.yml) workflow build
-`COCFARM.exe` with PyInstaller, self-test it, and publish a GitHub release.
+`COCFARM.exe` with PyInstaller, self-test it, and publish a GitHub release
+(a version tag like `v1.2.3` publishes under that exact version).
 
 Fluent Widgets is free under GPLv3 for non-commercial use.
 
