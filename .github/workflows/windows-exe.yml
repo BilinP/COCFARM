@@ -2,12 +2,9 @@ name: windows-exe
 
 # Builds COCFARM.exe on Windows from the source and tests it.
 #  - Every push / pull request: the build is attached to the run as an artifact.
-#  - Every push to main (e.g. merging a pull request): also publishes a
-#    GitHub Release with COCFARM-windows.zip, tagged v<version>-<run number>
-#    (version from pyproject.toml), so users just download, unzip and
-#    double-click COCFARM.exe.
 #  - Pushing a tag like v1.2.0, or running this workflow by hand with a
-#    version, publishes a release under that exact version instead.
+#    version: also publishes a GitHub Release with COCFARM-windows.zip,
+#    so users just download, unzip and double-click COCFARM.exe.
 
 on:
   push:
@@ -56,9 +53,6 @@ jobs:
             echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           elif [[ -n "${{ github.event.inputs.version }}" ]]; then
             echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
-            version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
-            echo "tag=v${version}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           fi
       - name: Publish the GitHub Release
         if: steps.release.outputs.tag != ''
@@ -68,7 +62,6 @@ jobs:
           name: COCFARM ${{ steps.release.outputs.tag }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
-          make_latest: true
           files: dist/COCFARM-windows.zip
           body: |
             ## Download
