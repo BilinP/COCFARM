@@ -50,6 +50,7 @@ class Bot:
         self._now = now
         self._today: date | None = None
         self.attacks_today = 0
+        self._daily_limit: int | None = None  # today's attack limit, picked at random in the range
         self._next_request: float | None = None  # clock time the next troop request is due
         self._in_clan: bool | None = None  # checked once per run, in the chat
         self._on_resources = on_resources
@@ -109,15 +110,27 @@ class Bot:
         if self._today != now.date():
             if self._today is not None:
                 self._daily_summary(self._today)
-            self._today, self.attacks_today = now.date(), 0
+            self._today, self.attacks_today, self._daily_limit = now.date(), 0, None
         if not sched.enabled:
             return None
         if now.hour not in sched.active_hours:
             upcoming = next(((now.hour + i) % 24 for i in range(1, 25) if (now.hour + i) % 24 in sched.active_hours), None)
             return "outside active hours" + (f" (resumes {upcoming:02d}:00)" if upcoming is not None else "")
-        if sched.daily_attack_limit and self.attacks_today >= sched.daily_attack_limit:
-            return f"daily limit of {sched.daily_attack_limit} attacks reached"
+        limit = self.daily_limit()
+        if limit and self.attacks_today >= limit:
+            return f"daily limit of {limit} attacks reached"
         return None
+
+    def daily_limit(self) -> int:
+        """Today's attack limit, picked at random in the range once a day (0 = none)."""
+        sched = self.config.schedule
+        if not sched.daily_attacks_max:
+            return 0
+        if self._daily_limit is None:
+            low = max(1, min(sched.daily_attacks_min, sched.daily_attacks_max))
+            self._daily_limit = self.game.rng.randint(low, sched.daily_attacks_max)
+            log.info("Attacks today: up to %d", self._daily_limit)
+        return self._daily_limit
 
     # -- game -----------------------------------------------------------
     def ensure_game_running(self) -> None:
@@ -141,8 +154,9 @@ class Bot:
         if not self.config.bot.history:
             return
         count, gained = history.totals_for(self.config.bot.history, day)
-        self.notifier.send(f"{day:%a %d %b}: {count} attack(s), gained gold {gained.gold:,}, "
-                           f"elixir {gained.elixir:,}, dark {gained.dark:,}.", "daily_summary")
+        text = "What COCFARM farmed yesterday." if count else "No attacks yesterday."
+        self.notifier.send(f"Daily summary · {day:%a %d %b}", text, "daily_summary", "summary",
+                           attacks=count, loot=gained)
 
     def take_break(self) -> None:
         """After a random number of attacks, rest a random number of minutes
@@ -184,7 +198,8 @@ class Bot:
             return
         log.warning("Restarting the emulator")
         self.status("Restarting the emulator")
-        self.notifier.send("the game kept failing, so the emulator is being restarted.", "on_emulator_restart")
+        self.notifier.send("Restarting the emulator", "The game kept failing, so COCFARM is restarting the "
+                           "emulator. It carries on by itself once the game is back.", "on_emulator_restart", "warn")
         self.game.device = self._reopen_device()
         self.game.screen = None
         self._game_restarts = 0
@@ -274,13 +289,15 @@ class Bot:
         if other in self.full_villages:
             self.storage_full = True
             log.info("Storage full in both villages: stopping")
-            self.notifier.send("storage full in both villages, so the bot stopped.", "on_storage_full")
+            self.notifier.send("Both villages are full", "Storage is full in the home village and the builder "
+                               "base, so the bot stopped.", "on_storage_full", "good",
+                               attacks=self.attacks, loot=self.gained)
             self.status("Stopped: storage full in both villages")
             return True
         self.auto_village = other
         log.info("Storage full in the %s: switching to the %s", names[village], names[other])
-        self.notifier.send(f"storage full in the {names[village]}, so the bot switched to the {names[other]}.",
-                           "on_storage_full")
+        self.notifier.send("Switching villages", f"Storage is full in the {names[village]}. Now farming the "
+                           f"{names[other]}.", "on_storage_full", "info", attacks=self.attacks, loot=self.gained)
         self.status(f"Storage full: switching to the {names[other]}")
         return True
 
@@ -363,7 +380,10 @@ class Bot:
                 return False
             self.storage_full = True
             log.info("Storage full (%s): stopping", ", ".join(wanted))
-            self.notifier.send(f"storage full ({', '.join(wanted)}), so the bot stopped.", "on_storage_full")
+            full = {"gold": "gold", "elixir": "elixir", "dark": "dark elixir"}
+            self.notifier.send("Storage full", f"Your {' and '.join(full.get(w, w) for w in wanted)} storage"
+                               f"{'s are' if len(wanted) > 1 else ' is'} full, so the bot stopped.",
+                               "on_storage_full", "good", attacks=self.attacks, loot=self.gained)
             self.status(f"Stopped: storage full ({', '.join(wanted)})")
             return False
         if cfg.search.maintain_only:
@@ -449,7 +469,11 @@ class Bot:
         except Stopped:
             log.info("Stopped")
         except Exception as exc:
-            self.notifier.send(f"the bot stopped with an error: {exc}", "on_stopped")
+            from farmbot.friendly import explain
+
+            problem = explain(str(exc))
+            self.notifier.send("Stopped by a problem", f"**{problem.title}**\n{problem.why}\n```{str(exc)[:900]}```",
+                               "on_stopped", "error", attacks=self.attacks, loot=self.gained)
             raise
         self._settle_attack(None)
         if self.playing() == "builder" and self.config.builder.return_home_after:
@@ -462,5 +486,6 @@ class Bot:
         log.info("Finished after %d attack(s)", self.attacks)
         if not self.storage_full:
             g = self.gained
-            self.notifier.send(f"stopped after {self.attacks} attack(s); gained gold {g.gold:,}, "
-                               f"elixir {g.elixir:,}, dark {g.dark:,}.", "on_stopped")
+            self.notifier.send("Bot stopped", f"Finished after {self.attacks:,} "
+                               f"attack{'' if self.attacks == 1 else 's'}.", "on_stopped", "summary",
+                               attacks=self.attacks, loot=g)

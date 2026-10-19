@@ -29,8 +29,6 @@ FIELDS = [
     Field("search.min_elixir", "amount"),
     Field("search.min_dark", "amount"),
     Field("search.match_any", "bool"),
-    Field("search.min_total", "amount"),
-    Field("search.dark_weight", "int", 0, 1000),
     Field("search.max_searches", "int", 1, 1000),
     Field("search.sound_on_match", "bool"),
     Field("search.min_own_gold", "amount"),
@@ -93,6 +91,7 @@ FIELDS = [
     # Clan
     Field("clan.donate", "bool"),
     Field("clan.donate_main", "units"),
+    Field("clan.donate_siege", "units"),
     Field("clan.donate_spells", "units"),
     Field("clan.donate_fill", "bool"),
     Field("clan.max_donations_per_request", "int", 1, 50),
@@ -101,7 +100,8 @@ FIELDS = [
     # Schedule
     Field("schedule.enabled", "bool"),
     Field("schedule.active_hours", "hours"),
-    Field("schedule.daily_attack_limit", "int", 0, 1000),
+    Field("schedule.daily_attacks_min", "int", 0, 1000),
+    Field("schedule.daily_attacks_max", "int", 0, 1000),
     Field("schedule.breaks", "bool"),
     Field("schedule.break_every_min", "int", 1, 500),
     Field("schedule.break_every_max", "int", 1, 500),
@@ -112,7 +112,6 @@ FIELDS = [
     Field("notify.on_stopped", "bool"),
     Field("notify.on_emulator_restart", "bool"),
     Field("notify.daily_summary", "bool"),
-    Field("bot.max_attacks", "int", 0, 100000),
     # Device
     Field("device.mode", "text"),
     Field("device.bluestacks_instance", "text"),
@@ -224,6 +223,9 @@ def validate(form: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
             values[path] = _parse(field, raw)
         except ValueError as exc:
             errors[path] = str(exc)
+    if values.get("schedule.daily_attacks_max") and \
+            values.get("schedule.daily_attacks_min", 0) > values["schedule.daily_attacks_max"]:
+        errors["schedule.daily_attacks_max"] = "must be at least the 'from' number (0 to 0 = no limit)"
     for low, high in (("schedule.break_every_min", "schedule.break_every_max"),
                       ("schedule.break_minutes_min", "schedule.break_minutes_max")):
         if values.get(low, 0) > values.get(high, 10**9):

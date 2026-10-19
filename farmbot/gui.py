@@ -1,8 +1,8 @@
 """COCFARM (farmbot) control window, built with PySide6 (Qt 6) and Fluent Widgets.
 
-* Pages are grouped by what the player wants to do (Home, each village,
+* Pages are grouped by what the player wants to do (Dashboard, each village,
   When to play, History, Setup, Advanced); the first run opens Setup.
-* Home and the title bar always show what the bot is doing in plain words
+* The Dashboard and the title bar always show what the bot is doing in plain words
   (farmbot/friendly.py), and problems come with a button for the fix.
 * Every setting is a Fluent setting card with its explanation underneath,
   and that line turns into the error message if the value is invalid.
@@ -113,7 +113,7 @@ def retint() -> None:
             pass
     _TINTED[:] = alive
 # Top-level pages, most used first; Ctrl+1... follow this order.
-PAGES = ("Home", "Home village", "Builder base", "When to play", "History", "Setup", "Advanced")
+PAGES = ("Dashboard", "Home village", "Builder base", "When to play", "History", "Setup", "Advanced")
 
 
 class _QueueLogHandler(logging.Handler):
@@ -553,14 +553,13 @@ class FarmbotWindow(FluentWindow):
         self._syncing = False
         self.status_now = Status("ready", "")
         self.problem: Problem | None = None
-        self.setup_passed = not self.first_run  # Setup finished once: no "New here?" banner on Home
+        self.setup_passed = not self.first_run  # Setup finished once: no "New here?" banner on the Dashboard
         self.check_passed = False  # step 2 of Setup passed this session
         self._found: dict[str, bool] = {}
         self.auto_village: str | None = None  # Auto switch: the village it moved on to this run
         self._verdict_kind = "wait"
-        home_icon = FIF.HOME_FILL if hasattr(FIF, "HOME_FILL") else FIF.LEAF
-        self._add_page(self._home(), FIF.HOME, "Home")
-        self._add_page(self._home_village(), home_icon, "Home village")
+        self._add_page(self._home(), FIF.SPEED_HIGH, "Dashboard")
+        self._add_page(self._home_village(), FIF.HOME, "Home village")
         self._add_page(self._builder_base(), FIF.GAME, "Builder base")
         self._add_page(self._when_to_play(), FIF.DATE_TIME, "When to play")
         self._add_page(self._history(), FIF.HISTORY, "History")
@@ -813,7 +812,7 @@ class FarmbotWindow(FluentWindow):
         return card
 
     def _home(self) -> Page:
-        page = Page("home", "Home", "What COCFARM is doing right now, and what it has earned.")
+        page = Page("home", "Dashboard", "What COCFARM is doing right now, and what it has earned.")
         self.setup_banner = SimpleCardWidget()
         row = QHBoxLayout(self.setup_banner)
         row.setContentsMargins(20, 14, 16, 14)
@@ -968,6 +967,9 @@ class FarmbotWindow(FluentWindow):
     # ------------------------------------------------------------ history
     HISTORY_DAYS = 14  # days in the chart
     HISTORY_ROWS = 300  # latest attacks in the table
+    # What the chart shows: label -> resources drawn.
+    HISTORY_VIEWS = {"All loot": ("gold", "elixir", "dark"), "Gold only": ("gold",),
+                     "Elixir only": ("elixir",), "Dark elixir only": ("dark",)}
 
     def _history(self) -> Page:
         page = Page("history", "History", "Every attack COCFARM has made: totals, loot per hour, the last two "
@@ -1004,6 +1006,15 @@ class FarmbotWindow(FluentWindow):
         view.setRenderHint(QPainter.Antialiasing)
         view.setMinimumHeight(300)
         view.setStyleSheet("background: transparent;")
+        show = QHBoxLayout()
+        show.addWidget(BodyLabel("Show"))
+        self.history_view = ComboBox()
+        self.history_view.addItems(list(self.HISTORY_VIEWS))
+        self.history_view.setMinimumWidth(170)
+        self.history_view.currentTextChanged.connect(lambda *_: self._show_history())
+        show.addWidget(self.history_view)
+        show.addStretch(1)
+        page.layout_.addLayout(show)
         page.add(view)
 
         from qfluentwidgets import TableWidget
@@ -1064,26 +1075,41 @@ class FarmbotWindow(FluentWindow):
         for axis in chart.axes():
             chart.removeAxis(axis)
         span = [today - timedelta(days=i) for i in range(self.HISTORY_DAYS - 1, -1, -1)]
+        keys = self.HISTORY_VIEWS.get(self.history_view.currentText(), self.HISTORY_VIEWS["All loot"])
+        names = {"gold": "Gold", "elixir": "Elixir", "dark": "Dark elixir"}
+        values = {k: [max(getattr(days.get(day, (0, Loot(0, 0, 0)))[1], k), 0) for day in span] for k in keys}
+        peak = max((v for vs in values.values() for v in vs), default=0)
+        # Millions, or thousands when the bars are small (dark elixir on its own).
+        scale, unit = (1_000_000, "Millions") if peak >= 1_000_000 or peak == 0 else (1_000, "Thousands")
         series = QBarSeries()
-        top = 0.0
-        for key, name in (("gold", "Gold"), ("elixir", "Elixir"), ("dark", "Dark elixir ×100")):
-            bars = QBarSet(name)
+        for key in keys:
+            bars = QBarSet(names[key])
             bars.setColor(QColor(str(RESOURCE_COLOURS[key])))
-            for day in span:
-                value = getattr(days.get(day, (0, Loot(0, 0, 0)))[1], key)
-                value = value * 100 if key == "dark" else value  # dark is ~100x scarcer: same scale
-                value /= 1_000_000  # the axis is in millions
-                bars.append(max(value, 0))
-                top = max(top, value)
+            for value in values[key]:
+                bars.append(value / scale)
             series.append(bars)
+        top = peak / scale
+
+        def hovered(on: bool, index: int, bars) -> None:
+            # The real amount under the mouse, not the rounded axis.
+            from PySide6.QtGui import QCursor
+            from PySide6.QtWidgets import QToolTip
+
+            if not on:
+                QToolTip.hideText()
+                return
+            key = next(k for k in keys if names[k] == bars.label())
+            QToolTip.showText(QCursor.pos(), f"{span[index]:%a %d %b}\n{names[key]}: {values[key][index]:,}")
+
+        series.hovered.connect(hovered)
         chart.addSeries(series)
         x = QBarCategoryAxis()
         x.append([str(d.day) for d in span])  # day of the month: fits at the window's smallest
         x.setTitleText(f"{span[0]:%b %d} – {span[-1]:%b %d}")
         y = QValueAxis()
         y.setRange(0, max(top, 0.1) * 1.1)
-        y.setLabelFormat("%.1f")
-        y.setTitleText("Millions")
+        y.setLabelFormat("%.1f" if scale == 1_000_000 else "%.0f")
+        y.setTitleText(unit)
         chart.addAxis(x, Qt.AlignBottom)
         chart.addAxis(y, Qt.AlignLeft)
         series.attachAxis(x)
@@ -1232,17 +1258,13 @@ class FarmbotWindow(FluentWindow):
                     "Bases offering less dark elixir are skipped. 0 ignores dark elixir.")
         self.switch(loot, "search.match_any", FIF.FILTER, "Any one is enough",
                     "On: attack when any one amount above is met. Off: all of them must be met.")
-        self.amount(loot, "search.min_total", FIF.MARKET, "And in total at least",
-                    "Gold + elixir + dark elixir (weighted below) together. 0 ignores the total.")
-        self.number(loot, "search.dark_weight", FIF.MARKET, "Dark elixir is worth",
-                    "In the total, each dark elixir counts as this much gold or elixir.", "×")
         more = page.add(SettingCardGroup("While searching"))
         self.amount(more, "search.min_own_gold", FIF.SHOPPING_CART, "Don't search while my gold is below",
                     "Each Next costs gold. 0 always searches.")
         self.switch(more, "search.sound_on_match", FIF.RINGER, "Sound on match",
                     "Beeps when it finds a base worth attacking.")
         self.depends("search.maintain_only", "search.min_gold", "search.min_elixir", "search.min_dark",
-                     "search.match_any", "search.min_total", "search.dark_weight", "search.min_own_gold",
+                     "search.match_any", "search.min_own_gold",
                      "search.sound_on_match", when=False)
 
     def _attacking_tab(self, page: Page) -> None:
@@ -1327,10 +1349,12 @@ class FarmbotWindow(FluentWindow):
                     "donate window; it never pays with gems.")
         lists = []
         for path, title, hint, units in (
-                ("clan.donate_main", "Main troops and siege machines",
+                ("clan.donate_main", "Main troops",
                  "Click the ones to give first, in order: they move to the top and go first, as many as fit. "
                  "Drag to change the order.",
-                 TROOPS + SIEGE_MACHINES),
+                 TROOPS),
+                ("clan.donate_siege", "Siege machines",
+                 "Click the siege machines to give, in order. A request has room for one.", SIEGE_MACHINES),
                 ("clan.donate_spells", "Main spells", "Click the spells to give, in order.", SPELLS)):
             box = SimpleCardWidget()
             box.setFixedHeight(300)
@@ -1345,7 +1369,7 @@ class FarmbotWindow(FluentWindow):
             donate.addSettingCard(box)
             lists.append(path)
         self.switch(donate, "clan.donate_fill", FIF.ADD, "Fill the rest",
-                    "After the main units, fills the space left with the biggest troops that still fit.")
+                    "After the main troops, fills the space left with the biggest troops that still fit.")
         self.number(donate, "clan.max_donations_per_request", FIF.ADD, "Up to", "Units given to one request at most.",
                     "units")
         # The lists stay usable with donating off, so the choice can be made first.
@@ -1363,7 +1387,8 @@ class FarmbotWindow(FluentWindow):
 
     def _builder_base(self) -> TabbedPage:
         page = TabbedPage("builder_base", "Builder base", "Everything for builder battles. Pick Builder base under "
-                          "What to farm on Home to play it.")
+                          "What to farm on the Dashboard to play it. Army: fill it with Night Witches only; "
+                          "the bot attacks best with an all Night Witch army.")
         self._builder_attack_tab(page.tab("attacking", "Attacking"))
         self._builder_village_tab(page.tab("village", "Village"))
         return page
@@ -1490,13 +1515,12 @@ class FarmbotWindow(FluentWindow):
         self._bind("bot.stop_when_full", bind_toggles(buttons))
         card = self._card(stop, "bot.stop_when_full", FIF.POWER_BUTTON, "When these storages are full",
                           "Pick the resources you farm for. It stops once every one you picked is full; with Auto "
-                          "switch (Home) it moves on to the other village first. None picked: it never stops for this.",
+                          "switch (Dashboard) it moves on to the other village first. None picked: it never stops for this.",
                           icons)
         card.setFixedHeight(96)
-        self.number(stop, "schedule.daily_attack_limit", FIF.FLAG, "Attacks per day",
-                    "It waits for the next day after this many. 0 = no limit.")
-        self.number(stop, "bot.max_attacks", FIF.POWER_BUTTON, "After this many attacks",
-                    "Counted from when you press Start. 0 = until you stop it.")
+        self.number_range(stop, "schedule.daily_attacks_min", "schedule.daily_attacks_max", FIF.FLAG,
+                          "Attacks per day", "Randomly picks a number in this range each day, then waits for the "
+                          "next day. 0 to 0 = no limit.", "attacks")
         return page
 
     def _pictures(self, page: Page) -> None:
@@ -1768,7 +1792,7 @@ class FarmbotWindow(FluentWindow):
         go.clicked.connect(self.start)
         self.setup_start = go
         self._card(step, None, FIF.PLAY, "Press Start",
-                   "It opens the game, collects loot and starts attacking. Watch it on Home; Pause (Esc) any time.", go)
+                   "It opens the game, collects loot and starts attacking. Watch it on the Dashboard; Pause (Esc) any time.", go)
 
         notify = page.add(SettingCardGroup("Alerts on your phone (optional)"))
         self.text(notify, "notify.discord_webhook", FIF.MESSAGE, "Discord webhook",
@@ -2153,7 +2177,7 @@ class FarmbotWindow(FluentWindow):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self._changed(save=False)
-        self.show_page("Home")
+        self.show_page("Dashboard")
 
     def stop(self) -> None:
         """First press: pause once the current action is done. Second
@@ -2319,7 +2343,7 @@ class FarmbotWindow(FluentWindow):
 
     # ------------------------------------------------------------ events
     def _show_status(self, status: Status) -> None:
-        """Show what the bot is doing: the title bar chip and Home's big panel."""
+        """Show what the bot is doing: the title bar chip and the Dashboard's big panel."""
         self.status_now = status
         fg, bg = STATES[status.state]
         self.state_chip.setText(f"{status.symbol}  {status.word}")
@@ -2350,7 +2374,7 @@ class FarmbotWindow(FluentWindow):
         bar.addWidget(fix)
 
     def _show_big_buttons(self) -> None:
-        """Home's big buttons follow the state: Start, Pause, Resume/Stop now, or the fix for a problem."""
+        """The Dashboard's big buttons follow the state: Start, Pause, Resume/Stop now, or the fix for a problem."""
         if not hasattr(self, "big_primary"):
             return
         running, paused = self._running(), self.pause_event.is_set()
@@ -2432,7 +2456,7 @@ class FarmbotWindow(FluentWindow):
                     status = describe_status(data)
                     if data.startswith("Storage full: switching to the "):
                         self.auto_village = "builder" if data.endswith("builder base") else "home"
-                        self._changed(save=False)  # Home shows that village's panel
+                        self._changed(save=False)  # the Dashboard shows that village's panel
                     if data.startswith("Stopped: storage full"):
                         InfoBar.success(status.headline, status.detail, duration=-1,
                                         position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
@@ -2505,8 +2529,7 @@ class FarmbotWindow(FluentWindow):
         from farmbot.tasks.search import loot_value
 
         total = loot_value(loot, search)
-        self.total_note.setText(f"Total {total:,}" + (f"  ·  {'✓' if total >= search.min_total else '✗'} minimum "
-                                                       f"{search.min_total:,}" if search.min_total else ""))
+        self.total_note.setText(f"Total {total:,}")
         self._verdict("attack" if accepted else "skip")
         if accepted and search.sound_on_match:
             QApplication.beep()

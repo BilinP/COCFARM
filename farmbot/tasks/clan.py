@@ -126,7 +126,7 @@ def donate(game: Game, cfg: ClanConfig) -> int:
     if missing:
         log.warning("Cannot donate; missing pictures: %s", ", ".join(missing))
         return 0
-    if not cfg.donate_main and not cfg.donate_spells and not cfg.donate_fill:
+    if not cfg.donate_main and not cfg.donate_siege and not cfg.donate_spells and not cfg.donate_fill:
         return 0
     if not _open_chat(game):
         return 0

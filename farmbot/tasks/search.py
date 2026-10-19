@@ -27,9 +27,12 @@ class Loot:
 BaseCallback = Callable[[Loot, bool], None]
 
 
-def loot_value(loot: Loot, criteria: SearchConfig) -> int:
-    """Gold + elixir + dark elixir, dark counted ``dark_weight`` times."""
-    return loot.gold + loot.elixir + loot.dark * criteria.dark_weight
+DARK_WORTH = 100  # one dark elixir counts as this much gold or elixir
+
+
+def loot_value(loot: Loot, criteria: SearchConfig | None = None) -> int:
+    """Gold + elixir + dark elixir, dark counted ``DARK_WORTH`` times."""
+    return loot.gold + loot.elixir + loot.dark * DARK_WORTH
 
 
 def is_worth_attacking(loot: Loot, criteria: SearchConfig) -> bool:
@@ -39,7 +42,7 @@ def is_worth_attacking(loot: Loot, criteria: SearchConfig) -> bool:
         loot.dark >= criteria.min_dark,
     ]
     enough = any(checks) if criteria.match_any else all(checks)
-    return enough and loot_value(loot, criteria) >= criteria.min_total
+    return enough
 
 
 def read_loot(game: Game, regions: RegionsConfig) -> Loot | None:

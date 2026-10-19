@@ -6,9 +6,9 @@ A card in colour can be donated, a grey one can't (it doesn't fit, it's
 not unlocked, or there's no resource for it). Each tap gives one unit and
 costs the elixir or dark elixir on the card.
 
-The bot gives the player's main units first, in their order, while they're
+The bot gives the player's main troops first, in their order, while they're
 in colour; then (if asked) fills what's left with the biggest troop that
-still fits. It never donates while the window is set to pay with gems.
+still fits; then the siege machine and spells picked. It never donates while the window is set to pay with gems.
 """
 
 from __future__ import annotations
@@ -133,15 +133,16 @@ def pays_with_gems(screen: np.ndarray, cards: list[DonateCard]) -> bool:
 
 def choose(cards: list[DonateCard], main: list[str], fill: bool) -> DonateCard | None:
     """The next card to tap: the first main unit in colour, else (with
-    ``fill``) the biggest unit in colour (units without a known housing
-    last), else none."""
+    ``fill``) the biggest troop in colour (units without a known housing
+    last; siege machines only when picked), else none."""
     available = [c for c in cards if c.available]
     for name in main:
         for c in available:
             if c.name == name:
                 return c
-    if fill and available:
-        return max(available, key=lambda c: c.housing)
+    troops = [c for c in available if not (c.name in BY_NAME and BY_NAME[c.name].kind == "siege")]
+    if fill and troops:
+        return max(troops, key=lambda c: c.housing)
     return None
 
 
@@ -222,8 +223,12 @@ def donate_open_window(game: Game, cfg: ClanConfig) -> int:
         log.warning("The donate window is set to pay with gems: not donating (switch it back to elixir)")
         return 0
     limit = min(cfg.max_donations_per_request, MAX_TAPS)
-    troops = [n for n in cfg.donate_main if BY_NAME.get(n) and BY_NAME[n].kind in ("troop", "siege")]
+    troops = [n for n in cfg.donate_main if BY_NAME.get(n) and BY_NAME[n].kind == "troop"]
     given = _give(game, TROOP_ROWS, troops, cfg.donate_fill, pictures, limit)
+    siege = [n for n in cfg.donate_siege if BY_NAME.get(n) and BY_NAME[n].kind == "siege"]
+    if siege and _title_dy(game) is not None and given < limit:
+        # Siege machines sit at the end of the troop rows: only the ones picked.
+        given += _give(game, TROOP_ROWS, siege, False, pictures, limit - given)
     if _title_dy(game) is not None and given < limit:
         # Spells: only the ones picked (filling is for troops).
         given += _give(game, SPELL_ROWS, cfg.donate_spells, False, pictures, limit - given)

@@ -32,7 +32,8 @@ Each cycle the bot:
    picks the rightmost event reward when offered, ends the battle once the loot
    stops dropping, and returns home.
 5. Optionally plays the **builder base** instead: two-stage builder battles
-   and looking after the builder village. **Auto switch** farms the village
+   and looking after the builder village. Train an army of **Night Witches
+   only**: the bot attacks best with an all Night Witch army. **Auto switch** farms the village
    you pick first until the storages you picked are full, then the other
    one, and stops once both are full.
 
@@ -45,8 +46,8 @@ Every attack is logged to `attacks.csv`, with the base's loot, your resources
 before the attack, and what you actually gained (read from your resource bar
 once back home, so it includes the star bonus). Open it in Excel or Google
 Sheets to see which loot settings pay off. The **History** page shows today's,
-the last week's and all-time totals, loot per hour of play, a 14-day chart and
-every attack.
+the last week's and all-time totals, loot per hour of play, a 14-day chart (hover a bar for the exact amount; all loot,
+or gold, elixir or dark elixir on its own) and every attack.
 
 > Automating Clash of Clans breaks Supercell's Terms of Service. Use it on an
 > account you are willing to lose.
@@ -152,10 +153,10 @@ in plain words, with a button for the fix.
 
 | Page | What's on it |
 |---|---|
-| Home | A large status (Running, Attacking, Paused, Waiting until 17:00, Stopped, Problem) with one line on what it's doing and the button that fits (Start, Pause, Resume, or the fix for a problem); which village to farm; the base being looked at, this session's loot, the last attack; the step-by-step log under Details |
+| Dashboard | A large status (Running, Attacking, Paused, Waiting until 17:00, Stopped, Problem) with one line on what it's doing and the button that fits (Start, Pause, Resume, or the fix for a problem); which village to farm; the base being looked at, this session's loot, the last attack; the step-by-step log under Details |
 | Home village | Tabs: **Bases to attack** (attack on/off, loot minimums, totals, gold floor), **Attacking** (sides laid out like the map, waves, speeds, spells, heroes, Clan Castle, when to leave), **Village** (collecting, loot cart, walls), **Clan** (donations, requests) |
-| Builder base | Tabs: **Attacking** (corner, hero, abilities, 4x speed) and **Village** (collecting, elixir cart, walls) |
-| When to play | Playing hours (24-hour grid with presets), random breaks, and when to stop: full storages, attacks per day, attacks per session |
+| Builder base | Tabs: **Attacking** (corner, hero, abilities, 4x speed) and **Village** (collecting, elixir cart, walls). Use an all Night Witch army |
+| When to play | Playing hours (24-hour grid with presets), random breaks, and when to stop: full storages, attacks per day (a random number in a range you set) |
 | History | Totals, loot per hour, the last two weeks as a chart, and every attack |
 | Setup | The four first-run steps, and Discord alerts |
 | Advanced | Theme (light, dark, follow Windows), emulator tuning (ADB, display, CPU/memory, LDPlayer instance, device address), deploy-point and timing details, **What the bot sees**, and the **Pictures** tool for adding button pictures |
@@ -164,7 +165,7 @@ The window is built with [PySide6](https://doc.qt.io/qtforpython-6/) (Qt 6) and
 [Fluent Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets), in a Windows 11
 (Fluent Design) style, light or dark. It is designed to keep you oriented and stop mistakes:
 
-- **Status is always visible.** Home and the title bar show the state as a word, a symbol and a colour, plus what the bot is doing; problems come with a fix button, and the technical details are kept apart.
+- **Status is always visible.** The Dashboard and the title bar show the state as a word, a symbol and a colour, plus what the bot is doing; problems come with a fix button, and the technical details are kept apart.
 - **Settings are laid out like Windows Settings.** Each one is a card with a short explanation, plus switches, sliders and segmented choices.
 - **Problems are caught as you type.** An invalid value replaces the card's explanation with the reason, and Start stays disabled until it is fixed.
 
@@ -228,7 +229,7 @@ These are for development and troubleshooting when working from the source
 
 ## When something goes wrong
 
-Home shows what went wrong in plain words, with a button for the fix. The step-by-step log (Home → Details) says exactly what failed, and the same log is kept in
+The Dashboard shows what went wrong in plain words, with a button for the fix. The step-by-step log (Dashboard → Details) says exactly what failed, and the same log is kept in
 `logs/farmbot.log` (a new file each day, two weeks kept). Each time a round
 fails, the bot also saves the screen it was looking at in `screens/errors/`, so
 you can see exactly what it saw (and share it when asking for help).

@@ -86,9 +86,6 @@ class SearchConfig:
     min_elixir: int = 300_000
     min_dark: int = 0
     match_any: bool = False  # accept a base if any one minimum is met
-    # And the base's loot in all: gold + elixir + dark x dark_weight (0 = off).
-    min_total: int = 0
-    dark_weight: int = 100
     max_searches: int = 150
     next_delay: float = 2.5  # seconds to wait for the next base to load
     sound_on_match: bool = False
@@ -251,10 +248,12 @@ class ClanConfig:
     request_troops: bool = False
     request_every_minutes: int = 10  # only when the cooldown on the button can't be read
     donate: bool = False
-    # Units to give first, in this order (names from farmbot/units.py, e.g.
-    # "Super Barbarian", "Battle Blimp"); then, with donate_fill, the space
-    # left goes to the biggest troops that still fit.
+    # Troops to give first, in this order (names from farmbot/units.py, e.g.
+    # "Super Barbarian"); then, with donate_fill, the space left goes to the
+    # biggest troops that still fit. Siege machines and spells: only the ones
+    # picked, in order.
     donate_main: list[str] = field(default_factory=list)
+    donate_siege: list[str] = field(default_factory=list)
     donate_spells: list[str] = field(default_factory=list)
     donate_fill: bool = True
     max_donations_per_request: int = 15  # units given to one request at most
@@ -266,7 +265,9 @@ class ScheduleConfig:
 
     enabled: bool = False
     active_hours: list[int] = field(default_factory=lambda: list(range(24)))  # 0-23, local time
-    daily_attack_limit: int = 0  # 0 = no limit
+    # Attacks per day: each day a random number between the two (0 and 0 = no limit).
+    daily_attacks_min: int = 0
+    daily_attacks_max: int = 0
     # Breaks, to play more like a person: after a random number of attacks
     # (between the two "every" numbers), rest a random number of minutes.
     breaks: bool = False
@@ -412,6 +413,8 @@ class Config:
             raise ValueError('bot.auto_first must be "home" or "builder"')
         if self.bot.theme not in THEMES:
             raise ValueError(f"bot.theme must be one of {THEMES}")
+        if self.schedule.daily_attacks_max and self.schedule.daily_attacks_min > self.schedule.daily_attacks_max:
+            raise ValueError("schedule.daily_attacks_min can't be more than schedule.daily_attacks_max")
         if self.schedule.break_every_min > self.schedule.break_every_max:
             raise ValueError("schedule.break_every_min can't be more than schedule.break_every_max")
         if self.schedule.break_minutes_min > self.schedule.break_minutes_max:
@@ -442,17 +445,22 @@ class Config:
 # dead-base search is out for now; Clan Castle troops come with the siege machine): older farmbot.toml files may still have
 # them, so they're skipped quietly.
 REMOVED_SETTINGS = {"bot.quick_train", "bot.army_recipe", "clan.request_text", "search.dead_base",
-                    "search.dead_base_collectors", "attack.use_cc"}
+                    "search.dead_base_collectors", "attack.use_cc",
+                    "search.min_total", "search.dark_weight"}
 
 
 # One unit each to donate became lists: older files' choices carry over.
-DONATE_MOVED = {"clan.donate_troop": "donate_main", "clan.donate_siege": "donate_main",
-                "clan.donate_spell": "donate_spells"}
+DONATE_MOVED = {"clan.donate_troop": "donate_main", "clan.donate_spell": "donate_spells"}
 
 
 def _merge(obj: Any, data: dict[str, Any], path: str) -> None:
     known = {f.name for f in fields(obj)}
     for key, value in data.items():
+        if f"{path}{key}" == "schedule.daily_attack_limit":  # one number, from before the range
+            obj.daily_attacks_min = obj.daily_attacks_max = int(value)
+            continue
+        if f"{path}{key}" == "clan.donate_siege" and isinstance(value, str):
+            value = [value]  # one name, from before lists
         if f"{path}{key}" in DONATE_MOVED:
             from farmbot.units import BY_NAME, BY_SLUG
 
@@ -489,11 +497,29 @@ def ensure_config(path: str | Path) -> bool:
     return True
 
 
+def _siege_out_of_main(clan: ClanConfig) -> None:
+    """Siege machines picked among the main troops (before they had their own
+    list) move to the siege list; old slugs ("battle_blimp") become names."""
+    from farmbot.units import BY_NAME, BY_SLUG
+
+    def is_siege(name: str) -> bool:
+        return name in BY_NAME and BY_NAME[name].kind == "siege"
+
+    siege = []
+    for name in clan.donate_siege:
+        unit = BY_SLUG.get(str(name).strip().lower()) or BY_NAME.get(str(name).strip())
+        siege.append(unit.name if unit else name)
+    siege += [n for n in clan.donate_main if is_siege(n)]
+    clan.donate_main = [n for n in clan.donate_main if not is_siege(n)]
+    clan.donate_siege = list(dict.fromkeys(siege))
+
+
 def load_config(path: str | Path | None) -> Config:
     config = Config()
     if path is not None:
         with open(path, "rb") as fh:
             _merge(config, tomllib.load(fh), "")
+    _siege_out_of_main(config.clan)
     config.validate()
     return config
 
