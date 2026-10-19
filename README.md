@@ -17,8 +17,9 @@ Each cycle the bot:
    builder base, battle, results, chest room, reward picker, popup), then gets
    back to the village from any of them.
 2. Looks after the village: collects resources and the loot cart, upgrades
-   walls with spare loot (if turned on), donates to clan requests, and
-   requests Clan Castle troops (when those pictures exist).
+   walls with spare loot (if turned on), donates to clan requests (your chosen
+   troops first, then the biggest troops that still fit, plus the siege
+   machine and spells you pick), and requests Clan Castle troops.
 3. Unless set to only maintain the village, or your gold is below your limit,
    goes **Battle → Find a Match → Attack!**. It reads each base's available
    gold, elixir and dark elixir and presses **Next** until one meets your minimums.
@@ -64,32 +65,38 @@ Nothing but the emulator needs installing: the app bundles everything else.
    `Documents\COCFARM`).
 3. Double-click **COCFARM.exe**. If Windows warns about an unknown publisher,
    choose **More info → Run anyway**.
-4. On the **Settings** page pick **BlueStacks** or **LDPlayer** under
-   **Connect to**. **What COCFARM found** shows where the emulator is installed
-   and its instances. Press **Test connection**.
+4. COCFARM opens on **Setup**, four numbered steps that tick off as you go:
+   1. **Emulator:** pick **BlueStacks**, **LDPlayer** or **Other** (any
+      emulator or phone by its ADB address, set under **Advanced**). **On this
+      PC** shows what COCFARM found; with several BlueStacks instances, pick
+      the one that plays the game.
+   2. **Check now:** connects to the emulator, sets it up, and checks that
+      Clash of Clans is installed and signed in. If something is wrong it says
+      what to do, with a button for the fix.
+   3. **Loot:** the least gold, elixir and dark elixir a base must offer.
+   4. **Start** (F5). Watch it on the **Dashboard**; Esc pauses.
 
-   COCFARM sets the emulator up by itself the first time it connects: it turns
+   The first time it connects, COCFARM sets the emulator up by itself: it turns
    on ADB and sets the display to 860 × 672 at 240 DPI (the size its pictures
-   are made for), restarting the emulator once to do so. You can turn each of
-   these off under **Emulator setup**.
-5. Optionally (recommended), open **Pictures** and add the two button pictures
-   not shipped, **Return Home** and **Okay**. Get the game to the screen each
-   appears on, press **Take screenshot**, drag a box around the button's text,
-   and press **Save picture**. The page warns you if the box could be mistaken
-   for something else on the screen. Until they're added, the bot leaves each
-   battle by closing the game once the loot stops dropping (the attack keeps
-   what it has won); that works but costs about 30 seconds per attack.
-6. Set your loot minimums (step 3 of **Setup**), then press **Start** (F5).
+   are made for), restarting the emulator once to do so. Each of these can be
+   turned off under **Advanced → Emulator**.
 
-Before the first Start, check the bot's vision without attacking: in the game,
-scout a base (Battle → Find a Match), then press **What the bot sees** under
-**Advanced**. It shows the loot it reads, the troop cards it found and the
-deploy points, drawn on the screenshot.
+Every button picture the bot needs is included. If an update to the game
+changes a button, replace its picture with the **Pictures** tool under
+**Advanced**: get the game to that screen, press **Take screenshot**, drag a box
+around the button, and press **Save picture**. The tool warns you if the box
+could be mistaken for something else on the screen.
+
+To check the bot's vision without attacking, scout a base in the game
+(Battle → Find a Match), then press **What the bot sees** under **Advanced**.
+It shows the loot it reads, the troop cards it found and the deploy points,
+drawn on the screenshot.
 
 Settings (`farmbot.toml`), button pictures (`templates`), `attacks.csv` and
 error screenshots (`screens`) are kept in the app's folder; if the window
-doesn't open, look in `farmbot.log` there. To update, download the new zip and
-unzip it over the old folder; your settings and pictures are kept.
+doesn't open, look in `farmbot.log` there. When a newer release is out, a
+banner in the window offers it: download the new zip and unzip it over the old
+folder; your settings, pictures and history are kept.
 
 ### How the emulator connection works
 
@@ -103,45 +110,33 @@ You never type a port.
   in BlueStacks' data folder, again on every connect, because it can change
   between runs.
 - **ADB program:** BlueStacks' own `HD-Adb.exe`, so platform-tools aren't needed.
-- **More than one instance:** pick the instance by name in Settings (empty uses
-  the main one).
+- **More than one instance:** pick the instance on **Setup** (empty uses the
+  main one).
 
 **LDPlayer 9+**
 
 - **Finding LDPlayer:** checks the Windows registry and the usual install
-  folders (`C:\LDPlayer`, `D:\LDPlayer`, …); pick a version in Settings if you have more than one
-  (empty uses the newest).
+  folders (`C:\LDPlayer`, `D:\LDPlayer`, …); with more than one, pick the
+  version under **Advanced** (empty uses the newest).
 - **Instances and setup:** uses LDPlayer's `ldconsole.exe` to list instances,
   set the display, CPU and memory, and launch the instance. ADB is the instance's
   "Local ADB connection" setting, switched on while it is stopped.
 - **Connecting:** instance *N* is `emulator-<5554 + 2N>` on LDPlayer's own
-  `adb.exe`. Pick the instance number in Settings (0 is the first one in
-  LDMultiPlayer).
+  `adb.exe`. Pick the instance number under **Advanced** (0 is the first one
+  in LDMultiPlayer).
 
-With **Start the emulator automatically** on, the bot opens the chosen instance
+**Other emulators and phones**
+
+Pick **Other** and enter the device's ADB address under **Advanced** (for
+example `127.0.0.1:5555`).
+
+With **Open the emulator automatically** on, the bot opens the chosen instance
 when you press Start and waits up to two minutes for it to answer over ADB.
-To keep the PC free, **Use as little of the PC as possible** gives the emulator
-only 2 CPU cores and 2048 MB of memory (adjustable).
-
-## Releases (for maintainers)
-
-The [`windows-exe`](.github/workflows/windows-exe.yml) GitHub Actions workflow
-builds `COCFARM.exe` from the source on a Windows runner with PyInstaller
-([`packaging/build.py`](packaging/build.py)) and starts it once with
-`--self-test` to make sure it runs.
-
-- **Every push and pull request:** the build is attached to the workflow run as
-  the **COCFARM-windows** artifact (kept 30 days), handy for testing a branch.
-- **Every push to `main`** (for example merging a pull request): the workflow
-  also publishes a GitHub Release with `COCFARM-windows.zip`, tagged
-  `v<version>-<run number>` (for example `v0.1.0-7`, version from
-  `pyproject.toml`), and marks it as the latest. Nothing to do by hand.
-- **A named version:** push a tag such as `v1.0.0`
-  (`git tag v1.0.0 && git push origin v1.0.0`), or run the workflow from the
-  **Actions** tab (**Run workflow**) and enter the version.
+To keep the PC free, **Use as little of the PC as possible** (under
+**Advanced**) gives the emulator only 2 CPU cores and 2048 MB of memory
+(adjustable).
 
 ## The control window
-
 
 The first time it opens, the window goes to **Setup**: four numbered steps
 (pick the emulator, check the connection and the game, choose the loot you
@@ -165,7 +160,6 @@ The window is built with [PySide6](https://doc.qt.io/qtforpython-6/) (Qt 6) and
 - **Status is always visible.** The Dashboard and the title bar show the state as a word, a symbol and a colour, plus what the bot is doing; problems come with a fix button, and the technical details are kept apart.
 - **Settings are laid out like Windows Settings.** Each one is a card with a short explanation, plus switches, sliders and segmented choices.
 - **Problems are caught as you type.** An invalid value replaces the card's explanation with the reason, and Start stays disabled until it is fixed.
-
 - **Settings that don't apply are greyed out**, such as the ability delay when hero abilities are off.
 - **Saving is automatic.** Valid changes save to `farmbot.toml` straight away, and a running bot picks them up at its next step.
 - **Keyboard:** F5 starts, Esc pauses (press again to stop now), Ctrl+1…7 switch pages, Tab moves between controls and Enter presses the focused button.
@@ -192,7 +186,7 @@ These are for development and troubleshooting when working from the source
 |---|---|
 | `farmbot gui` | Control window |
 | `farmbot run [--max-attacks N]` | Farm without the window |
-| `farmbot devices` | List emulator instances, their ADB ports, and whether ADB is on |
+| `farmbot devices` | List BlueStacks instances, their ADB ports, and whether ADB is on |
 | `farmbot pictures` | List the button pictures and which are missing |
 | `farmbot inspect [--image F]` | Show loot, cards and deploy points on a screen |
 | `farmbot screenshot [F]` | Save the device screen, scaled to bot coordinates |
@@ -206,12 +200,15 @@ These are for development and troubleshooting when working from the source
 |---|---|
 | `farmbot/device.py` | ADB device: screenshots, taps, swipes, app start/stop |
 | `farmbot/bluestacks.py`, `farmbot/ldplayer.py` | Finding, setting up and connecting to BlueStacks 5 and LDPlayer 9+ |
+| `farmbot/window.py` | BlueStacks with ADB off: capturing and clicking its window |
+| `farmbot/gamecheck.py` | Is Clash of Clans installed, and is an account signed in |
 | `farmbot/game.py` | Screen scaling, find/click/wait helpers, template names (`T`) |
 | `farmbot/vision.py`, `farmbot/text.py` | Template matching, digit reading |
 | `farmbot/catalog.py` | Every button picture: where to find it and what it enables |
 | `farmbot/armybar.py` | Troop bar cards |
 | `farmbot/redline.py`, `farmbot/deployzone.py` | Deploy point detection |
-| `farmbot/tasks/` | Village chores, clan, search, attack, builder base |
+| `farmbot/tasks/` | Village chores, clan requests, donations, search, attack, builder base |
+| `farmbot/units.py` | Every donatable unit and its housing space |
 | `farmbot/screens.py` | Names the screen on show and gets back to a village from it |
 | `farmbot/bot.py` | Main loop with error recovery, the watchdog and status events |
 | `farmbot/notify.py` | Discord webhook messages |
@@ -220,7 +217,7 @@ These are for development and troubleshooting when working from the source
 | `farmbot/gui.py`, `farmbot/form.py` | Fluent (PySide6) window and its settings model |
 | `farmbot/friendly.py` | Plain words for the window: what the bot is doing, and what went wrong with the fix |
 | `farmbot/config.py` | TOML settings (`farmbot.example.toml` lists them all) |
-| `templates/` | Button, collector and digit pictures the bot matches against |
+| `templates/` | Button, collector, donate-window and digit pictures the bot matches against (see [`templates/README.md`](templates/README.md)) |
 | `packaging/` | PyInstaller build of `COCFARM.exe` |
 | `.github/workflows/windows-exe.yml` | CI: builds, self-tests and releases the exe |
 
@@ -235,10 +232,25 @@ The watchdog: after three failed rounds in a row it restarts the game; if that
 doesn't help (or the emulator stops answering), it closes and reopens the
 emulator.
 
-## Releases
+## Releases (for maintainers)
 
-Push a version tag (`git tag v0.2.0 && git push origin v0.2.0`) and the
-`windows-exe` workflow builds COCFARM.exe and publishes it as a GitHub release.
+The [`windows-exe`](.github/workflows/windows-exe.yml) GitHub Actions workflow
+builds `COCFARM.exe` from the source on a Windows runner with PyInstaller
+([`packaging/build.py`](packaging/build.py)) and starts it once with
+`--self-test` to make sure it runs.
+
+- **Every push and pull request:** the build is attached to the workflow run as
+  the **COCFARM-windows** artifact (kept 30 days), handy for testing a branch.
+- **Every push to `main`** (for example merging a pull request): the workflow
+  also publishes a GitHub Release with `COCFARM-windows.zip`, tagged
+  `v<version>-<run number>` (for example `v0.4.0-12`, version from
+  `pyproject.toml`), and marks it as the latest. Nothing to do by hand.
+  Bump `version` in `pyproject.toml` and `farmbot/__init__.py` for a new
+  version: the window's update banner compares only that version, so builds
+  of the same version don't announce themselves as updates.
+- **A named version:** push a tag such as `v1.0.0`
+  (`git tag v1.0.0 && git push origin v1.0.0`), or run the workflow from the
+  **Actions** tab (**Run workflow**) and enter the version.
 
 ## Not yet done
 
