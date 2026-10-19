@@ -252,8 +252,3 @@ builds `COCFARM.exe` from the source on a Windows runner with PyInstaller
   (`git tag v1.0.0 && git push origin v1.0.0`), or run the workflow from the
   **Actions** tab (**Run workflow**) and enter the version.
 
-## Not yet done
-
-Supertroop activation, Town Hall level filter, army presets and a per-troop
-deploy order (the bot deploys troops, then heroes/siege, then spells), and
-dead-base search (only attacking bases with full collectors).
