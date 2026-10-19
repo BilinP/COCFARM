@@ -9,7 +9,8 @@ everything it needs on the screen with OpenCV. It comes as a ready-made
 double-click it.
 
 [![windows-exe](https://github.com/BilinP/COCFARM/actions/workflows/windows-exe.yml/badge.svg)](https://github.com/BilinP/COCFARM/actions/workflows/windows-exe.yml)
-[![Latest release](https://img.shields.io/github/v/release/BilinP/COCFARM)](https://github.com/BilinP/COCFARM/releases/latest)
+
+**[⬇ Download the latest release](https://github.com/BilinP/COCFARM/releases/latest)** · [All releases](https://github.com/BilinP/COCFARM/releases)
 
 Each cycle the bot:
 
