@@ -1,8 +1,8 @@
 """Messages to your phone through a Discord webhook.
 
 Each message is a Discord embed: a coloured card with a title, a line on what
-happened, the attacks, and the loot drawn as a small card with the game's own
-gold, elixir and dark elixir sprites, signed with the COCFARM logo. Sent in
+happened, the attacks, and the loot drawn as a small card with COCFARM's own
+gold, elixir and dark elixir icons (farmbot/icons.py), signed with its logo. Sent in
 the background so a slow or failed request never holds up the bot; failures
 are only logged. Nothing is sent unless notify.discord_webhook is set.
 """
@@ -71,11 +71,13 @@ def _logo() -> bytes | None:
 
 def loot_image(loot) -> bytes | None:
     """The loot as a small dark card: gold, elixir and dark elixir side by
-    side, each sprite over its amount. Needs the window's Qt (for its
+    side, each icon over its amount. Needs the window's Qt (for its
     fonts); None without it."""
     try:
         from PySide6.QtCore import QBuffer, QRectF, Qt
         from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QImage, QPainter
+
+        from farmbot import icons
 
         if QGuiApplication.instance() is None:
             return None
@@ -98,8 +100,7 @@ def loot_image(loot) -> bytes | None:
         p.setPen(QColor("#F2F3F5"))
         for i, ((key, _), text) in enumerate(zip(RESOURCES, texts)):
             x = pad + i * column
-            sprite = QImage(str(ASSETS / f"{key}.png"))
-            p.drawImage(QRectF(x + (column - icon) / 2, pad, icon, icon), sprite)
+            icons.draw(p, QRectF(x + (column - icon) / 2, pad, icon, icon), key)
             p.drawText(QRectF(x, pad + icon + gap, column, text_h), Qt.AlignCenter, text)
         p.end()
         buffer = QBuffer()

@@ -89,6 +89,23 @@ def prune(internal: Path) -> None:
     print(f"pruned {removed / 2**20:.0f} MB of unused files")
 
 
+def add_licenses(app: Path) -> None:
+    """COCFARM's license, the third-party notices, and the license files of
+    the libraries whose notices travel with their binaries."""
+    from importlib.metadata import distribution
+
+    shutil.copy(ROOT / "LICENSE", app / "LICENSE.txt")
+    shutil.copy(ROOT / "THIRD_PARTY_NOTICES.md", app / "THIRD_PARTY_NOTICES.md")
+    shutil.copytree(ROOT / "licenses", app / "licenses")
+    for package, folder in (("opencv-python-headless", "opencv-python"), ("numpy", "numpy")):
+        target = app / "licenses" / folder
+        target.mkdir()
+        for file in distribution(package).files or []:
+            in_metadata = file.parent.name.endswith(".dist-info") or file.parent.name == "licenses"
+            if in_metadata and "licen" in file.name.lower():
+                shutil.copy(file.locate(), target / file.name)
+
+
 def main() -> int:
     shutil.rmtree(DIST, ignore_errors=True)
     shutil.rmtree(ROOT / "build", ignore_errors=True)
@@ -111,6 +128,7 @@ def main() -> int:
     # Pictures stay as plain files next to the exe so new ones can be added.
     shutil.copytree(ROOT / "templates", APP / "templates")
     shutil.copy(ROOT / "farmbot.example.toml", APP / "farmbot.example.toml")
+    add_licenses(APP)
     (APP / "START HERE.txt").write_text(START_HERE, encoding="utf-8")
     archive = shutil.make_archive(str(DIST / f"{NAME}-windows"), "zip", DIST, NAME)
     print(f"built {APP} and {archive}")

@@ -1,5 +1,8 @@
 # COCFARM
 
+> [!NOTE]
+> **Not affiliated with, endorsed by, or connected to Supercell.** Clash of Clans is a trademark of Supercell Oy.
+
 <img src="farmbot/assets/cocfarm.png" alt="COCFARM logo" width="96" align="right">
 
 **A Clash of Clans farming bot for Windows.** It plays the game for you on an
@@ -113,6 +116,8 @@ farmbot pictures    # list the button pictures and which are missing
 `COCFARM.exe` with PyInstaller, self-test it, and publish a GitHub release
 (a version tag like `v1.2.3` publishes under that exact version).
 
-Fluent Widgets is free under GPLv3 for non-commercial use.
+**License:** COCFARM is free software under the [GNU GPL v3 or later](LICENSE).
+The libraries it bundles (Qt, Fluent Widgets, OpenCV and others) are listed with
+their licenses in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 </details>

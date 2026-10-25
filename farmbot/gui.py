@@ -37,7 +37,7 @@ from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox,
                             StrongBodyLabel, SubtitleLabel, SwitchButton, Theme, TitleLabel, TogglePushButton,
                             isDarkTheme, qconfig, setCustomStyleSheet, setTheme, setThemeColor)
 
-from farmbot import __version__, catalog
+from farmbot import __version__, catalog, icons
 from farmbot.config import Config, ensure_config, load_config, save_config
 from farmbot.form import BY_PATH, apply_form, form_values, validate
 from farmbot.friendly import Problem, Status, describe_status, explain
@@ -1520,13 +1520,13 @@ class FarmbotWindow(FluentWindow):
         self.depends("schedule.breaks", "schedule.break_every_min", "schedule.break_minutes_min")
 
         stop = page.add(SettingCardGroup("When to stop"))
-        icons = QWidget()
-        row = QHBoxLayout(icons)
+        storages = QWidget()
+        row = QHBoxLayout(storages)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         buttons = {}
         for key, name in (("gold", "Gold"), ("elixir", "Elixir"), ("dark", "Dark")):
-            b = TogglePushButton(QIcon(str(ASSETS / f"{key}.png")), f"  {name}")
+            b = TogglePushButton(icons.icon(key, 28), f"  {name}")
             b.setMinimumWidth(104)
             b.setIconSize(QSize(28, 28))
             b.setMinimumHeight(44)
@@ -1537,7 +1537,7 @@ class FarmbotWindow(FluentWindow):
         card = self._card(stop, "bot.stop_when_full", FIF.POWER_BUTTON, "When these storages are full",
                           "Pick the resources you farm for. It stops once every one you picked is full; with Auto "
                           "switch (Dashboard) it moves on to the other village first. None picked: it never stops for this.",
-                          icons)
+                          storages)
         card.setFixedHeight(96)
         self.number_range(stop, "schedule.daily_attacks_min", "schedule.daily_attacks_max", FIF.FLAG,
                           "Attacks per day", "Randomly picks a number in this range each day, then waits for the "
