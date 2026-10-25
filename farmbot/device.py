@@ -87,6 +87,10 @@ class TouchScreen:
     max_x: int
     max_y: int
     event_size: int = 24  # struct input_event: 24 bytes on 64-bit Android, 16 on 32-bit
+    # Multitouch protocol B (slots and tracking ids, code 002f), which many
+    # emulators use; Android ignores protocol A events on such a device.
+    slots: bool = False
+    btn_touch: bool = False  # it reports BTN_TOUCH (key 014a) with each touch
 
 
 def parse_touchscreen(getevent: str, event_size: int = 24) -> TouchScreen | None:
@@ -94,38 +98,71 @@ def parse_touchscreen(getevent: str, event_size: int = 24) -> TouchScreen | None
     positions (ABS_MT_POSITION_X/Y, codes 0035/0036) with their ranges."""
     path: str | None = None
     max_x = max_y = 0
+    slots = btn_touch = False
     for line in getevent.splitlines():
         added = re.match(r"add device \d+: (\S+)", line)
         if added:
             if path and max_x and max_y:
                 break
-            path, max_x, max_y = added.group(1), 0, 0
+            path, max_x, max_y, slots, btn_touch = added.group(1), 0, 0, False, False
+            continue
+        if not path:
             continue
         axis = re.search(r"\b(0035|0036)\s*:.*\bmax (\d+)", line)
-        if axis and path:
+        if axis:
             if axis.group(1) == "0035":
                 max_x = int(axis.group(2))
             else:
                 max_y = int(axis.group(2))
-    return TouchScreen(path, max_x, max_y, event_size) if path and max_x and max_y else None
+        if re.search(r"\b002f\s*:", line):
+            slots = True
+        if re.search(r"\b014a\b", line):
+            btn_touch = True
+    return TouchScreen(path, max_x, max_y, event_size, slots, btn_touch) if path and max_x and max_y else None
 
 
-def touch_events(points: list[tuple[int, int]], size: tuple[int, int], touch: TouchScreen) -> bytes:
-    """One finger down-and-up per point, as raw ``input_event`` structs
-    (multitouch protocol A), one fixed-size block per tap."""
+def _packer(touch: TouchScreen):
     fmt = "<qqHHi" if touch.event_size == 24 else "<iiHHi"
 
     def event(kind: int, code: int, value: int) -> bytes:
         return struct.pack(fmt, 0, 0, kind, code, value)
 
-    sync, mt_sync = event(EV_SYN, SYN_REPORT, 0), event(EV_SYN, SYN_MT_REPORT, 0)
+    return event
+
+
+def _scaled(x: float, y: float, size: tuple[int, int], touch: TouchScreen) -> tuple[int, int]:
     w, h = size
+    return (round(min(max(x, 0), w - 1) * touch.max_x / max(w - 1, 1)),
+            round(min(max(y, 0), h - 1) * touch.max_y / max(h - 1, 1)))
+
+
+def tap_events(touch: TouchScreen) -> int:
+    """How many events :func:`touch_events` writes per tap."""
+    return (9 if touch.slots else 6) + (2 if touch.btn_touch else 0)
+
+
+def touch_events(points: list[tuple[int, int]], size: tuple[int, int], touch: TouchScreen) -> bytes:
+    """One finger down-and-up per point, as raw ``input_event`` structs in
+    the device's multitouch protocol, one fixed-size block per tap."""
+    event = _packer(touch)
+    sync, mt_sync = event(EV_SYN, SYN_REPORT, 0), event(EV_SYN, SYN_MT_REPORT, 0)
     data = bytearray()
-    for x, y in points:
-        data += event(EV_ABS, ABS_MT_POSITION_X, round(min(max(x, 0), w - 1) * touch.max_x / max(w - 1, 1)))
-        data += event(EV_ABS, ABS_MT_POSITION_Y, round(min(max(y, 0), h - 1) * touch.max_y / max(h - 1, 1)))
-        data += mt_sync + sync  # finger down
-        data += mt_sync + sync  # finger up: a report with no fingers
+    for i, (x, y) in enumerate(points):
+        tx, ty = _scaled(x, y, size, touch)
+        down = up = b""
+        if touch.btn_touch:
+            down, up = event(EV_KEY, BTN_TOUCH, 1), event(EV_KEY, BTN_TOUCH, 0)
+        if touch.slots:
+            data += event(EV_ABS, ABS_MT_SLOT, 0) + event(EV_ABS, ABS_MT_TRACKING_ID, i % 60000 + 1)
+            data += event(EV_ABS, ABS_MT_POSITION_X, tx) + event(EV_ABS, ABS_MT_POSITION_Y, ty)
+            data += down + sync  # finger down
+            data += event(EV_ABS, ABS_MT_SLOT, 0) + event(EV_ABS, ABS_MT_TRACKING_ID, -1)
+            data += up + sync  # finger up
+            data += sync  # keeps the block the same size as protocol A's
+        else:
+            data += event(EV_ABS, ABS_MT_POSITION_X, tx) + event(EV_ABS, ABS_MT_POSITION_Y, ty)
+            data += down + mt_sync + sync  # finger down
+            data += up + mt_sync + sync  # finger up: a report with no fingers
     return bytes(data)
 
 
@@ -136,31 +173,39 @@ def pinch_events(center: tuple[int, int], start: int, end: int, steps: int, size
     finger starts on a button (a finger on Next makes the game see a
     one-finger drag, which pans instead). Returns the frames, each one
     fixed-size block, and the release that lifts both fingers."""
-    fmt = "<qqHHi" if touch.event_size == 24 else "<iiHHi"
-
-    def event(kind: int, code: int, value: int) -> bytes:
-        return struct.pack(fmt, 0, 0, kind, code, value)
-
+    event = _packer(touch)
     w, h = size
     cx, cy = center
     frames = bytearray()
     for i in range(steps + 1):
         d = start + (end - start) * i / steps
-        for sign in (-1, 1):
-            x = min(max(cx + sign * d, 0), w - 1)
-            y = cy
-            frames += event(EV_ABS, ABS_MT_POSITION_X, round(x * touch.max_x / max(w - 1, 1)))
-            frames += event(EV_ABS, ABS_MT_POSITION_Y, round(y * touch.max_y / max(h - 1, 1)))
-            frames += event(EV_SYN, SYN_MT_REPORT, 0)
+        for finger, sign in enumerate((-1, 1)):
+            tx, ty = _scaled(cx + sign * d, cy, size, touch)
+            if touch.slots:
+                # The tracking id is set on every frame so each block stands
+                # alone; repeating it for a finger already down is harmless.
+                frames += event(EV_ABS, ABS_MT_SLOT, finger) + event(EV_ABS, ABS_MT_TRACKING_ID, 60001 + finger)
+            frames += event(EV_ABS, ABS_MT_POSITION_X, tx) + event(EV_ABS, ABS_MT_POSITION_Y, ty)
+            if not touch.slots:
+                frames += event(EV_SYN, SYN_MT_REPORT, 0)
+        if touch.btn_touch:
+            frames += event(EV_KEY, BTN_TOUCH, 1)
         frames += event(EV_SYN, SYN_REPORT, 0)
-    release = event(EV_SYN, SYN_MT_REPORT, 0) + event(EV_SYN, SYN_REPORT, 0)
+    if touch.slots:
+        release = b"".join(event(EV_ABS, ABS_MT_SLOT, f) + event(EV_ABS, ABS_MT_TRACKING_ID, -1) for f in (0, 1))
+    else:
+        release = event(EV_SYN, SYN_MT_REPORT, 0)
+    if touch.btn_touch:
+        release += event(EV_KEY, BTN_TOUCH, 0)
+    release += event(EV_SYN, SYN_REPORT, 0)
     return bytes(frames), release
 
 
-EV_SYN, EV_ABS = 0, 3
+EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
 SYN_REPORT, SYN_MT_REPORT = 0, 2
+ABS_MT_SLOT, ABS_MT_TRACKING_ID = 0x2F, 0x39
 ABS_MT_POSITION_X, ABS_MT_POSITION_Y = 0x35, 0x36
-TAP_EVENTS = 6  # events per tap in touch_events
+BTN_TOUCH = 0x14A
 TAPS_FILE = "/data/local/tmp/farmbot_taps"
 PINCH_FILE = "/data/local/tmp/farmbot_pinch"
 RELEASE_FILE = "/data/local/tmp/farmbot_release"
@@ -231,9 +276,20 @@ class AdbDevice:
                 found = parse_touchscreen(self.shell("getevent", "-p"), 24 if "64" in abi else 16)
             except DeviceError:
                 found = None
-            log.debug("Touchscreen: %s", found)
+            log.info("Touchscreen: %s", found)
             self._touch = found or False
         return self._touch or None
+
+    def stop_fast_taps(self) -> bool:
+        """Tap with ``input tap`` from now on, for when taps written to the
+        touchscreen don't reach the game. False if it already did."""
+        if not self._touch:
+            self._touch = False
+            return False
+        log.warning("Taps written to the touchscreen (%s) are not reaching the game; using input tap",
+                    self._touch.path)
+        self._touch = False
+        return True
 
     def tap_many(self, points: list[tuple[int, int]], pause: float = 0.0) -> None:
         """Tap every point quickly, ``pause`` seconds apart at most.
@@ -288,7 +344,7 @@ class AdbDevice:
 
     def _write_taps(self, points: list[tuple[int, int]], touch: TouchScreen, pause: float) -> None:
         data = touch_events(points, self._size, touch)
-        block = TAP_EVENTS * touch.event_size
+        block = tap_events(touch) * touch.event_size
         with tempfile.NamedTemporaryFile(prefix="farmbot_taps", delete=False) as fh:
             fh.write(data)
         try:

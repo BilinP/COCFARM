@@ -165,6 +165,12 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
         # same twice in a row, the game is rejecting our points.
         stalled = 0 if armybar.card_changed(before, after, card) else stalled + 1
         if stalled >= 2:
+            # Heroes go down with single taps, troops and spells with fast
+            # bursts; on emulators where the bursts don't get through,
+            # nothing but the card selection happens. Retry with plain taps.
+            if game.stop_fast_taps():
+                stalled = 0
+                continue
             if fallback is not None and points is not fallback:
                 log.info("Card at x=%d is not deploying; trying the fixed deploy lines", card.left)
                 points, stalled = fallback, 0

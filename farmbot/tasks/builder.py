@@ -618,10 +618,13 @@ def deploy_stage(game: Game, cfg: BuilderConfig, first: bool = False) -> tuple[f
         game.tap_many([point] * len(troops), jitter=6)
         sent += troops
         game.wait(0.5)
+        tried = len(troops)
         troops = ready_troops(game.refresh(), cfg)
         if not troops:
             break
         log.info("%d troop card(s) didn't go out; trying again", len(troops))
+        if len(troops) == tried:  # none went out: the fast taps aren't getting through
+            game.stop_fast_taps()
     return landed, sorted({s.index: s for s in sent}.values(), key=lambda s: s.index)
 
 

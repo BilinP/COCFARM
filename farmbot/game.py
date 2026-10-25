@@ -280,6 +280,12 @@ class Game:
             if pause:
                 self.wait(pause)
 
+    def stop_fast_taps(self) -> bool:
+        """Switch the device from its fast tap bursts to plain taps. True if
+        that changed anything (so a refused deploy is worth trying again)."""
+        stop = getattr(self.device, "stop_fast_taps", None)
+        return bool(stop and stop())
+
     def zoom_out(self) -> bool:
         """Pinch the view all the way out, on devices that can. The game
         keeps its zoom between battles, and a zoomed-in view hides the
