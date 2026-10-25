@@ -29,8 +29,8 @@ looks after your village, in **both the home village and the builder base**.
 
 ## Get started
 
-1. **Install an emulator** ([BlueStacks 5](https://www.bluestacks.com/) or
-   [LDPlayer 9](https://www.ldplayer.net/)) and sign in to Clash of Clans in it.
+1. **Install an emulator** ([BlueStacks 5](https://www.bluestacks.com/), or
+   [LDPlayer 9 or 14](https://www.ldplayer.net/)) and sign in to Clash of Clans in it.
 2. **Download COCFARM.** Get `COCFARM-windows.zip` from the
    [latest release](https://github.com/BilinP/COCFARM/releases/latest) and unzip it anywhere.
 3. **Open `COCFARM.exe`.** If Windows warns you, click **More info → Run anyway**.
@@ -39,6 +39,20 @@ looks after your village, in **both the home village and the builder base**.
 5. **Press Start** (or F5). That's it.
 
 To update, download the new zip and unzip it over the old folder. Your settings are kept.
+
+### Tested emulators
+
+Home village and builder base attacks were tested live on each of these (COCFARM 0.5.0):
+
+| Emulator | Version | Android |
+|---|---|---|
+| BlueStacks 5 | 5.22.110.1028 (Pie 64-bit) | 9 |
+| LDPlayer 9 | 9.5.25.0 | 9 |
+| LDPlayer 14 | 14.0.29.2 | 14 |
+
+Other versions will likely work too. If yours doesn't, please
+[report it](https://github.com/BilinP/COCFARM/issues/new/choose) with the emulator and its version.
+Run one emulator at a time: BlueStacks and LDPlayer use the same connection port.
 
 ## A quick look
 
