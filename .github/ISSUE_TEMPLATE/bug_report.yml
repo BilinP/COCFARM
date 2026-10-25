@@ -1,0 +1,89 @@
+name: Bug report
+description: Something in COCFARM isn't working.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The more specific you are, the faster it can be fixed.
+        Please fill in every field.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of COCFARM?
+      options:
+        - General (setup, connecting, the window, schedule, alerts)
+        - Home village
+        - Builder base
+    validations:
+      required: true
+
+  - type: dropdown
+    id: emulator
+    attributes:
+      label: Which emulator are you using?
+      options:
+        - BlueStacks 5
+        - LDPlayer 9
+        - Other (say which below)
+    validations:
+      required: true
+
+  - type: input
+    id: emulator-version
+    attributes:
+      label: Emulator version
+      description: |
+        BlueStacks: Settings → About. LDPlayer: Settings → About (or the title bar).
+        For another emulator, give its name and version.
+      placeholder: e.g. BlueStacks 5.21.650.1063 (Pie 64-bit) or LDPlayer 9.1.45
+    validations:
+      required: true
+
+  - type: input
+    id: cocfarm-version
+    attributes:
+      label: COCFARM version
+      description: The release you downloaded, as shown on the Releases page.
+      placeholder: e.g. v0.4.0-1
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the issue
+      description: What happened, and what did you expect to happen instead?
+      placeholder: e.g. Troops and spells are selected but never placed; heroes are placed fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did, step by step, until the problem showed up.
+      placeholder: |
+        1. Pressed Start
+        2. It found a base and pressed Attack!
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log
+      description: |
+        The lines around the problem from `logs/farmbot.log` in the COCFARM folder
+        (or Dashboard → Details). Pasted text is formatted automatically.
+      render: text
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: |
+        Optional: drag in screenshots of the problem, or the matching ones from
+        `screens/errors/`. They show other players' bases, so crop them if you like.
