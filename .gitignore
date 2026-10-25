@@ -13,6 +13,8 @@ dist/
 tests/fixtures/*.webp
 docs/*.png
 logs/
+update.json
+_update/
 
 # Not published: tests, docs, third-party samples
 tests/

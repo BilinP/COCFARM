@@ -30,13 +30,14 @@ from PySide6.QtGui import QColor, QIcon, QImage, QKeySequence, QPainter, QPen, Q
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QListWidgetItem,
                                QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox, ElevatedCardWidget,
-                            FluentIcon as FIF, FluentWindow, InfoBar, InfoBarPosition, LineEdit, ListWidget,
-                            NavigationItemPosition, PlainTextEdit, PrimaryPushButton, PushButton, SegmentedWidget,
+                            FluentIcon as FIF, FluentWindow, InfoBar, InfoBarIcon, InfoBarPosition, LineEdit, ListWidget,
+                            NavigationItemPosition, PlainTextEdit, PrimaryPushButton, ProgressBar, PushButton,
+                            SegmentedWidget,
                             SettingCard, SettingCardGroup, SimpleCardWidget, Slider, SmoothScrollArea,
                             StrongBodyLabel, SubtitleLabel, SwitchButton, Theme, TitleLabel, TogglePushButton,
                             isDarkTheme, qconfig, setCustomStyleSheet, setTheme, setThemeColor)
 
-from farmbot import catalog
+from farmbot import __version__, catalog
 from farmbot.config import Config, ensure_config, load_config, save_config
 from farmbot.form import BY_PATH, apply_form, form_values, validate
 from farmbot.friendly import Problem, Status, describe_status, explain
@@ -537,8 +538,12 @@ class FarmbotWindow(FluentWindow):
         self.session_start: float | None = None
         self.stats = {"bases": 0, "attacks": 0}
         self.gained = {"gold": 0, "elixir": 0, "dark": 0}
+        self.update_release = None  # a newer release on GitHub
+        self.update_staged: Path | None = None  # downloaded and unpacked, ready to install
+        self.update_busy = False
+        self.update_bar: InfoBar | None = None
 
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(f"{APP_NAME} {__version__}")  # the version is in every bug report screenshot
         self.setWindowIcon(QIcon(str(LOGO)))
         self._sharp_title_icon()
         # Keep page names visible next to the icons (recognition over recall).
@@ -589,6 +594,9 @@ class FarmbotWindow(FluentWindow):
         QShortcut(QKeySequence("F5"), self, activated=self.start)
         if self.first_run:
             QTimer.singleShot(300, self._welcome)
+        self.update_timer = QTimer(self, interval=600_000, timeout=self._check_for_update)  # GitHub is asked hourly at most
+        self.update_timer.start()
+        QTimer.singleShot(1500, self._after_update)
         self._check_for_update()
         QShortcut(QKeySequence("Esc"), self, activated=self.stop)
         for i, name in enumerate(PAGES, start=1):
@@ -1896,6 +1904,18 @@ class FarmbotWindow(FluentWindow):
         self.segments(look, "bot.theme", FIF.PALETTE, "Theme", "Light or dark window. Follow Windows uses your "
                       "Windows setting.", THEMES, width=120)
 
+        updates = tab.add(SettingCardGroup("Updates"))
+        self.update_button = PushButton(FIF.SYNC, "Check now")
+        self.update_button.clicked.connect(self._update_clicked)
+        self.update_progress = ProgressBar()
+        self.update_progress.setFixedWidth(160)
+        self.update_progress.hide()
+        self.update_card = self._card(updates, None, FIF.UPDATE, f"COCFARM {__version__}",
+                                      "Updates come from COCFARM's GitHub releases. Your settings and history are kept.",
+                                      self.update_progress, self.update_button)
+        self.switch(updates, "bot.check_updates", FIF.SYNC, "Look for updates by itself",
+                    "Checks GitHub when the window opens, and every hour while it's open.")
+
         emulator = tab.add(SettingCardGroup("Emulator"))
         self.switch(emulator, "device.enable_adb", ICON_TOOLS, "Turn on ADB",
                     "ADB is how COCFARM controls the emulator in the background. If it's off, COCFARM turns it on "
@@ -1977,28 +1997,150 @@ class FarmbotWindow(FluentWindow):
         InfoBar.info("Welcome to COCFARM", "Follow the four steps on this page. It takes a couple of minutes.",
                      duration=8000, position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
 
-    def _check_for_update(self) -> None:
+    def _check_for_update(self, force: bool = False) -> None:
+        """Ask GitHub for a newer COCFARM in the background (see farmbot/update.py
+        for how often it really asks)."""
         repo = self.config.bot.update_repo
-        if not repo:
+        if not repo or self.update_busy or not (force or self.config.bot.check_updates):
             return
+        if force:
+            self.update_button.setEnabled(False)
+            self._update_note("Asking GitHub…")
 
         def work() -> None:
-            from farmbot.update import newer_release
+            from farmbot import update
 
-            release = newer_release(repo)
-            if release:
-                self.events.put(("update", release))
+            self.events.put(("update", (update.check(repo, force=force), force)))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _show_update(self, release) -> None:
+    def _show_update(self, check, force: bool) -> None:
+        from farmbot.update import can_install
+
+        self.update_button.setEnabled(True)
+        if self.update_staged:
+            return
+        release = check.release
+        if force or release:
+            self._update_note(check.note)
+        if not release:
+            return
+        installable = can_install() and bool(release.download)
+        self.update_button.setText("Update now" if installable else "Download")
+        self.update_button.setIcon(FIF.DOWNLOAD)
+        new = self.update_release is None or self.update_release.version != release.version
+        self.update_release = release
+        if new:
+            self._update_bar(f"COCFARM {release.version} is out",
+                             PushButton(FIF.DOWNLOAD, "Update now" if installable else "Download"))
+
+    def _update_bar(self, title: str, button: QAbstractButton) -> None:
+        """A bar in the corner with one button, replacing the last one."""
+        if self.update_bar:
+            self.update_bar.close()
+        # Built hidden and shown once the button is in: it's placed by its full width.
+        self.update_bar = InfoBar(InfoBarIcon.SUCCESS, title, "", duration=-1, position=InfoBarPosition.BOTTOM_RIGHT,
+                                  parent=self)
+        button.clicked.connect(self._update_clicked)
+        self.update_bar.addWidget(button)
+        self.update_bar.show()
+
+    def _update_clicked(self) -> None:
+        if self.update_bar:
+            self.update_bar.close()
+            self.update_bar = None
+        if self.update_staged:
+            self._restart_to_update()
+        elif self.update_release:
+            self.show_page("Advanced", "settings")
+            self._download_update()
+        else:
+            self._check_for_update(force=True)
+
+    def _download_update(self) -> None:
         import webbrowser
 
-        bar = InfoBar.success("Update available", f"COCFARM {release.version} is out.", duration=-1,
-                              position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
-        get = PushButton(FIF.DOWNLOAD, "Download")
-        get.clicked.connect(lambda: webbrowser.open(release.url))
-        bar.addWidget(get)
+        from farmbot import update
+
+        release = self.update_release
+        if not update.can_install() or not release.download:
+            webbrowser.open(release.url)
+            return
+        if self.update_busy:
+            return
+        self.update_busy = True
+        self.update_button.setEnabled(False)
+        self.update_progress.setValue(0)
+        self.update_progress.show()
+        self._update_note(f"Downloading COCFARM {release.version}… You can keep farming meanwhile.")
+
+        def progress(done: int, total: int) -> None:
+            self.events.put(("update_progress", (done, total)))
+
+        def work() -> None:
+            try:
+                staged = update.unpack(update.download(release, progress=progress))
+                self.events.put(("update_ready", staged))
+            except update.UpdateError as exc:
+                self.events.put(("update_failed", str(exc)))
+            except Exception as exc:
+                log.exception("Update failed")
+                self.events.put(("update_failed", f"Something went wrong: {exc}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_update_progress(self, done: int, total: int) -> None:
+        if total:
+            self.update_progress.setValue(int(done * 100 / total))
+            self._update_note(f"Downloading COCFARM {self.update_release.version}… "
+                                        f"{done / 2**20:.0f} of {total / 2**20:.0f} MB")
+
+    def _update_ready(self, staged: Path) -> None:
+        self.update_busy = False
+        self.update_staged = staged
+        self.update_progress.hide()
+        self.update_button.setEnabled(True)
+        self.update_button.setText("Restart and update")
+        self.update_button.setIcon(FIF.UPDATE)
+        self._update_note(f"COCFARM {self.update_release.version} is downloaded. It installs when "
+                                    "COCFARM restarts (about 10 seconds).")
+        self._update_bar(f"COCFARM {self.update_release.version} is ready",
+                         PrimaryPushButton(FIF.UPDATE, "Restart and update"))
+
+    def _update_failed(self, message: str) -> None:
+        self.update_busy = False
+        self.update_progress.hide()
+        self.update_button.setEnabled(True)
+        self._update_note(message, BAD)
+
+    def _restart_to_update(self) -> None:
+        if self._running():  # finish the current step first, like Stop
+            self._update_note("Stopping farming first…")
+            self.update_button.setEnabled(False)
+            self.stop()
+            QTimer.singleShot(500, self._restart_to_update)
+            return
+        from farmbot import update
+
+        try:
+            update.install(self.update_staged, version=self.update_release.version)
+        except OSError as exc:
+            self._update_failed(f"Couldn't start the update: {exc}")
+            return
+        self.close()
+        QApplication.instance().quit()
+
+    def _update_note(self, text: str, tone=None) -> None:
+        self.update_card.setContent(text)
+        tint(self.update_card.contentLabel, tone)
+
+    def _after_update(self) -> None:
+        from farmbot.update import finished_install
+
+        message = finished_install()
+        if message:
+            bar = InfoBar.success if message.startswith("Updated") else InfoBar.warning
+            bar("Update", message, duration=10000, position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
 
     def _test_notify(self) -> None:
         if not self._autosave():
@@ -2499,7 +2641,13 @@ class FarmbotWindow(FluentWindow):
                 elif kind == "game":
                     self._show_game(*data)
                 elif kind == "update":
-                    self._show_update(data)
+                    self._show_update(*data)
+                elif kind == "update_progress":
+                    self._show_update_progress(*data)
+                elif kind == "update_ready":
+                    self._update_ready(data)
+                elif kind == "update_failed":
+                    self._update_failed(data)
                 elif kind == "notify":
                     self.notify_result.setText("✓ Sent: check your Discord channel" if data
                                                else "✗ Not sent: check the webhook address is copied in full")

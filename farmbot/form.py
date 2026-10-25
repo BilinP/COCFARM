@@ -61,6 +61,7 @@ FIELDS = [
     Field("bot.stop_when_full", "resources"),
     Field("bot.mode", "text"),
     Field("bot.theme", "text"),
+    Field("bot.check_updates", "bool"),
     Field("bot.auto_first", "text"),
     Field("builder.corner", "text"),
     Field("builder.use_hero", "bool"),

@@ -12,7 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from farmbot import bluestacks, catalog, text
+from farmbot import __version__, bluestacks, catalog, text
 from farmbot.bot import Bot
 from farmbot.config import Config, ensure_config, load_config
 from farmbot.device import AdbDevice, DeviceError
@@ -262,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.func in (cmd_run, cmd_gui):
         log_to_file(LOG_FILE)
+        logging.getLogger(__name__).info("COCFARM %s", __version__)  # first thing a bug report's log shows
     try:
         return args.func(args)
     except (DeviceError, FileNotFoundError, ValueError) as exc:

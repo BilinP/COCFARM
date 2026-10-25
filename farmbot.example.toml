@@ -156,6 +156,7 @@ mode = "home"  # "home", "builder", or "auto": one village until its stop_when_f
 auto_first = "home"  # mode "auto": start with "home" or "builder"
 stop_when_full = []  # e.g. ["gold", "elixir"]
 theme = "auto"  # the window: "auto" follows Windows, or "light" / "dark"
+check_updates = true  # look for a newer COCFARM on GitHub by itself (at most once an hour)
 templates = "templates"
 threshold = 0.85
 collect_resources = true

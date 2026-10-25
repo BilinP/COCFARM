@@ -25,6 +25,7 @@ looks after your village, in **both the home village and the builder base**.
 - 💰 **Looks after your village.** It collects resources and the loot cart, can upgrade walls, and fills clan donation requests.
 - ⏰ **Plays when you want.** You pick the hours, a daily attack range and random breaks, so it plays more like a person.
 - 📊 **Tracks your loot.** The History page shows every attack and what you gained.
+- ⬆️ **Updates itself** from GitHub releases, in one click.
 - 🔔 **Sends Discord alerts.** You'll hear when storage is full, when it stops, and get a daily summary.
 
 ## Get started
@@ -38,7 +39,9 @@ looks after your village, in **both the home village and the builder base**.
    COCFARM sets the emulator up by itself.
 5. **Press Start** (or F5). That's it.
 
-To update, download the new zip and unzip it over the old folder. Your settings are kept.
+**Updating:** COCFARM tells you when a new version is out. Press **Update now**, then
+**Restart and update** once it's downloaded. Your settings, history and pictures are kept.
+You can also check by hand under **Advanced → Settings → Updates**.
 
 ### Tested emulators
 

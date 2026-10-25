@@ -317,8 +317,9 @@ class BotConfig:
     loop_delay: float = 3.0
     history: str = "attacks.csv"  # one line per attack; "" turns it off
     error_screens: str = "screens/errors"  # screenshot saved when a round fails; "" turns it off
-    # Look for a newer COCFARM on GitHub when the window opens ("" = never).
+    # Where COCFARM's updates come from (GitHub "owner/name"; "" = never look).
     update_repo: str = "BilinP/COCFARM"
+    check_updates: bool = True  # look for a newer COCFARM by itself (at most once an hour)
 
 
 @dataclass
