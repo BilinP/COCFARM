@@ -123,6 +123,12 @@ class AttackConfig:
     # towards the edge (0-1).
     spell_placement: str = "together"
     spell_reach: float = 0.45
+    # Which spells to cast: "bat" (Bat Spells only; needs
+    # templates/cards/bat_spell.png) or "all".
+    spells: str = "bat"
+    # "together": the one spot, "middle" (the base centre) or "random" (a new
+    # spot each battle, within the middle half of the base).
+    spell_spot: str = "random"
     # Last-resort deploy lines per side, [x1, y1, x2, y2], used when neither
     # the red line nor the building area can be found. They were measured on
     # a screen deploy_lines_width wide and shift with the screen's width.
@@ -333,6 +339,8 @@ THEMES = ("auto", "light", "dark")
 BUILDER_CORNERS = ("auto", "left", "top", "right")
 BUILDER_HEROES = ("any", "machine", "copter")
 SPELL_PLACEMENTS = ("together", "spread")
+SPELL_CHOICES = ("bat", "all")
+SPELL_SPOTS = ("middle", "random")
 
 
 @dataclass
@@ -347,6 +355,7 @@ class BuilderConfig:
     switch_hero: bool = True
     switch_below: float = 0.5
     troop_delay: float = 3.0  # seconds between the hero landing and the troops
+    troop_speed: int = 5  # 1 (slow) - 9 (fast): pause between the troops going down
     hero_ability: bool = True
     hero_ability_after: float = 15.0  # seconds after the hero lands (fully charged)
     troop_abilities: bool = True
@@ -375,6 +384,13 @@ class BuilderConfig:
     card_step: float = 103.6
     max_troop_cards: int = 10
     tap_gap: float = 0.3  # seconds after each card tap (quicker taps get dropped)
+
+    @property
+    def tap_delay(self) -> float:
+        """Seconds between troops, as for the home village's troop speed."""
+        return 0.03 + (9 - _speed(self.troop_speed)) * 0.04
+
+
 RESOURCES = ("gold", "elixir", "dark")
 
 
@@ -425,6 +441,10 @@ class Config:
             raise ValueError(f"builder.walls_use must be one of {WALL_RESOURCES}")
         if self.attack.spell_placement not in SPELL_PLACEMENTS:
             raise ValueError(f"attack.spell_placement must be one of {SPELL_PLACEMENTS}")
+        if self.attack.spells not in SPELL_CHOICES:
+            raise ValueError(f"attack.spells must be one of {SPELL_CHOICES}")
+        if self.attack.spell_spot not in SPELL_SPOTS:
+            raise ValueError(f"attack.spell_spot must be one of {SPELL_SPOTS}")
         if self.builder.first_hero not in BUILDER_HEROES:
             raise ValueError(f"builder.first_hero must be one of {BUILDER_HEROES}")
         if self.builder.corner not in BUILDER_CORNERS:

@@ -33,6 +33,7 @@ class Picture:
 
 
 QUICK_EXIT = "Leaving battles without restarting the game"
+BAT_SPELLS = "Casting only Bat Spells"
 
 PICTURES: list[Picture] = [
     # Attacking: without these the bot cannot get into or out of a battle.
@@ -40,6 +41,8 @@ PICTURES: list[Picture] = [
     Picture(T.FIND_MATCH, "Find a Match", "Battle menu: the words \"Find a Match\".", "Attacking", True),
     Picture(T.ARMY_ATTACK, "Attack!", "Army screen after Find a Match: the word \"Attack!\".", "Attacking", True),
     Picture(T.NEXT, "Next", "Scouting a base, bottom right: the word \"Next\".", "Attacking", True),
+    Picture(T.BAT_SPELL_CARD, "Bat Spell card", "Troop bar during a battle: the bats and bottle on the "
+            "Bat Spell card (not its count or level).", BAT_SPELLS),
     Picture(T.END_BATTLE, "End Battle", "During a battle, bottom left: the words \"End Battle\" "
             "(\"Surrender\" once units are out).", "Attacking", True, folder=True),
     # Recommended: without these two the bot closes the game to leave a battle.
@@ -67,6 +70,14 @@ PICTURES: list[Picture] = [
     Picture(T.BB_BUILDER_BOAT, "Boat home", "Builder base, top right: the boat's hull.", "Builder base"),
     Picture(T.BB_BATTLE, "Builder Battle", "Builder base, bottom left: the crossed axes.", "Builder base"),
     Picture(T.BB_FIND_NOW, "Find Now!", "Builder Start Attack window: the words \"Find Now!\".", "Builder base"),
+    Picture(T.CONFIRM, "Confirm", "A notice such as \"The Event has ended\": the word \"Confirm\" on its green "
+            "button.", "Closing notices"),
+    Picture(T.GEM, "Gem", "The home village's resource bar: the green gem icon beside your gem count.",
+            "Closing notices"),
+    Picture(T.LAYOUT_OBSTRUCTED, "Defensive Layout obstructed", "The window that sometimes shows after asking "
+            "for a battle: its title \"Defensive Layout obstructed\".", "Attacking with an obstructed layout"),
+    Picture(T.OBSTRUCTED_ATTACK, "Attack (obstructed layout)", "The same window: the word \"Attack\" on its "
+            "green button.", "Attacking with an obstructed layout"),
     Picture(T.BB_BATTLE_STARTS, "Battle starts in", "Builder battle, top: \"Battle starts in:\".", "Builder base"),
     Picture(T.BB_BATTLE_ENDS, "Battle ends in", "Builder battle, top: \"Battle ends in:\".", "Builder base"),
     Picture(T.BB_RETURN_HOME, "Return Home (builder)", "Builder battle result: the words \"Return Home\".",

@@ -541,9 +541,18 @@ def start_battle(game: Game) -> None:
         log.info("Find Now! didn't show; trying again")
     else:
         raise BuilderError("Find Now! didn't show")
-    if not game.wait_for(T.BB_BATTLE_STARTS, timeout=60, interval=1):
-        if not game.find(T.BB_BATTLE_ENDS):
+    from farmbot.tasks.village import attack_despite_obstructed_layout
+
+    deadline = game.clock() + 60
+    while True:
+        game.refresh()
+        if game.find(T.BB_BATTLE_STARTS) or game.find(T.BB_BATTLE_ENDS):
+            break
+        if attack_despite_obstructed_layout(game):
+            continue
+        if game.clock() >= deadline:
             raise BuilderError("no opponent found")
+        game.wait(1.0)
     game.wait(1.0)
 
 
@@ -613,15 +622,18 @@ def deploy_stage(game: Game, cfg: BuilderConfig, first: bool = False) -> tuple[f
         if not troops:
             break
         # Select the first card; each tap on the map sends the selected
-        # troop and the game selects the next card, so no pauses are needed.
+        # troop and the game selects the next card. The pause is the troop speed.
         _tap_card(game, troops[0], cfg)
-        game.tap_many([point] * len(troops), jitter=6)
+        game.tap_many([point] * len(troops), jitter=6, pause=cfg.tap_delay)
         sent += troops
         game.wait(0.5)
+        tried = len(troops)
         troops = ready_troops(game.refresh(), cfg)
         if not troops:
             break
         log.info("%d troop card(s) didn't go out; trying again", len(troops))
+        if len(troops) == tried:  # none went out: the fast taps aren't getting through
+            game.stop_fast_taps()
     return landed, sorted({s.index: s for s in sent}.values(), key=lambda s: s.index)
 
 

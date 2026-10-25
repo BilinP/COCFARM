@@ -135,6 +135,12 @@ class T:
     CLOSE_CHAT = "buttons/close_chat"
     NO_CLAN = "buttons/no_clan"  # "Join A Clan" in the chat panel: not in a clan
     DONATE = "buttons/donate"
+    CONFIRM = "buttons/confirm"  # "Confirm" on notices such as "The Event has ended"
+    GEM = "icons/gem"  # a gem: a Confirm window showing one is never pressed
+    # "Defensive Layout obstructed" after asking for a battle, and its Attack button
+    LAYOUT_OBSTRUCTED = "buttons/layout_obstructed"
+    OBSTRUCTED_ATTACK = "buttons/obstructed_attack"
+    BAT_SPELL_CARD = "cards/bat_spell"  # the Bat Spell card's picture in the troop bar
     DONATE_ITEM_DIR = "donate"  # donate/<unit slug>.png: units in the donate window
     DONATE_WINDOW = "buttons/donate_window"  # the donate window's "Donation Resource" title
     # Digit glyphs (directory, made with ``farmbot learn-digits``)
@@ -145,6 +151,31 @@ class T:
 # used to work out the UI scale. (Windows such as the army screen are sized
 # differently; Vision finds their buttons' sizes on its own.)
 ANCHORS = [T.BATTLE, T.NEXT, T.END_BATTLE]
+
+# Zooming out: pinches at most, and the change (mean grey level, 0-255)
+# below which the view has stopped moving.
+ZOOM_PASSES = 3
+VIEW_STILL = 3.0
+# Centring the view (bot px): where drags start, how far one drag goes,
+# the piece of the map followed between screens (y0, y1, x0, x1), how sure
+# a match must be, and the move below which the view counts as still.
+PAN_CENTER = (588, 420)
+PAN_DRAG = (420, 300)
+PAN_PATCH = (330, 560, 430, 750)
+PAN_SURE = 0.6
+PAN_STILL = 8
+PAN_TRIES = 3
+PAN_MS = 900  # slow, so the map doesn't keep sliding after the finger lifts
+
+
+def view_change(before: np.ndarray, after: np.ndarray) -> float:
+    """How much the map moved between two screens (mean grey difference
+    over the middle of the screen)."""
+    if before.shape != after.shape:
+        return 255.0
+    h, w = before.shape[:2]
+    a, b = (cv2.cvtColor(s[h // 6:h * 5 // 6, w // 6:w * 5 // 6], cv2.COLOR_BGR2GRAY) for s in (before, after))
+    return float(cv2.absdiff(a, b).mean())
 
 
 class Stopped(Exception):
@@ -280,16 +311,74 @@ class Game:
             if pause:
                 self.wait(pause)
 
+    def stop_fast_taps(self) -> bool:
+        """Switch the device from its fast tap bursts to plain taps. True if
+        that changed anything (so a refused deploy is worth trying again)."""
+        stop = getattr(self.device, "stop_fast_taps", None)
+        return bool(stop and stop())
+
     def zoom_out(self) -> bool:
         """Pinch the view all the way out, on devices that can. The game
         keeps its zoom between battles, and a zoomed-in view hides the
         map's edges where troops go."""
         pinch = getattr(self.device, "zoom_out", None)
-        if pinch is None or not pinch():
+        if pinch is None:
             return False
-        self.wait(0.5)
-        self.screen = None
+        # Pinch again while the view keeps changing: a pinch the game misses
+        # (it happens on LDPlayer) must not leave a battle zoomed in.
+        before = self.screen
+        for _ in range(ZOOM_PASSES):
+            if not pinch():
+                return False
+            self.wait(0.5)
+            after = self.refresh()
+            if before is not None and view_change(before, after) < VIEW_STILL:
+                break
+            before = after
         return True
+
+    def center_view(self) -> bool:
+        """Drag the map so the view sits in the middle of its range.
+
+        The game keeps the camera where it was left, and a view dragged to
+        one side (by a stray touch, or by zooming out around an off-centre
+        spot) hides part of the base. The map is dragged to one end and then
+        the other, measuring how far the picture moves, and then back to
+        halfway. False if the picture couldn't be followed (a popup, say)."""
+        prev = self.refresh().copy()
+        pos, low, high = [0, 0], [0, 0], [0, 0]
+        for sign in (1, -1):
+            for _ in range(PAN_TRIES):
+                moved = self._drag_view(prev, sign * PAN_DRAG[0], sign * PAN_DRAG[1])
+                if moved is None:
+                    return False
+                (dx, dy), prev = moved
+                pos = [pos[0] + dx, pos[1] + dy]
+                low, high = [min(l, p) for l, p in zip(low, pos)], [max(h, p) for h, p in zip(high, pos)]
+                if abs(dx) < PAN_STILL and abs(dy) < PAN_STILL:
+                    break  # at the end of the range
+        move = [round((lo + hi) / 2 - p) for lo, hi, p in zip(low, high, pos)]
+        log.info("Centring the view: range %dx%d px, moving it %s", high[0] - low[0], high[1] - low[1], tuple(move))
+        if max(map(abs, move)) >= PAN_STILL:
+            self._drag_view(prev, *move)
+        return True
+
+    def _drag_view(self, before: np.ndarray, dx: int, dy: int):
+        """Drag the map by (dx, dy) bot px. Returns how far the picture
+        actually moved and the new screen, or None if it can't be told."""
+        cx, cy = PAN_CENTER
+        self.swipe(cx - dx // 2, cy - dy // 2, cx + dx // 2, cy + dy // 2, PAN_MS)
+        self.wait(0.8)
+        after = self.refresh().copy()
+        y0, y1, x0, x1 = PAN_PATCH
+        if before.shape != after.shape or after.shape[0] < y1 or after.shape[1] < x1:
+            return None
+        found = cv2.matchTemplate(after, before[y0:y1, x0:x1], cv2.TM_CCOEFF_NORMED)
+        _, score, _, (x, y) = cv2.minMaxLoc(found)
+        if not score >= PAN_SURE:
+            log.info("Can't follow the view while centring it (likeness %.2f)", score)
+            return None
+        return (x - x0, y - y0), after
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 500) -> None:
         s = self.scale

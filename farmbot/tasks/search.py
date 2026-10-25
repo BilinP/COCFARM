@@ -133,6 +133,12 @@ def start_search(game: Game) -> None:
     # Newer versions confirm the army first; older ones go straight to scouting.
     if game.has(T.ARMY_ATTACK) and game.click_when_visible(T.ARMY_ATTACK, timeout=4):
         log.debug("Confirmed army")
+    if game.has(T.LAYOUT_OBSTRUCTED):
+        from farmbot.tasks.village import attack_despite_obstructed_layout
+
+        game.wait(1.0)
+        game.refresh()
+        attack_despite_obstructed_layout(game)
 
 
 MAX_UNREADABLE = 3  # bases in a row whose loot can't be read before giving up

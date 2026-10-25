@@ -165,6 +165,26 @@ def find_cards(screen: np.ndarray, cfg: BarConfig) -> list[Card]:
     return cards
 
 
+ART = (0.28, 0.80, 0.14, 0.88)  # a card's picture: top, bottom, left, right shares (no count, no level)
+SAME_CARD = 0.85  # picture likeness to call two cards the same unit
+ART_SLACK = 6  # px around the picture, for cards found a little off
+
+
+def card_art(screen: np.ndarray, card: Card, pad: int = 0) -> np.ndarray:
+    h, w = card.bottom - card.top, card.right - card.left
+    return screen[max(card.top + int(h * ART[0]) - pad, 0):card.top + int(h * ART[1]) + pad,
+                  max(card.left + int(w * ART[2]) - pad, 0):card.left + int(w * ART[3]) + pad]
+
+
+def card_is(screen: np.ndarray, card: Card, picture: np.ndarray, threshold: float = SAME_CARD) -> bool:
+    """True if ``card`` shows ``picture`` (a card's picture cut with
+    :func:`card_art`), e.g. the Bat Spell."""
+    area = card_art(screen, card, ART_SLACK)
+    if area.shape[0] < picture.shape[0] or area.shape[1] < picture.shape[1]:
+        return False
+    return float(cv2.matchTemplate(area, picture, cv2.TM_CCOEFF_NORMED).max()) >= threshold
+
+
 def is_spent(screen: np.ndarray, card: Card, cfg: BarConfig) -> bool:
     """True once the card has greyed out (no units left)."""
     hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)

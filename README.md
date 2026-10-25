@@ -60,6 +60,9 @@ To update, download the new zip and unzip it over the old folder. Your settings 
   **Return Home** and **Okay** buttons (the page walks you through it).
   Without them, the bot still works but each attack ends about 30 seconds slower.
 - **Builder base army:** train only Night Witches.
+- **Spells:** by default it casts only **Bat Spells**, all at once on one spot: the middle of the base,
+  or a random spot near the middle each battle. Switch to **All spells** under
+  **Home village → Attacking**.
 - **Check what the bot sees:** scout a base in the game, then press
   **What the bot sees** under **Advanced**.
 - **Keyboard shortcuts:** F5 starts, Esc pauses, and Ctrl+1 to Ctrl+7 switch pages.

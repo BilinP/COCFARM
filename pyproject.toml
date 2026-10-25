@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "farmbot"
-version = "0.4.0"
+version = "0.5.0"
 description = "Clean-room Clash of Clans farming bot for Android emulators (ADB + OpenCV)"
 requires-python = ">=3.11"
 dependencies = [

@@ -117,6 +117,10 @@ class Problem:
 
 # (pattern, title, why, action, button). {emulator} becomes the emulator's name.
 RULES = [
+    (r"reached BlueStacks instead",
+     "BlueStacks is in LDPlayer's way",
+     "Both emulators use the same connection (port 5555), so with BlueStacks open COCFARM reaches it instead of "
+     "LDPlayer. Close BlueStacks, or pick BlueStacks in Setup.", "setup", "Open Setup"),
     (r"instance .* not found|has no instance",
      "The emulator instance picked in Setup doesn't exist",
      "COCFARM doesn't know which emulator window to play in.", "setup", "Open Setup"),

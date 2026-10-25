@@ -58,6 +58,8 @@ ability_health = 0.0  # fire a hero's ability at this health share (0.5 = half);
 ability_max_wait = 45.0
 spell_placement = "together"  # "together": all on one spot at once; "spread": over the base
 spell_reach = 0.45
+spells = "bat"  # "bat": only Bat Spells; "all": every spell
+spell_spot = "random"  # one spot: "middle" of the base, or "random" within its middle half
 
 [attack.deploy_lines]
 nw = [190, 380, 620, 90]

@@ -123,6 +123,54 @@ def pick_reward(game: Game) -> bool:
     return True
 
 
+def attack_despite_obstructed_layout(game: Game) -> bool:
+    """"Defensive Layout obstructed" (now and then, after asking for a
+    battle: obstacles block the defensive layout): press its Attack. True if
+    it was showing."""
+    if not game.has(T.LAYOUT_OBSTRUCTED) or not game.find(T.LAYOUT_OBSTRUCTED):
+        return False
+    log.info("Defensive layout obstructed; attacking anyway")
+    if not game.click(T.OBSTRUCTED_ATTACK):
+        log.warning("The obstructed-layout window's Attack button wasn't found")
+        return False
+    game.wait(1.0)
+    return True
+
+
+GEM_SCALES = (0.5, 0.6, 0.7, 0.85, 1.0, 1.2)  # gem icons in windows are drawn at many sizes
+GEM_LIKENESS = 0.8
+POPUP_AREA = (150, 1000)  # x range of a centred window: clear of the resource bar's own gem
+
+
+def shows_gems(screen, top: int, bottom: int, gem) -> bool:
+    """True if a gem icon is anywhere in the window between ``top`` and
+    ``bottom`` (bot px)."""
+    area = screen[max(top, 0):bottom, POPUP_AREA[0]:POPUP_AREA[1]]
+    for scale in GEM_SCALES:
+        icon = cv2.resize(gem, None, fx=scale, fy=scale)
+        if area.shape[0] < icon.shape[0] or area.shape[1] < icon.shape[1]:
+            continue
+        if cv2.matchTemplate(area, icon, cv2.TM_CCOEFF_NORMED).max() >= GEM_LIKENESS:
+            return True
+    return False
+
+
+def _confirm_is_free(game: Game) -> bool:
+    """A "Confirm" window (e.g. "The Event has ended") may be pressed only
+    when it costs nothing: no gem anywhere in it. Gem spends never go
+    through the bot."""
+    button = game.find(T.CONFIRM)
+    if button is None:
+        return False
+    if not game.has(T.GEM):
+        return False  # can't check for gems, so don't risk it
+    [(_, gem)] = game.vision.library.get(T.GEM)[:1]
+    if shows_gems(game.screen, 120, button.y + button.h, gem):
+        log.warning("A Confirm window shows gems; leaving it alone")
+        return False
+    return True
+
+
 def clear_popups(game: Game, rounds: int = 5) -> int:
     """Press any known dismiss/reconnect button until none is visible."""
     pressed = 0
@@ -135,6 +183,8 @@ def clear_popups(game: Game, rounds: int = 5) -> int:
             pressed += open_event_chests(game)
             continue
         hit = next((b for b in POPUP_BUTTONS if game.has(b) and game.click(b)), None)
+        if hit is None and game.has(T.CONFIRM) and _confirm_is_free(game):
+            hit = T.CONFIRM if game.click(T.CONFIRM) else None
         if hit is None:
             break
         log.info("Dismissed popup via %s", hit)

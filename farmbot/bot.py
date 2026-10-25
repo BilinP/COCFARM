@@ -72,6 +72,7 @@ class Bot:
         self._game_restarts = 0  # game restarts since the last good round
         self.notifier = notifier or Notifier(config.notify)
         self._since_break = 0  # attacks since the last break
+        self._view_centred = False  # the village's view, centred once a run
         self._break_due: int | None = None  # attacks between breaks, picked at random
 
     def status(self, text: str) -> None:
@@ -239,7 +240,10 @@ class Bot:
         village.clear_popups(self.game)
         # The village comes back from battles zoomed in a little, and the
         # next battle's view starts from the village's zoom.
-        self.game.zoom_out()
+        if self.game.zoom_out() and not self._view_centred:
+            # Once a run: the camera stays where it is left, and the next
+            # battle's view starts from the village's.
+            self._view_centred = self.game.center_view()
         if self._pending:
             # Before collecting or training, which would blur the gain.
             self._settle_attack(self.read_resources())

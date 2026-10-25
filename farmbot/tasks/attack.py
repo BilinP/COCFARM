@@ -123,6 +123,38 @@ def spell_points(edges: dict[str, list[Point]], center: Point | None, reach: flo
     return itertools.cycle([(round(cx + (x - cx) * reach), round(cy + (y - cy) * reach)) for x, y in every])
 
 
+SPOT_REACH = 0.33  # random spell spot: this share of the way from the centre to the deploy ring, at most
+
+
+def spell_spot(edges: dict[str, list[Point]], center: Point | None, how: str, rng) -> Point:
+    """The one spot for spells cast together: the middle of the base, or a
+    random spot within its middle half. The deploy ring lies outside the
+    walls, so "half the base" is about a third of the way out to it: the
+    spot stays well inside the walls, never out at an edge or corner."""
+    cx, cy = center or base_center(edges)
+    if how != "random":
+        return cx, cy
+    every = [p for pts in edges.values() for p in pts]
+    x, y = rng.choice(every)
+    reach = SPOT_REACH * math.sqrt(rng.random())  # sqrt: spread evenly over the area, not bunched at the centre
+    return round(cx + (x - cx) * reach), round(cy + (y - cy) * reach)
+
+
+def spells_to_cast(game: Game, spells: list[Card], cfg: Config) -> list[Card]:
+    """The spell cards to use: all of them, or only the Bat Spells."""
+    if cfg.attack.spells == "all" or not spells:
+        return spells
+    if not game.vision.library.has(T.BAT_SPELL_CARD):
+        log.warning("No Bat Spell picture (%s.png): casting no spells", T.BAT_SPELL_CARD)
+        return []
+    [(_, picture)] = game.vision.library.get(T.BAT_SPELL_CARD)[:1]
+    screen = game.refresh()
+    bats = [c for c in spells if armybar.card_is(screen, c, picture)]
+    if len(bats) < len(spells):
+        log.info("Casting %d Bat Spell card(s); leaving %d other spell card(s)", len(bats), len(spells) - len(bats))
+    return bats
+
+
 def base_center(edges: dict[str, list[Point]]) -> Point:
     every = [p for pts in edges.values() for p in pts]
     return sum(p[0] for p in every) // len(every), sum(p[1] for p in every) // len(every)
@@ -165,6 +197,12 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
         # same twice in a row, the game is rejecting our points.
         stalled = 0 if armybar.card_changed(before, after, card) else stalled + 1
         if stalled >= 2:
+            # Heroes go down with single taps, troops and spells with fast
+            # bursts; on emulators where the bursts don't get through,
+            # nothing but the card selection happens. Retry with plain taps.
+            if game.stop_fast_taps():
+                stalled = 0
+                continue
             if fallback is not None and points is not fallback:
                 log.info("Card at x=%d is not deploying; trying the fixed deploy lines", card.left)
                 points, stalled = fallback, 0
@@ -393,12 +431,16 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
     than fits on the screen, it's deployed a screenful at a time, in that
     order, scrolling on until its end."""
     acfg = cfg.attack
+    # The battle's view starts where the village's camera is (centred once a
+    # run, see Bot.maintain_village), so a zoom-out is all it needs.
     game.zoom_out()
     edges, center = deploy_edges(game, cfg)
     edge_points = cycle_points(edges, acfg.sides)
     fixed_points = cycle_points(fixed_lines(game.size[0], cfg), acfg.sides)
     over_base = spell_points(edges, center, acfg.spell_reach)
-    spot = center or base_center(edges)
+    spot = spell_spot(edges, center, acfg.spell_spot, game.rng)
+    if acfg.spell_placement == "together":
+        log.info("Spells go on %s (%s)", spot, acfg.spell_spot)
 
     scrolls = scroll_bar(game, cfg)
     if scrolls:
@@ -417,7 +459,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
             f"{c.kind} x{counts[c]}" if counts.get(c) else c.kind for c in cards))
         troops = [c for c in cards if c.kind == "troop"]
         singles = [c for c in cards if c.kind in ("single", "siege")]
-        spells = [c for c in cards if c.kind == "spell"]
+        spells = spells_to_cast(game, [c for c in cards if c.kind == "spell"], cfg)
 
         # Troops in waves: earlier waves send a share of each card (by its
         # count, or one batch when unreadable); the last wave empties them.

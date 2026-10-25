@@ -1288,9 +1288,17 @@ class FarmbotWindow(FluentWindow):
                       ["1", "2", "3"])
         self.speed(deploy, "attack.troop_speed", FIF.SPEED_HIGH, "Troop speed", "How quickly single troops go down.")
         self.speed(deploy, "attack.wave_speed", FIF.SPEED_MEDIUM, "Wave speed", "How quickly one wave follows another.")
-        self.segments(deploy, "attack.spell_placement", FIF.ALBUM, "Spells",
-                      "One spot: every spell at once on the middle of the base. Spread: over the base.",
+        self.segments(deploy, "attack.spells", FIF.ALBUM, "Spells to cast",
+                      "Bat Spells only: other spells stay in the bar. All: every spell.",
+                      {"bat": "Bat Spells only", "all": "All spells"}, width=120)
+        self.segments(deploy, "attack.spell_placement", FIF.ALBUM, "Spells go",
+                      "One spot: every spell at once, on one spot. Spread: over the base.",
                       {"together": "One spot", "spread": "Spread"}, width=90)
+        self.segments(deploy, "attack.spell_spot", FIF.ZOOM, "The spot",
+                      "Middle: the centre of the base. Random: a new spot each battle, within the middle half "
+                      "of the base (never out in a corner).",
+                      {"middle": "Middle", "random": "Random"}, width=90)
+        self.depends("attack.spell_placement", "attack.spell_spot", when="together")
 
         heroes = page.add(SettingCardGroup("Heroes and siege machines"))
         self.switch(heroes, "attack.use_siege", FIF.CAR, "Use siege machines",
@@ -1399,6 +1407,8 @@ class FarmbotWindow(FluentWindow):
                       "Auto picks the map corner farthest from the enemy buildings.",
                       {"auto": "Auto", "left": "Left", "top": "Top", "right": "Right"}, width=80)
         self.switch(deploy, "builder.use_hero", FIF.PEOPLE, "Hero goes first", "Off: troops only.")
+        self.speed(deploy, "builder.troop_speed", FIF.SPEED_HIGH, "Troop speed",
+                   "How quickly the troops go down, one after another.")
         self.number(deploy, "builder.troop_delay", FIF.STOP_WATCH, "Troops follow after",
                     "Seconds after the hero lands.", "s")
         self.segments(deploy, "builder.first_hero", FIF.PEOPLE, "First hero",

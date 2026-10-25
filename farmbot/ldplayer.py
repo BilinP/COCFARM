@@ -219,6 +219,16 @@ def set_up(install: Install, inst: Instance, cfg: DeviceConfig, run: Runner = _r
         enable_adb(install, inst.index)
 
 
+class WrongEmulator(DeviceError):
+    """The address answered, but from another emulator."""
+
+
+def is_bluestacks(props: str) -> bool:
+    """True if ``getprop`` output is BlueStacks' (its own services and
+    settings are named bst…)."""
+    return bool(re.search(r"^\[(init\.svc\.bst|ro\.bst|bst\.|persist\.bst)", props, re.MULTILINE))
+
+
 def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], None] = time.sleep,
                 clock: Callable[[], float] = time.monotonic,
                 find: Callable[[], list[Install]] = find_installs,
@@ -252,8 +262,16 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
             # "Boot completed" comes while the screen still says "Tablet is
             # starting…"; the home screen (or an app) having focus means ready.
             if device.shell("getprop", "sys.boot_completed").strip() == "1" and device.foreground_package():
+                if is_bluestacks(device.shell("getprop")):
+                    # BlueStacks listens on 127.0.0.1:5555, the same port as
+                    # LDPlayer's first instance, and wins: playing on would
+                    # quietly farm in the wrong emulator.
+                    raise WrongEmulator(f"{inst.serial} reached BlueStacks instead of {install.name}: both use "
+                                        f"port {5555 + 2 * inst.index}. Close BlueStacks, or pick BlueStacks in Setup.")
                 log.info("Connected to %s at %s", install.name, inst.serial)
                 return device
+        except WrongEmulator:
+            raise
         except DeviceError as exc:
             last_error = exc
         if clock() >= deadline:
