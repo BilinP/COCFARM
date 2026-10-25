@@ -28,6 +28,8 @@ REFERENCE_HEIGHT = 920
 # of the templates; the UI is anchored to the screen edges, so edge-relative
 # coordinates still line up.
 UI_SCALES = [round(0.6 + 0.05 * i, 2) for i in range(19)]  # 0.6 .. 1.5
+CALIBRATE_RETRY = 5.0  # seconds before an anchor that didn't give the UI scale is measured again
+COARSE_MARGIN = 0.1  # how far below the threshold the half-size search may score and still be worth refining
 
 
 def normalize(image: np.ndarray, height: int = REFERENCE_HEIGHT, ui_scale: float = 1.0) -> np.ndarray:
@@ -58,7 +60,12 @@ def detect_ui_scale(image: np.ndarray, vision: Vision, names: list[str], thresho
                 best = max(best, float(cv2.minMaxLoc(cv2.matchTemplate(area, t, cv2.TM_CCOEFF_NORMED))[1]))
         return best
 
-    coarse = max(UI_SCALES, key=lambda s: score(s, coarse=True))
+    coarse_score, coarse = max((score(s, coarse=True), s) for s in UI_SCALES)
+    # Not even close at half size: the button isn't there, so skip the slow
+    # full-size search. (On the real screenshots in tests/fixtures, a button
+    # that is there scores 0.89 or more here, one that isn't 0.81 at most.)
+    if coarse_score < threshold - COARSE_MARGIN:
+        return None
     # The match falls off within a couple of hundredths, so finish in fine steps.
     fine = max((round(coarse + 0.01 * i, 2) for i in range(-4, 5)), key=score)
     # Verify the way the bot will actually see it: the screen rescaled, templates as they are.
@@ -212,7 +219,9 @@ class Game:
         vision.fixed_scales = set(self.picture_scales)
         self.raw: np.ndarray | None = None
         self.screen: np.ndarray | None = None
-        self._calibration_tried: set[str] = set()  # on the current screenshot
+        # When each anchor last failed to give the UI scale. Measuring takes about a second, so while
+        # the game loads it's tried again every CALIBRATE_RETRY seconds, not on every screenshot.
+        self._calibration_tried: dict[str, float] = {}
 
     # -- timing ---------------------------------------------------------
     def wait(self, seconds: float) -> None:
@@ -228,7 +237,6 @@ class Game:
     # -- screen ---------------------------------------------------------
     def refresh(self) -> np.ndarray:
         self.raw = self.device.screenshot()
-        self._calibration_tried.clear()
         return self._rescale()
 
     def _rescale(self) -> np.ndarray:
@@ -241,9 +249,11 @@ class Game:
 
     def _calibrate(self, name: str) -> bool:
         """Work out the UI scale from ``name`` when it isn't known yet."""
-        if self.ui_scale or self.raw is None or name in self._calibration_tried or not self.has(name):
+        if self.ui_scale or self.raw is None or not self.has(name):
             return False
-        self._calibration_tried.add(name)
+        if self.clock() - self._calibration_tried.get(name, -CALIBRATE_RETRY) < CALIBRATE_RETRY:
+            return False
+        self._calibration_tried[name] = self.clock()
         scale = detect_ui_scale(self.raw, self.vision, [name])
         if scale is None:
             return False

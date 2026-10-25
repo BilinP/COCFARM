@@ -45,7 +45,7 @@ You can also check by hand under **Advanced → Settings → Updates**.
 
 ### Tested emulators
 
-Home village and builder base attacks were tested live on each of these (COCFARM 0.5.0):
+Home village and builder base attacks were tested live on each of these (COCFARM 0.6.0):
 
 | Emulator | Version | Android |
 |---|---|---|

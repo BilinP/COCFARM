@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "farmbot"
-version = "0.5.0"
+version = "0.6.0"
 description = "Clean-room Clash of Clans farming bot for Android emulators (ADB + OpenCV)"
 requires-python = ">=3.11"
 dependencies = [
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "pytest-xdist>=3"]
 
 [project.scripts]
 farmbot = "farmbot.cli:main"
@@ -30,3 +30,5 @@ farmbot = ["assets/*.png", "profiles/*.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# One process per core (pytest-xdist); -n 0 runs them one at a time.
+addopts = "-n auto"

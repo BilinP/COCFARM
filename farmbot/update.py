@@ -296,7 +296,7 @@ def unpack(zip_path: Path, folder: Path | None = None) -> Path:
 
 
 INSTALLER = r"""
-param([int]$ParentId, [string]$App, [string]$New)
+param([int]$ParentId, [string]$App, [string]$New, [int]$Tries = 20)
 # Written by COCFARM to install an update; deleted by the next update.
 $ErrorActionPreference = "Stop"
 $work = Join-Path $App "_update"
@@ -306,7 +306,7 @@ $keep = @(@KEEP@)
 function Say($text) { Add-Content -Path $log -Value "$(Get-Date -Format s)  $text" }
 function Retry([scriptblock]$step) {
     # Windows or an antivirus can hold a file for a moment after COCFARM closes.
-    for ($i = 1; ; $i++) { try { & $step; return } catch { if ($i -ge 20) { throw }; Start-Sleep -Milliseconds 500 } }
+    for ($i = 1; ; $i++) { try { & $step; return } catch { if ($i -ge $Tries) { throw }; Start-Sleep -Milliseconds 500 } }
 }
 Say "Installing the update from $New"
 try { Wait-Process -Id $ParentId -Timeout 120 -ErrorAction Stop } catch {}

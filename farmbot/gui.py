@@ -551,6 +551,10 @@ class FarmbotWindow(FluentWindow):
         self.navigationInterface.setMinimumExpandWidth(900)
         self.resize(1160, 780)
         self.setMinimumSize(980, 640)
+        # Theme first: set once every widget exists, it would restyle them all again (seconds).
+        self._theme = None
+        if self.config.bot.theme in THEMES:
+            self._apply_theme(self.config.bot.theme)
         self._build_title_bar()
         self.pages: dict[str, QWidget] = {}
         self.mirrors: dict[str, list[Binding]] = {}  # a setting shown on two pages
@@ -584,8 +588,8 @@ class FarmbotWindow(FluentWindow):
                           Status("ready", "Ready to farm", "Press Start (F5). Check the village pages first if you "
                                  "want to change how it plays."))
 
-        handler = _QueueLogHandler(self.events)
-        logging.getLogger().addHandler(handler)
+        self.log_handler = _QueueLogHandler(self.events)
+        logging.getLogger().addHandler(self.log_handler)
         logging.getLogger().setLevel(logging.INFO)
         self.poll_timer = QTimer(self, interval=100, timeout=self._poll)
         self.poll_timer.start()
@@ -601,7 +605,7 @@ class FarmbotWindow(FluentWindow):
         QShortcut(QKeySequence("Esc"), self, activated=self.stop)
         for i, name in enumerate(PAGES, start=1):
             QShortcut(QKeySequence(f"Ctrl+{i}"), self, activated=lambda n=name: self.show_page(n))
-        qconfig.themeChanged.connect(lambda *_: self._theme_changed())
+        qconfig.themeChanged.connect(self._theme_signal)
         QApplication.instance().installEventFilter(self)  # Enter presses the focused button
 
     def eventFilter(self, obj, event) -> bool:
@@ -649,7 +653,6 @@ class FarmbotWindow(FluentWindow):
         for w in (self.state_chip, self.status_label, self.save_label, self.start_button, self.stop_button):
             layout.addWidget(w)
         self.titleBar.hBoxLayout.insertWidget(3, bar, 0, Qt.AlignVCenter)
-        self._theme = None
 
     def _add_page(self, page: QWidget, icon, text: str, position=NavigationItemPosition.TOP,
                   key: str | None = None) -> None:
@@ -2745,8 +2748,17 @@ class FarmbotWindow(FluentWindow):
         colour = BAD if level >= logging.ERROR else WARN if level >= logging.WARNING else GOOD if "→ attack" in line else TEXT
         self.log_view.appendHtml(f'<span style="color:{colour}; font-family: Consolas, monospace;">{escape(line)}</span>')
 
+    def _theme_signal(self, *_) -> None:
+        self._theme_changed()
+
     def closeEvent(self, event) -> None:
         QApplication.instance().removeEventFilter(self)
+        # Let go of the app-wide hooks, so a closed window can be freed.
+        logging.getLogger().removeHandler(self.log_handler)
+        try:
+            qconfig.themeChanged.disconnect(self._theme_signal)
+        except (RuntimeError, TypeError):
+            pass
         self.stop()
         if self.save_timer.isActive():
             self.save_timer.stop()

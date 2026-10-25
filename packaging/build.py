@@ -51,6 +51,44 @@ Automating Clash of Clans breaks Supercell's Terms of Service.
 """
 
 
+# Bundled files the app never loads (it reads screenshots, not video, and
+# draws its window with Qt Widgets: no QML, PDF, networking or translations).
+# About 90 MB unpacked; every update downloads the zip, so this matters.
+UNUSED_FILES = [
+    "cv2/opencv_videoio_ffmpeg*.dll",  # video codecs
+    "PySide6/opengl32sw.dll",  # software OpenGL fallback
+    "PySide6/QtOpenGL.pyd", "PySide6/QtNetwork.pyd", "PySide6/Qt6Network.dll",
+    "PySide6/Qt6Pdf.dll", "PySide6/Qt6Qml*.dll", "PySide6/Qt6Quick*.dll", "PySide6/Qt6VirtualKeyboard.dll",
+    "PySide6/translations",
+    "PySide6/plugins/tls", "PySide6/plugins/networkinformation", "PySide6/plugins/platforminputcontexts",
+    "PySide6/plugins/generic", "PySide6/plugins/platforms/qdirect2d.dll",
+    *(f"PySide6/plugins/imageformats/q{f}.dll" for f in ("pdf", "tiff", "webp", "tga", "wbmp", "icns")),
+]
+
+
+def prune(internal: Path) -> None:
+    """Delete UNUSED_FILES, and any OpenSSL that Python's own ssl module
+    doesn't load (PyInstaller can pick up a second copy from Qt)."""
+    removed = 0
+    for pattern in UNUSED_FILES:
+        for path in internal.glob(pattern):
+            removed += sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) if path.is_dir()                 else path.stat().st_size
+            shutil.rmtree(path) if path.is_dir() else path.unlink()
+    import pefile  # comes with PyInstaller
+
+    used = set()
+    for module in ("_ssl.pyd", "_hashlib.pyd"):
+        pe = pefile.PE(str(internal / module), fast_load=True)
+        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]])
+        used |= {entry.dll.decode().lower() for entry in getattr(pe, "DIRECTORY_ENTRY_IMPORT", [])}
+        pe.close()
+    for path in [*internal.glob("libssl-*.dll"), *internal.glob("libcrypto-*.dll")]:
+        if path.name.lower() not in used:
+            removed += path.stat().st_size
+            path.unlink()
+    print(f"pruned {removed / 2**20:.0f} MB of unused files")
+
+
 def main() -> int:
     shutil.rmtree(DIST, ignore_errors=True)
     shutil.rmtree(ROOT / "build", ignore_errors=True)
@@ -69,6 +107,7 @@ def main() -> int:
         "--distpath", str(DIST), "--workpath", str(ROOT / "build"), "--specpath", str(ROOT / "build"),
         str(ROOT / "packaging" / "farmbot_app.py"),
     ], check=True, cwd=ROOT)
+    prune(APP / "_internal")
     # Pictures stay as plain files next to the exe so new ones can be added.
     shutil.copytree(ROOT / "templates", APP / "templates")
     shutil.copy(ROOT / "farmbot.example.toml", APP / "farmbot.example.toml")

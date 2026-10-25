@@ -538,8 +538,8 @@ def _siege_out_of_main(clan: ClanConfig) -> None:
 def load_config(path: str | Path | None) -> Config:
     config = Config()
     if path is not None:
-        with open(path, "rb") as fh:
-            _merge(config, tomllib.load(fh), "")
+        # utf-8-sig: Notepad (and PowerShell) can save the file with a byte-order mark.
+        _merge(config, tomllib.loads(Path(path).read_text(encoding="utf-8-sig")), "")
     _siege_out_of_main(config.clan)
     config.validate()
     return config
@@ -586,7 +586,7 @@ def save_config(config: Config, path: str | Path) -> None:
     text = None
     if path.is_file():
         try:
-            text = _updated_toml(path.read_text(encoding="utf-8"), load_config(path), config)
+            text = _updated_toml(path.read_text(encoding="utf-8-sig"), load_config(path), config)
         except (ValueError, TypeError, tomllib.TOMLDecodeError):
             text = None  # something the simple editor can't handle: write it all out
     # Keep the file's own line endings (Python would write CRLF on Windows).
