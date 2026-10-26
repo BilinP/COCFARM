@@ -49,6 +49,9 @@ public class MainActivity extends Activity {
         column.addView(settings);
 
         column.addView(heading("2. Settings and pictures"));
+        Button openSettings = button("Settings");
+        openSettings.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
+        column.addView(openSettings);
         folder = text("", 14);
         column.addView(folder);
 
@@ -90,7 +93,7 @@ public class MainActivity extends Activity {
         access.setText(on ? "✓ COCFARM can tap in the game." : "Turn on COCFARM under Settings → Accessibility "
                 + "(Installed apps / Downloaded apps on some phones).");
         access.setTextColor(on ? Color.parseColor("#6ccb5f") : Color.parseColor("#fce100"));
-        folder.setText("Your settings (farmbot.toml) and button pictures (templates) are in:\n"
+        folder.setText("The button pictures go in the templates folder in:\n"
                 + getExternalFilesDir(null).getAbsolutePath());
         boolean running = BotService.instance != null;
         start.setEnabled(!running);

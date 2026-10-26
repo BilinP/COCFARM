@@ -29,6 +29,12 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="Settings"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Sees the screen (with the player's permission each time it starts) and runs the bot. -->
         <service
             android:name=".BotService"

@@ -22,6 +22,7 @@ from farmbot.vision import TemplateLibrary, Vision
 Bridge = jclass("com.cocfarm.app.Bridge")
 log = logging.getLogger("farmbot.android")
 _stop = threading.Event()
+running_config = None  # the farming bot's settings: the settings screen changes them as it saves
 
 
 class AndroidDevice:
@@ -81,6 +82,7 @@ def _logging(folder: str) -> None:
 def run(folder: str) -> None:
     """Farm until stop() (or a problem). ``folder`` holds farmbot.toml,
     templates/ and the logs, as COCFARM's folder does on Windows."""
+    global running_config
     _stop.clear()
     os.chdir(folder)
     _logging(folder)
@@ -94,9 +96,13 @@ def run(folder: str) -> None:
                       + ". They go in the templates folder shown above.")
         return
     Bridge.status("Starting…")
+    running_config = cfg
     game = Game(AndroidDevice(), Vision(library, cfg.bot.threshold), stop_event=_stop, ui_scale=cfg.device.ui_scale,
                 window_scale=cfg.device.window_scale, picture_scales=cfg.device.picture_scales)
-    Bot(game, cfg, on_status=lambda text: Bridge.status(text)).run()
+    try:
+        Bot(game, cfg, on_status=lambda text: Bridge.status(text)).run()
+    finally:
+        running_config = None
     Bridge.status("Stopped")
 
 
