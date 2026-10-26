@@ -1,0 +1,6 @@
+# This PC's SDK path, and everything Gradle builds
+local.properties
+.gradle/
+build/
+app/build/
+*.apk

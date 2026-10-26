@@ -8,7 +8,10 @@ so the same settings fit phones and 16:9 emulators alike.
 
 from __future__ import annotations
 
-import tomllib
+try:
+    import tomllib
+except ImportError:  # Python 3.10, as in the Android app: the same parser from PyPI
+    import tomli as tomllib
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any

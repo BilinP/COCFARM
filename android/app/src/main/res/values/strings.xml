@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">COCFARM</string>
+    <string name="touch_service_description">Lets COCFARM tap and swipe in Clash of Clans while it farms. It only performs taps and swipes, and notes which app is open; it doesn\'t read the screen\'s text or your other apps.</string>
+</resources>
