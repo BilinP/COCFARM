@@ -66,3 +66,9 @@ val copyBot by tasks.registering(Sync::class) {
 }
 chaquopy.sourceSets.getByName("main").srcDir(botSources)
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("PythonSources") }.configureEach { dependsOn(copyBot) }
+
+dependencies {
+    // The look: Material 3 cards, switches, sliders, text fields and dialogs.
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0")
+}

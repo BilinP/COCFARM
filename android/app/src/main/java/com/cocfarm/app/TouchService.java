@@ -17,15 +17,23 @@ public class TouchService extends AccessibilityService {
     static volatile TouchService instance;
     private static final long TAP_MS = 40;
     private volatile String foreground = "";
+    FloatingButton button;
 
     @Override
     protected void onServiceConnected() {
+        button = new FloatingButton(this);
         instance = this;
+        if (BotService.instance != null) {
+            button.show();
+        }
     }
 
     @Override
     public boolean onUnbind(android.content.Intent intent) {
         instance = null;
+        if (button != null) {
+            button.hide();
+        }
         return super.onUnbind(intent);
     }
 
@@ -35,9 +43,15 @@ public class TouchService extends AccessibilityService {
             return;
         }
         String app = event.getPackageName().toString();
-        // The notification shade and the keyboard open over the game: it's still the app in front.
-        if (!app.equals("com.android.systemui") && !app.contains("inputmethod")) {
+        // The notification shade, the keyboard and COCFARM's own floating button open over the
+        // game: it's still the app in front.
+        boolean ownOverlay = app.equals(getPackageName())
+                && (event.getClassName() == null || !event.getClassName().toString().startsWith(getPackageName()));
+        if (!app.equals("com.android.systemui") && !app.contains("inputmethod") && !ownOverlay) {
             foreground = app;
+            if (button != null) {
+                button.refresh();
+            }
         }
     }
 
@@ -53,6 +67,18 @@ public class TouchService extends AccessibilityService {
     boolean play(GestureDescription gesture, long longestMs) {
         CountDownLatch done = new CountDownLatch(1);
         boolean[] ok = {false};
+        // Only a gesture that crosses the floating button needs it out of the way.
+        boolean through = button.passThrough(gesture);
+        try {
+            return play(gesture, longestMs, done, ok);
+        } finally {
+            if (through) {
+                button.endPassThrough();
+            }
+        }
+    }
+
+    private boolean play(GestureDescription gesture, long longestMs, CountDownLatch done, boolean[] ok) {
         boolean sent = dispatchGesture(gesture, new GestureResultCallback() {
             @Override
             public void onCompleted(GestureDescription g) {
@@ -131,5 +157,9 @@ public class TouchService extends AccessibilityService {
 
     boolean home() {
         return performGlobalAction(GLOBAL_ACTION_HOME);
+    }
+
+    boolean back() {
+        return performGlobalAction(GLOBAL_ACTION_BACK);
     }
 }

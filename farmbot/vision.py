@@ -183,10 +183,13 @@ class Vision:
                     self.scales[tname] = 1.0
             if not found and self.adaptive and tname not in self.scales and self.window_scale != 1.0 \
                     and self._ready(tname) \
-                    and _score(screen, _resized(image, self.window_scale), region) >= threshold - ADAPTIVE_NEAR:
-                # Most misses are buttons that simply aren't on screen: one
-                # look at the window size rules them out before the fine search.
-                scale, score = best_scale(screen, image, [1.0, self.window_scale], region)
+                    and max(_score(screen, _resized(image, size), region) for size in self.window_sizes()) \
+                    >= threshold - ADAPTIVE_NEAR:
+                # Most misses are buttons that simply aren't on screen: a look
+                # at each likely size rules them out before the fine search.
+                # (Some screens, phones among them, draw windows a little off
+                # these sizes: close to one is worth the search.)
+                scale, score = best_scale(screen, image, self.window_sizes(), region)
                 if score >= threshold:
                     self.scales[tname] = scale
                     found = match_template(screen, _resized(image, scale), threshold, region, tname)
@@ -194,6 +197,13 @@ class Vision:
                     self._rest[tname] = ADAPTIVE_REST
             matches.extend(found)
         return sorted(matches, key=lambda m: -m.score)
+
+    def window_sizes(self) -> list[float]:
+        """Sizes a window's picture may show at: the HUD's, the window size,
+        and its inverse. Pictures taken where a window was shrunk come out
+        that much bigger on screens wider than 16:9 (phones), which don't
+        shrink it."""
+        return sorted({1.0, self.window_scale, round(1 / self.window_scale, 2)})
 
     def _ready(self, tname: str) -> bool:
         """Whether a fine size search for ``tname`` may run now (after one

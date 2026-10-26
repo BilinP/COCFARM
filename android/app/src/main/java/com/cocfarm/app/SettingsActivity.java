@@ -1,8 +1,5 @@
 package com.cocfarm.app;
 
-import android.app.Activity;
-import android.app.AlertDialog;
-import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -11,23 +8,28 @@ import android.text.InputType;
 import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
-import android.widget.Button;
-import android.widget.CheckBox;
-import android.widget.EditText;
-import android.widget.HorizontalScrollView;
+import android.widget.GridLayout;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.SeekBar;
-import android.widget.Spinner;
-import android.widget.Switch;
 import android.widget.TextView;
 
-import com.chaquo.python.Python;
-import com.chaquo.python.android.AndroidPlatform;
+import androidx.appcompat.app.AppCompatActivity;
+
+import com.google.android.material.appbar.MaterialToolbar;
+import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.chip.Chip;
+import com.google.android.material.chip.ChipGroup;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.divider.MaterialDivider;
+import com.google.android.material.materialswitch.MaterialSwitch;
+import com.google.android.material.slider.Slider;
+import com.google.android.material.tabs.TabLayout;
+import com.google.android.material.textfield.MaterialAutoCompleteTextView;
+import com.google.android.material.textfield.TextInputLayout;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -38,25 +40,24 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Every setting, page by page. What's on it comes from cocfarm_settings.py,
  * and it's checked and saved there with the same rules as on Windows: a
  * change is saved a moment after it's made, and a mistake shows in red
- * under its setting. A farming bot picks the change up straight away.
+ * on its setting. A farming bot picks the change up straight away.
  */
-public class SettingsActivity extends Activity {
-    private static final int GOOD = Color.parseColor("#6ccb5f"), BAD = Color.parseColor("#ff99a4"),
-            MUTED = Color.parseColor("#9da5b4"), ACCENT = Color.parseColor("#4c9aff");
+public class SettingsActivity extends AppCompatActivity {
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final Map<String, TextView> errors = new HashMap<>();
+    // Setting path -> shows (or, given null, clears) its mistake.
+    private final Map<String, Consumer<String>> errors = new HashMap<>();
     private final List<View> dependents = new ArrayList<>();
     private final Map<View, JSONObject> dependsOn = new HashMap<>();
     private JSONArray pages;
     private JSONObject values;
-    private LinearLayout tabs, content;
-    private TextView saved;
-    private int page;
+    private LinearLayout content;
+    private MaterialToolbar toolbar;
     private String folder;
     private final Runnable save = this::save;
     private boolean pending;  // a change waiting to be saved
@@ -65,37 +66,34 @@ public class SettingsActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         folder = getExternalFilesDir(null).getAbsolutePath();
-        if (!Python.isStarted()) {
-            Python.start(new AndroidPlatform(this));
-        }
         try {
-            JSONObject screen = new JSONObject(Python.getInstance().getModule("cocfarm_settings")
+            JSONObject screen = new JSONObject(Bridge.python(this).getModule("cocfarm_settings")
                     .callAttr("load", folder).toString());
             pages = screen.getJSONArray("pages");
             values = screen.getJSONObject("values");
         } catch (JSONException e) {
             throw new IllegalStateException(e);
         }
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(16);
-        root.setPadding(pad, pad, pad, 0);
-        TextView title = text("Settings", 24, Color.WHITE);
-        root.addView(title);
-        saved = text("Changes save by themselves.", 13, MUTED);
-        root.addView(saved);
+        setContentView(R.layout.activity_settings);
+        toolbar = findViewById(R.id.toolbar);
+        toolbar.setNavigationOnClickListener(v -> finish());
+        status("Changes save by themselves", R.color.cf_muted);
+        content = findViewById(R.id.content);
+        TabLayout tabs = findViewById(R.id.tabs);
+        for (int i = 0; i < pages.length(); i++) {
+            tabs.addTab(tabs.newTab().setText(pages.optJSONObject(i).optString("title")));
+        }
+        tabs.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
+            public void onTabSelected(TabLayout.Tab tab) {
+                showPage(tab.getPosition());
+            }
 
-        HorizontalScrollView strip = new HorizontalScrollView(this);
-        tabs = new LinearLayout(this);
-        strip.addView(tabs);
-        root.addView(strip);
-        ScrollView scroll = new ScrollView(this);
-        content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(0, 0, 0, dp(40));
-        scroll.addView(content);
-        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        setContentView(root);
+            public void onTabUnselected(TabLayout.Tab tab) {
+            }
+
+            public void onTabReselected(TabLayout.Tab tab) {
+            }
+        });
         showPage(0);
     }
 
@@ -111,30 +109,33 @@ public class SettingsActivity extends Activity {
     // ------------------------------------------------------------- pages
 
     private void showPage(int index) {
-        page = index;
-        tabs.removeAllViews();
-        for (int i = 0; i < pages.length(); i++) {
-            Button tab = new Button(this);
-            tab.setText(pages.optJSONObject(i).optString("title"));
-            tab.setAllCaps(false);
-            tab.setTextColor(i == index ? ACCENT : Color.WHITE);
-            int target = i;
-            tab.setOnClickListener(v -> showPage(target));
-            tabs.addView(tab);
-        }
         content.removeAllViews();
         errors.clear();
         dependents.clear();
         dependsOn.clear();
+        ((View) content.getParent()).scrollTo(0, 0);
         JSONArray groups = pages.optJSONObject(index).optJSONArray("groups");
         for (int g = 0; g < groups.length(); g++) {
             JSONObject group = groups.optJSONObject(g);
-            TextView heading = text(group.optString("title"), 19, Color.WHITE);
-            heading.setPadding(0, dp(22), 0, dp(4));
+            TextView heading = new TextView(this);
+            heading.setTextAppearance(R.style.TextAppearance_COCFARM_Overline);
+            heading.setText(group.optString("title"));
+            heading.setPadding(dp(4), dp(20), 0, dp(8));
             content.addView(heading);
-            JSONArray items = group.optJSONArray("items");
-            for (int i = 0; i < items.length(); i++) {
-                content.addView(item(items.optJSONObject(i)));
+            MaterialCardView card = new MaterialCardView(this);
+            LinearLayout items = new LinearLayout(this);
+            items.setOrientation(LinearLayout.VERTICAL);
+            items.setPadding(dp(16), dp(4), dp(16), dp(4));
+            card.addView(items);
+            content.addView(card);
+            JSONArray list = group.optJSONArray("items");
+            for (int i = 0; i < list.length(); i++) {
+                if (i > 0) {
+                    MaterialDivider divider = new MaterialDivider(this);
+                    divider.setDividerColor(getColor(R.color.cf_outline_variant));
+                    items.addView(divider);
+                }
+                items.addView(item(list.optJSONObject(i)));
             }
         }
         refreshDependents();
@@ -143,34 +144,40 @@ public class SettingsActivity extends Activity {
     private View item(JSONObject item) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(0, dp(10), 0, dp(6));
+        box.setPadding(0, dp(14), 0, dp(14));
         String kind = item.optString("kind"), path = item.optString("path");
-        TextView title = text(item.optString("title"), 16, Color.WHITE);
-        View control = control(kind, path, item);
-        if (kind.equals("switch")) {  // title and switch on one line
-            LinearLayout row = new LinearLayout(this);
-            row.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            row.addView(control);
-            box.addView(row);
-        } else {
-            box.addView(title);
-        }
+        LinearLayout words = new LinearLayout(this);
+        words.setOrientation(LinearLayout.VERTICAL);
+        words.addView(text(item.optString("title"), com.google.android.material.R.style.TextAppearance_Material3_TitleSmall, R.color.cf_text));
         String help = item.optString("help");
         if (!help.isEmpty()) {
-            box.addView(text(help, 13, MUTED));
+            TextView helpText = text(help, com.google.android.material.R.style.TextAppearance_Material3_BodySmall, R.color.cf_muted);
+            helpText.setPadding(0, dp(2), 0, 0);
+            words.addView(helpText);
         }
-        if (!kind.equals("switch")) {
-            box.addView(control);
-        }
-        TextView error = text("", 13, BAD);
+        TextView error = text("", com.google.android.material.R.style.TextAppearance_Material3_BodySmall, R.color.cf_bad);
+        error.setPadding(0, dp(6), 0, 0);
         error.setVisibility(View.GONE);
-        box.addView(error);
-        if (kind.equals("range")) {
-            errors.put(item.optString("low"), error);
-            errors.put(item.optString("high"), error);
+        Consumer<String> showError = message -> {
+            error.setText(message == null ? "" : message);
+            error.setVisibility(message == null ? View.GONE : View.VISIBLE);
+        };
+        if (kind.equals("switch")) {  // the words and the switch on one line; the whole line flips it
+            MaterialSwitch toggle = new MaterialSwitch(this);
+            toggle.setChecked(values.optBoolean(path));
+            toggle.setOnCheckedChangeListener((v, on) -> changed(path, on));
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            row.addView(toggle);
+            row.setOnClickListener(v -> toggle.toggle());
+            box.addView(row);
+            errors.put(path, showError);
         } else {
-            errors.put(path, error);
+            box.addView(words);
+            box.addView(control(kind, path, item, showError));
         }
+        box.addView(error);
         JSONObject depends = item.optJSONObject("depends");
         if (depends != null) {
             dependents.add(box);
@@ -179,79 +186,56 @@ public class SettingsActivity extends Activity {
         return box;
     }
 
-    private View control(String kind, String path, JSONObject item) {
+    private View control(String kind, String path, JSONObject item, Consumer<String> showError) {
         switch (kind) {
-            case "switch": {
-                Switch toggle = new Switch(this);
-                toggle.setChecked(values.optBoolean(path));
-                toggle.setOnCheckedChangeListener((v, on) -> changed(path, on));
-                return toggle;
-            }
-            case "speed": {
-                LinearLayout row = new LinearLayout(this);
-                TextView slow = text("Slow", 13, MUTED), fast = text("Fast", 13, MUTED);
-                SeekBar bar = new SeekBar(this);
-                bar.setMax(8);
-                bar.setProgress(values.optInt(path, 5) - 1);
-                bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                    public void onProgressChanged(SeekBar s, int p, boolean user) {
-                        if (user) changed(path, String.valueOf(p + 1));
-                    }
-
-                    public void onStartTrackingTouch(SeekBar s) {
-                    }
-
-                    public void onStopTrackingTouch(SeekBar s) {
-                    }
-                });
-                row.addView(slow);
-                row.addView(bar, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-                row.addView(fast);
-                return row;
-            }
+            case "speed":
+                errors.put(path, showError);
+                return speed(path);
             case "choice":
+                errors.put(path, showError);
                 return choice(path, options(item));
             case "multi": {
+                errors.put(path, showError);
                 List<String[]> options = options(item);
-                if (options.size() <= 4) {
-                    return checkboxes(path, options);
-                }
-                return listButton(path, options, false);
+                return options.size() <= 6 ? chips(path, options) : picker(path, options, false);
             }
             case "ordered":
-                return listButton(path, options(item), true);
+                errors.put(path, showError);
+                return picker(path, options(item), true);
             case "hours":
-                return hoursButton(path);
+                errors.put(path, showError);
+                return hoursPicker(path);
             case "range": {
                 LinearLayout row = new LinearLayout(this);
-                row.addView(box(item.optString("low"), "number"));
-                row.addView(text("  to  ", 15, Color.WHITE));
-                row.addView(box(item.optString("high"), "number"));
-                row.addView(text("  " + item.optString("suffix"), 15, MUTED));
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                TextInputLayout low = field(item.optString("low"), "number", "From", "");
+                TextInputLayout high = field(item.optString("high"), "number", "To", item.optString("suffix"));
+                row.addView(low, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+                View gap = new View(this);
+                row.addView(gap, new LinearLayout.LayoutParams(dp(12), 1));
+                row.addView(high, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
                 return row;
             }
-            default: {  // amount, number, text
-                if (!item.optString("suffix").isEmpty()) {
-                    LinearLayout row = new LinearLayout(this);
-                    row.addView(box(path, kind));
-                    row.addView(text("  " + item.optString("suffix"), 15, MUTED));
-                    return row;
-                }
-                return box(path, kind);
-            }
+            default:  // amount, number, text
+                return field(path, kind, "", item.optString("suffix"));
         }
     }
 
-    private EditText box(String path, String kind) {
-        EditText edit = new EditText(this);
+    private TextInputLayout field(String path, String kind, String label, String suffix) {
+        TextInputLayout layout = (TextInputLayout) LayoutInflater.from(this).inflate(R.layout.field_text, null, false);
+        TextView edit = layout.getEditText();
         edit.setText(values.optString(path));
-        edit.setSingleLine(true);
+        if (!label.isEmpty()) {
+            layout.setHint(label);
+        }
+        if (!suffix.isEmpty()) {
+            layout.setSuffixText(suffix);
+        }
         if (kind.equals("number")) {
             edit.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-            edit.setMinWidth(dp(90));
         } else if (kind.equals("amount")) {
-            edit.setMinWidth(dp(160));
-            edit.setHint("e.g. 500k or 1.5m");
+            edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+            layout.setPlaceholderText("e.g. 500k or 1.5m");
         } else {
             edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         }
@@ -266,60 +250,96 @@ public class SettingsActivity extends Activity {
                 changed(path, s.toString());
             }
         });
-        return edit;
+        errors.put(path, layout::setError);
+        return layout;
     }
 
+    private View speed(String path) {
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        Slider slider = new Slider(this);
+        slider.setValueFrom(1);
+        slider.setValueTo(9);
+        slider.setStepSize(1);
+        slider.setValue(Math.max(1, Math.min(9, values.optInt(path, 5))));
+        slider.setLabelFormatter(value -> String.valueOf(Math.round(value)));
+        slider.addOnChangeListener((s, value, user) -> {
+            if (user) changed(path, String.valueOf(Math.round(value)));
+        });
+        column.addView(slider);
+        LinearLayout ends = new LinearLayout(this);
+        ends.setPadding(dp(14), 0, dp(14), 0);
+        ends.addView(text("Slow and careful", com.google.android.material.R.style.TextAppearance_Material3_LabelSmall, R.color.cf_muted),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        ends.addView(text("Fast", com.google.android.material.R.style.TextAppearance_Material3_LabelSmall, R.color.cf_muted));
+        column.addView(ends);
+        return column;
+    }
+
+    /** A few options as chips (one picked); more, in a drop-down. */
     private View choice(String path, List<String[]> options) {
         List<String> keys = new ArrayList<>(), labels = new ArrayList<>();
         for (String[] option : options) {
             keys.add(option[0]);
             labels.add(option[1]);
         }
-        Spinner spinner = new Spinner(this);
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, labels);
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spinner.setAdapter(adapter);
-        int current = keys.indexOf(values.optString(path));
-        spinner.setSelection(Math.max(current, 0), false);
-        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            public void onItemSelected(AdapterView<?> p, View v, int position, long id) {
-                if (!keys.get(position).equals(values.optString(path))) {
-                    changed(path, keys.get(position));
+        if (options.size() <= 4) {
+            ChipGroup group = new ChipGroup(this);
+            group.setPadding(0, dp(8), 0, 0);
+            group.setSingleSelection(true);
+            group.setSelectionRequired(true);
+            for (int i = 0; i < options.size(); i++) {
+                Chip chip = (Chip) LayoutInflater.from(this).inflate(R.layout.chip_filter, group, false);
+                chip.setId(View.generateViewId());
+                chip.setText(labels.get(i));
+                group.addView(chip);
+                String key = keys.get(i);
+                if (key.equals(values.optString(path))) {
+                    group.check(chip.getId());
                 }
+                chip.setOnCheckedChangeListener((v, on) -> {
+                    if (on && !key.equals(values.optString(path))) changed(path, key);
+                });
             }
-
-            public void onNothingSelected(AdapterView<?> p) {
-            }
+            return group;
+        }
+        TextInputLayout layout = (TextInputLayout) LayoutInflater.from(this).inflate(R.layout.field_dropdown, null, false);
+        MaterialAutoCompleteTextView menu = (MaterialAutoCompleteTextView) layout.getEditText();
+        menu.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, labels));
+        int current = keys.indexOf(values.optString(path));
+        menu.setText(labels.get(Math.max(current, 0)), false);
+        menu.setOnItemClickListener((p, v, position, id) -> {
+            if (!keys.get(position).equals(values.optString(path))) changed(path, keys.get(position));
         });
-        return spinner;
+        return layout;
     }
 
-    private View checkboxes(String path, List<String[]> options) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.VERTICAL);
+    private View chips(String path, List<String[]> options) {
+        ChipGroup group = new ChipGroup(this);
+        group.setPadding(0, dp(8), 0, 0);
         List<String> chosen = list(path);
         for (String[] option : options) {
             String key = option[0];
-            CheckBox box = new CheckBox(this);
-            box.setText(option[1]);
-            box.setChecked(chosen.contains(key));
-            box.setOnCheckedChangeListener((v, on) -> {
+            Chip chip = (Chip) LayoutInflater.from(this).inflate(R.layout.chip_filter, group, false);
+            chip.setText(option[1]);
+            chip.setChecked(chosen.contains(key));
+            chip.setOnCheckedChangeListener((v, on) -> {
                 List<String> now = list(path);
                 now.remove(key);
                 if (on) now.add(key);
                 changed(path, new JSONArray(now));
             });
-            row.addView(box);
+            group.addView(chip);
         }
-        return row;
+        return group;
     }
 
-    /** A list too long for checkboxes: a button showing the choice, opening a picker. */
-    private View listButton(String path, List<String[]> options, boolean ordered) {
-        Button button = new Button(this);
-        button.setAllCaps(false);
-        button.setText(summary(list(path), options));
-        button.setOnClickListener(v -> {
+    /** A list too long to show: what's picked, opening a dialog to change it. */
+    private View picker(String path, List<String[]> options, boolean ordered) {
+        View row = LayoutInflater.from(this).inflate(R.layout.row_picker, null, false);
+        TextView summary = row.findViewById(R.id.summary);
+        summary.setText(summary(list(path), options, ordered));
+        row.setOnClickListener(v -> {
             List<String> keys = new ArrayList<>(), now = list(path);
             String[] labels = new String[options.size()];
             boolean[] checked = new boolean[options.size()];
@@ -328,7 +348,7 @@ public class SettingsActivity extends Activity {
                 labels[i] = options.get(i)[1];
                 checked[i] = now.contains(keys.get(i));
             }
-            new AlertDialog.Builder(this)
+            new MaterialAlertDialogBuilder(this)
                     .setTitle(ordered ? "Tap them in the order to give them" : "Pick")
                     .setMultiChoiceItems(labels, checked, (d, which, on) -> {
                         now.remove(keys.get(which));  // a new pick goes last: the order they're tapped in
@@ -336,28 +356,69 @@ public class SettingsActivity extends Activity {
                     })
                     .setPositiveButton("Done", (d, w) -> {
                         changed(path, new JSONArray(now));
-                        button.setText(summary(now, options));
+                        summary.setText(summary(now, options, ordered));
                     })
                     .setNegativeButton("Cancel", null)
                     .show();
         });
-        return button;
+        return row;
     }
 
-    private View hoursButton(String path) {
-        List<String[]> options = new ArrayList<>();
-        for (int h = 0; h < 24; h++) {
-            options.add(new String[]{String.valueOf(h), String.format("%02d:00 to %02d:59", h, h)});
-        }
-        return listButton(path, options, false);
+    /** The hours to play in: a grid of the day's 24 hours. */
+    private View hoursPicker(String path) {
+        View row = LayoutInflater.from(this).inflate(R.layout.row_picker, null, false);
+        TextView summary = row.findViewById(R.id.summary);
+        summary.setText(hours(list(path)));
+        row.setOnClickListener(v -> {
+            List<String> now = list(path);
+            GridLayout grid = new GridLayout(this);
+            grid.setColumnCount(4);
+            grid.setPadding(dp(20), dp(8), dp(20), 0);
+            List<Chip> chips = new ArrayList<>();
+            for (int h = 0; h < 24; h++) {
+                Chip chip = (Chip) LayoutInflater.from(this).inflate(R.layout.chip_filter, grid, false);
+                chip.setText(String.format("%02d:00", h));
+                chip.setCheckedIconVisible(false);
+                chip.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
+                chip.setChipStartPadding(0);
+                chip.setChipEndPadding(0);
+                chip.setTextStartPadding(dp(2));
+                chip.setTextEndPadding(dp(2));
+                chip.setChecked(now.contains(String.valueOf(h)));
+                chips.add(chip);
+                GridLayout.LayoutParams cell = new GridLayout.LayoutParams(GridLayout.spec(GridLayout.UNDEFINED),
+                        GridLayout.spec(GridLayout.UNDEFINED, 1f));
+                cell.width = 0;
+                cell.setMargins(dp(3), 0, dp(3), 0);
+                grid.addView(chip, cell);
+            }
+            new MaterialAlertDialogBuilder(this)
+                    .setTitle("Hours to play")
+                    .setMessage("Tap the hours it may play in (this device's time).")
+                    .setView(grid)
+                    .setPositiveButton("Done", (d, w) -> {
+                        List<String> picked = new ArrayList<>();
+                        for (int h = 0; h < 24; h++) {
+                            if (chips.get(h).isChecked()) picked.add(String.valueOf(h));
+                        }
+                        changed(path, new JSONArray(picked));
+                        summary.setText(hours(picked));
+                    })
+                    .setNeutralButton("All day", (d, w) -> {
+                        List<String> all = new ArrayList<>();
+                        for (int h = 0; h < 24; h++) all.add(String.valueOf(h));
+                        changed(path, new JSONArray(all));
+                        summary.setText(hours(all));
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        });
+        return row;
     }
 
-    private String summary(List<String> chosen, List<String[]> options) {
+    private String summary(List<String> chosen, List<String[]> options, boolean ordered) {
         if (chosen.isEmpty()) {
-            return "None picked: tap to pick";
-        }
-        if (options.size() == 24) {  // hours: as spans of the day
-            return hours(chosen);
+            return "None: tap to pick";
         }
         List<String> labels = new ArrayList<>();
         for (String key : chosen) {
@@ -365,7 +426,7 @@ public class SettingsActivity extends Activity {
             for (String[] option : options) {
                 if (option[0].equals(key)) label = option[1];
             }
-            labels.add(label.replace(" to ", "–").replace(":59", ""));
+            labels.add(ordered ? (labels.size() + 1) + ". " + label : label);
         }
         return TextUtils.join(", ", labels);
     }
@@ -379,8 +440,7 @@ public class SettingsActivity extends Activity {
             return;
         }
         refreshDependents();
-        saved.setText("Saving…");
-        saved.setTextColor(MUTED);
+        status("Saving…", R.color.cf_muted);
         pending = true;
         main.removeCallbacks(save);
         main.postDelayed(save, 700);
@@ -392,7 +452,7 @@ public class SettingsActivity extends Activity {
         new Thread(() -> {
             String result;
             try {
-                result = Python.getInstance().getModule("cocfarm_settings").callAttr("save", folder, form).toString();
+                result = Bridge.python(this).getModule("cocfarm_settings").callAttr("save", folder, form).toString();
             } catch (Throwable e) {  // e.g. the file can't be written: say so rather than close the app
                 result = "Couldn't save: " + e.getMessage();
             }
@@ -404,38 +464,48 @@ public class SettingsActivity extends Activity {
     private void showErrors(String result) {
         try {
             JSONObject problems = new JSONObject(result);
-            for (Map.Entry<String, TextView> entry : errors.entrySet()) {
-                entry.getValue().setVisibility(View.GONE);
+            for (Consumer<String> error : errors.values()) {
+                error.accept(null);
             }
             int shown = 0;
             for (Iterator<String> it = problems.keys(); it.hasNext(); ) {
                 String path = it.next();
-                TextView error = errors.get(path);
+                Consumer<String> error = errors.get(path);
                 if (error != null) {
-                    error.setText("✗ " + problems.optString(path));
-                    error.setVisibility(View.VISIBLE);
+                    error.accept(problems.optString(path));
                     shown++;
                 }
             }
             if (problems.length() == 0) {
-                saved.setText("✓ Saved");
-                saved.setTextColor(GOOD);
+                status("✓ Saved", R.color.cf_good);
             } else {
-                saved.setText("✗ Not saved: fix the setting in red" + (shown < problems.length() ? " (on another page)" : ""));
-                saved.setTextColor(BAD);
+                status("Not saved: fix the setting in red" + (shown < problems.length() ? " (on another tab)" : ""),
+                        R.color.cf_bad);
             }
         } catch (JSONException e) {
-            saved.setText("✗ " + result);
-            saved.setTextColor(BAD);
+            status(result, R.color.cf_bad);
         }
+    }
+
+    private void status(String text, int colour) {
+        toolbar.setSubtitle(text);
+        toolbar.setSubtitleTextColor(getColor(colour));
     }
 
     private void refreshDependents() {
         for (View view : dependents) {
             JSONObject depends = dependsOn.get(view);
             Object want = depends.opt("is"), have = values.opt(depends.optString("path"));
-            boolean on = String.valueOf(want).equals(String.valueOf(have));
-            view.setAlpha(on ? 1f : 0.4f);
+            boolean on;
+            if (want instanceof JSONArray) {
+                on = false;
+                for (int i = 0; i < ((JSONArray) want).length(); i++) {
+                    on |= String.valueOf(((JSONArray) want).opt(i)).equals(String.valueOf(have));
+                }
+            } else {
+                on = String.valueOf(want).equals(String.valueOf(have));
+            }
+            view.animate().alpha(on ? 1f : 0.38f).setDuration(150).start();
             enable(view, on);
         }
     }
@@ -463,6 +533,9 @@ public class SettingsActivity extends Activity {
 
     /** Hours as spans: "All day", or "08:00–16:59, 20:00–23:59". */
     private static String hours(List<String> chosen) {
+        if (chosen.isEmpty()) {
+            return "None: tap to pick";
+        }
         boolean[] on = new boolean[24];
         for (String hour : chosen) {
             on[Integer.parseInt(hour)] = true;
@@ -489,11 +562,11 @@ public class SettingsActivity extends Activity {
         return out;
     }
 
-    private TextView text(String value, int sp, int colour) {
+    private TextView text(String value, int appearance, int colour) {
         TextView view = new TextView(this);
         view.setText(value);
-        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-        view.setTextColor(colour);
+        view.setTextAppearance(appearance);
+        view.setTextColor(getColor(colour));
         return view;
     }
 

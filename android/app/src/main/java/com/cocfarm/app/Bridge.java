@@ -4,6 +4,8 @@ import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
 
+import com.chaquo.python.Python;
+
 /**
  * What the Python bot calls (see cocfarm_android.py): the screen, the
  * fingers, and the game app. Static, so Python reaches it without a context.
@@ -14,7 +16,10 @@ public final class Bridge {
     }
 
     static volatile Listener listener;
-    static volatile String lastStatus = "Ready";
+    static volatile String lastStatus = "Ready when you are.";
+    // Asked for by the player (the floating button, the notification or the home screen): the bot
+    // acts on them at its next safe point.
+    static volatile boolean paused, stopping;
 
     private Bridge() {
     }
@@ -61,6 +66,10 @@ public final class Bridge {
         return touch().pinch(service.width, service.height);
     }
 
+    public static boolean back() {
+        return touch().back();
+    }
+
     public static String foregroundPackage() {
         return touch().foregroundPackage();
     }
@@ -84,6 +93,49 @@ public final class Bridge {
             Thread.currentThread().interrupt();
         }
         ((ActivityManager) bot().getSystemService(Context.ACTIVITY_SERVICE)).killBackgroundProcesses(pkg);
+    }
+
+    /** Python, started on first use (from any thread). */
+    static synchronized Python python(Context context) {
+        if (!Python.isStarted()) {
+            Python.start(new com.chaquo.python.android.AndroidPlatform(context.getApplicationContext()));
+        }
+        return Python.getInstance();
+    }
+
+    /** Pause at the next safe point, or carry on. */
+    static void togglePause() {
+        BotService service = BotService.instance;
+        if (service == null || stopping || !Python.isStarted()) {
+            return;
+        }
+        paused = Python.getInstance().getModule("cocfarm_android").callAttr("toggle_pause").toBoolean();
+        if (!paused) {
+            status("Carrying on");
+        }
+        changed();
+    }
+
+    static void stop(Context context) {
+        if (BotService.instance == null) {
+            return;
+        }
+        stopping = true;
+        context.startService(new Intent(context, BotService.class).setAction(BotService.ACTION_STOP));
+        changed();
+    }
+
+    /** Farming started or ended, or was paused: everything showing it follows. */
+    static void changed() {
+        BotService service = BotService.instance;
+        if (service != null) {
+            service.refreshNotification();
+        }
+        TouchService touch = TouchService.instance;
+        if (touch != null && touch.button != null) {
+            touch.button.refresh();
+        }
+        status(lastStatus);
     }
 
     public static void status(String text) {

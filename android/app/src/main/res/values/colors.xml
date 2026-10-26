@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- COCFARM's colours: the Windows app's dark theme. -->
+<resources>
+    <color name="cf_background">#0E1014</color>
+    <color name="cf_surface">#171A20</color>
+    <color name="cf_surface_high">#1F232B</color>
+    <color name="cf_surface_highest">#272C35</color>
+    <color name="cf_outline">#353B46</color>
+    <color name="cf_outline_variant">#262B33</color>
+    <color name="cf_text">#E6E9EE</color>
+    <color name="cf_muted">#9DA5B4</color>
+    <color name="cf_accent">#4C9AFF</color>
+    <color name="cf_on_accent">#04213F</color>
+    <color name="cf_accent_container">#16345A</color>
+    <color name="cf_on_accent_container">#D3E4FF</color>
+    <color name="cf_good">#6CCB5F</color>
+    <color name="cf_good_container">#173A1D</color>
+    <color name="cf_warn">#E3B341</color>
+    <color name="cf_warn_container">#3D3014</color>
+    <color name="cf_bad">#FF8A95</color>
+    <color name="cf_bad_container">#4A1A1F</color>
+    <color name="cf_on_bad_container">#FFD9DC</color>
+    <color name="cf_gold">#F5C542</color>
+    <color name="cf_elixir">#D58CFF</color>
+</resources>

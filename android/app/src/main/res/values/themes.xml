@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.COCFARM" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/cf_accent</item>
+        <item name="colorOnPrimary">@color/cf_on_accent</item>
+        <item name="colorPrimaryContainer">@color/cf_accent_container</item>
+        <item name="colorOnPrimaryContainer">@color/cf_on_accent_container</item>
+        <item name="colorSecondary">@color/cf_accent</item>
+        <item name="colorOnSecondary">@color/cf_on_accent</item>
+        <item name="colorSecondaryContainer">@color/cf_accent_container</item>
+        <item name="colorOnSecondaryContainer">@color/cf_on_accent_container</item>
+        <item name="colorTertiary">@color/cf_warn</item>
+        <item name="colorError">@color/cf_bad</item>
+        <item name="colorErrorContainer">@color/cf_bad_container</item>
+        <item name="colorOnErrorContainer">@color/cf_on_bad_container</item>
+        <item name="android:colorBackground">@color/cf_background</item>
+        <item name="colorSurface">@color/cf_background</item>
+        <item name="colorOnSurface">@color/cf_text</item>
+        <item name="colorOnSurfaceVariant">@color/cf_muted</item>
+        <item name="colorSurfaceContainerLowest">@color/cf_background</item>
+        <item name="colorSurfaceContainerLow">@color/cf_surface</item>
+        <item name="colorSurfaceContainer">@color/cf_surface</item>
+        <item name="colorSurfaceContainerHigh">@color/cf_surface_high</item>
+        <item name="colorSurfaceContainerHighest">@color/cf_surface_highest</item>
+        <item name="colorOutline">@color/cf_outline</item>
+        <item name="colorOutlineVariant">@color/cf_outline_variant</item>
+        <item name="android:statusBarColor">@color/cf_background</item>
+        <item name="android:navigationBarColor">@color/cf_background</item>
+        <item name="materialCardViewStyle">@style/Widget.COCFARM.Card</item>
+    </style>
+
+    <style name="Widget.COCFARM.Card" parent="Widget.Material3.CardView.Filled">
+        <item name="cardBackgroundColor">@color/cf_surface</item>
+        <item name="cardCornerRadius">20dp</item>
+        <item name="strokeColor">@color/cf_outline_variant</item>
+        <item name="strokeWidth">1dp</item>
+    </style>
+
+    <!-- Small headings over each card. -->
+    <style name="TextAppearance.COCFARM.Overline" parent="TextAppearance.Material3.LabelLarge">
+        <item name="android:textColor">@color/cf_muted</item>
+        <item name="android:letterSpacing">0.08</item>
+        <item name="android:textAllCaps">true</item>
+    </style>
+</resources>

@@ -33,6 +33,7 @@ class Device(Protocol):
     def screenshot(self) -> np.ndarray: ...
     def tap(self, x: int, y: int) -> None: ...
     # Optional: def tap_many(self, points, pause=0.0) -> None, for quick bursts.
+    # Optional: def back(self) -> bool, Android's Back button.
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 300) -> None: ...
     def type_text(self, text: str) -> None: ...
     def start_app(self, package: str) -> None: ...
@@ -295,6 +296,10 @@ class AdbDevice:
 
     def tap(self, x: int, y: int) -> None:
         self.shell("input", "tap", str(int(x)), str(int(y)))
+
+    def back(self) -> bool:
+        self.shell("input", "keyevent", "KEYCODE_BACK")
+        return True
 
     def _touchscreen(self) -> TouchScreen | None:
         if self._touch is None:

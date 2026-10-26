@@ -17,12 +17,52 @@ from __future__ import annotations
 import json
 import os
 
-from farmbot.config import RESOURCES, ensure_config, load_config, save_config
+from farmbot import __version__, catalog
+from farmbot.config import RESOURCES, load_config, save_config
 from farmbot.form import SIDE_LABELS, apply_form, form_values, validate
 from farmbot.units import SIEGE_MACHINES, SPELLS, TROOPS
 
 SETTINGS_FILE = "farmbot.toml"
 MONEY = {"gold": "Gold", "elixir": "Elixir", "both": "Either"}
+
+# A phone's first farmbot.toml. Not the Windows one (made for an 860 x 672
+# emulator): every phone screen is different, so the bot measures the size
+# of the game's buttons itself, and everything else starts at the defaults.
+PHONE_PROFILE = """\
+# COCFARM settings for this phone, written the first time it runs. Change
+# them in the app's Settings, or here.
+
+[device]
+ui_scale = 0.0  # measured from the game's buttons on this screen
+window_scale = 0.0
+
+# Once screenshots are scaled to the buttons' size, the game's corners line
+# up as they do on the PC display (measured at 2400 x 1080).
+[regions]
+own_gold = [-215, 25, 150, 32]  # wide enough for 9 digits
+own_elixir = [-215, 78, 150, 32]
+own_dark = [-160, 130, 95, 32]
+# Left (empty) end of each resource bar: only coloured when that storage is full.
+full_gold = [-284, 33, 24, 14]
+full_elixir = [-284, 83, 24, 14]
+full_dark = [-215, 133, 24, 14]
+loot_gold = [63, 92, 150, 34]
+loot_elixir = [63, 134, 150, 34]
+loot_dark = [63, 175, 150, 34]
+
+[bar]
+band = [0, -130, 0, 110]
+card_width = 96
+"""
+
+
+def ensure_settings(folder: str) -> str:
+    """The settings file's path, written for a phone if there isn't one yet."""
+    path = os.path.join(folder, SETTINGS_FILE)
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(PHONE_PROFILE)
+    return path
 
 
 def _item(path, kind, title, help_text="", **extra):
@@ -240,11 +280,19 @@ def _ordered(pages: list) -> list:
         for item in group["items"]]} for group in page["groups"]]} for page in pages]
 
 
+def info(folder: str) -> str:
+    """For the home screen: COCFARM's version, and the button pictures still missing."""
+    from farmbot.vision import TemplateLibrary
+
+    cfg = load_config(ensure_settings(folder))
+    library = TemplateLibrary(os.path.join(folder, cfg.bot.templates))
+    missing = [] if cfg.search.maintain_only else catalog.missing(library, required_only=True)
+    return json.dumps({"version": __version__, "missing": [p.title for p in missing]})
+
+
 def load(folder: str) -> str:
     """The settings screen, with this device's current values, as JSON."""
-    path = os.path.join(folder, SETTINGS_FILE)
-    ensure_config(path)
-    values = form_values(load_config(path))
+    values = form_values(load_config(ensure_settings(folder)))
     return json.dumps({"pages": _ordered(PAGES), "values": {p: _json(values[p]) for p in _paths()}})
 
 
@@ -256,7 +304,7 @@ def save(folder: str, values_json: str) -> str:
     _, errors = validate(form)
     if errors:
         return json.dumps(errors)
-    path = os.path.join(folder, SETTINGS_FILE)
+    path = ensure_settings(folder)
     config = load_config(path)
     apply_form(config, form)
     save_config(config, path)

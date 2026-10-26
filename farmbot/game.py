@@ -168,7 +168,7 @@ VIEW_STILL = 3.0
 # a match must be, and the move below which the view counts as still.
 PAN_CENTER = (588, 420)
 PAN_DRAG = (420, 300)
-PAN_PATCH = (330, 560, 430, 750)
+PAN_PATCH = (320, 230)  # width, height of the piece of map followed across a drag
 PAN_SURE = 0.6
 PAN_STILL = 8
 PAN_TRIES = 3
@@ -327,6 +327,11 @@ class Game:
         stop = getattr(self.device, "stop_fast_taps", None)
         return bool(stop and stop())
 
+    def back(self) -> bool:
+        """Press Android's Back button, on devices that can."""
+        back = getattr(self.device, "back", None)
+        return bool(back and back())
+
     def zoom_out(self) -> bool:
         """Pinch the view all the way out, on devices that can. The game
         keeps its zoom between battles, and a zoomed-in view hides the
@@ -380,10 +385,16 @@ class Game:
         self.swipe(cx - dx // 2, cy - dy // 2, cx + dx // 2, cy + dy // 2, PAN_MS)
         self.wait(0.8)
         after = self.refresh().copy()
-        y0, y1, x0, x1 = PAN_PATCH
-        if before.shape != after.shape or after.shape[0] < y1 or after.shape[1] < x1:
+        # Followed from the side the map moves away from, so it ends up near
+        # the middle rather than off the edge (on wide screens, phones, a
+        # drag moves the map most of the screen's height).
+        h, w = after.shape[:2]
+        pw, ph = PAN_PATCH
+        if before.shape != after.shape or h < ph or w < pw:
             return None
-        found = cv2.matchTemplate(after, before[y0:y1, x0:x1], cv2.TM_CCOEFF_NORMED)
+        x0 = min(max((w - pw - dx) // 2, 0), w - pw)
+        y0 = min(max((h - ph - dy) // 2, 0), h - ph)
+        found = cv2.matchTemplate(after, before[y0:y0 + ph, x0:x0 + pw], cv2.TM_CCOEFF_NORMED)
         _, score, _, (x, y) = cv2.minMaxLoc(found)
         if not score >= PAN_SURE:
             log.info("Can't follow the view while centring it (likeness %.2f)", score)
