@@ -168,7 +168,10 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_gui(args: argparse.Namespace) -> int:
-    from farmbot.gui import run_gui  # Qt is only needed here
+    from farmbot import splash  # Qt is only needed here
+
+    splash.show()  # while the rest loads
+    from farmbot.gui import run_gui
 
     return run_gui(args.config or "farmbot.toml", args.serial)
 

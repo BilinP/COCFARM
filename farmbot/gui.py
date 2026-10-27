@@ -15,9 +15,10 @@ Tab between controls, Enter presses the focused button.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import logging
 import queue
-import sys
 import threading
 import time
 from html import escape
@@ -29,6 +30,11 @@ from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QListWidgetItem,
                                QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
+
+# Loading QFluentWidgets prints an ad for its Pro version, which the windowed
+# exe would write to farmbot.log: load it with printing switched off.
+with contextlib.redirect_stdout(io.StringIO()):
+    import qfluentwidgets  # noqa: F401
 from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox, ElevatedCardWidget,
                             FluentIcon as FIF, FluentWindow, InfoBar, InfoBarIcon, InfoBarPosition, LineEdit, ListWidget,
                             NavigationItemPosition, PlainTextEdit, PrimaryPushButton, ProgressBar, PushButton,
@@ -37,9 +43,9 @@ from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox,
                             StrongBodyLabel, SubtitleLabel, SwitchButton, Theme, TitleLabel, TogglePushButton,
                             isDarkTheme, qconfig, setCustomStyleSheet, setTheme, setThemeColor)
 
-from farmbot import __version__, catalog, icons
+from farmbot import __version__, catalog, icons, splash
 from farmbot.config import Config, ensure_config, load_config, save_config
-from farmbot.form import BY_PATH, apply_form, form_values, validate
+from farmbot.form import BY_PATH, apply_form, form_values, parse_amount, validate
 from farmbot.friendly import Problem, Status, describe_status, explain
 from farmbot.geometry import Rect
 from farmbot.vision import TemplateLibrary
@@ -533,6 +539,8 @@ class FarmbotWindow(FluentWindow):
         self.bindings: dict[str, Binding] = {}
         self.cards: dict[str, Card] = {}
         self.dependents: list[tuple[str, list[Binding], Any]] = []
+        # Share sliders: (path, the storage size it's a share of, its label, the resource's name)
+        self.shares: list[tuple[str, str, QLabel, str]] = []
         self.has_errors = False
         self._loading = False
         self.session_start: float | None = None
@@ -737,6 +745,49 @@ class FarmbotWindow(FluentWindow):
         slow, fast = _muted(CaptionLabel("Slow")), _muted(CaptionLabel("Fast"))
         self._bind(path, Binding(slider.value, lambda v: slider.setValue(int(v)), slider.valueChanged.connect, [slider]))
         return self._card(group, path, icon, title, help_text, slow, slider, fast, value)
+
+    def share(self, group, path: str, icon, title: str, help_text: str, storage: str, noun: str) -> Card:
+        """A 0-100% slider for a share of what a storage holds, with that
+        amount beside it (``storage``: the path of the storage's size)."""
+        slider = Slider(Qt.Horizontal)
+        slider.setRange(0, 100)
+        slider.setFixedWidth(200)
+        amount = StrongBodyLabel("")
+        amount.setFixedWidth(210)
+        self._bind(path, Binding(lambda: str(slider.value()), lambda v: slider.setValue(round(float(v))),
+                                 slider.valueChanged.connect, [slider]))
+        self.shares.append((path, storage, amount, noun))
+        return self._card(group, path, icon, title, help_text, slider, amount)
+
+    def _show_shares(self, form: dict[str, Any]) -> None:
+        for path, storage, label, noun in self.shares:
+            share = int(form.get(path) or 0)
+            try:
+                most = parse_amount(form.get(storage, ""))
+            except ValueError:
+                most = 0
+            label.setText(f"{share}%  ·  {round(share / 100 * most):,} {noun}" if most else
+                          f"{share}%  ·  storage size not known yet")
+
+    def _storage_group(self, page: Page, village: str) -> None:
+        """What the storages hold: filled in by the bot, editable by hand
+        (editing one turns reading it from the game off, so it's kept)."""
+        prefix = "builder_" if village == "builder" else ""
+        read = f"storage.{prefix}read"
+        group = page.add(SettingCardGroup("Storages"))
+        self.switch(group, read, FIF.SYNC, "Read from the game",
+                    "Once a day, the first time it's in this village, it taps your loot at the top right to see "
+                    "what your storages hold. Off: it keeps the amounts below.")
+        kinds = {"gold": "Gold", "elixir": "Elixir"}
+        if village == "home":
+            kinds["dark"] = "Dark elixir"
+        for kind, name in kinds.items():
+            path = f"storage.{prefix}{kind}"
+            self.amount(group, path, FIF.SAVE, f"{name} storages hold",
+                        "Filled in from the game. Wrong? Type the right amount: reading turns off so it's kept.")
+            edit = self.bindings[path].widgets[0]
+            edit.setPlaceholderText("not known yet")
+            edit.textEdited.connect(lambda _, r=read: self.bindings[r].set(False))  # typed by you, not the bot
 
     def segments(self, group, path: str, icon, title: str, help_text: str, keys: list[str] | dict[str, str],
                  width: int = 60) -> Card:
@@ -1270,12 +1321,13 @@ class FarmbotWindow(FluentWindow):
         self.switch(loot, "search.match_any", FIF.FILTER, "Any one is enough",
                     "On: attack when any one amount above is met. Off: all of them must be met.")
         more = page.add(SettingCardGroup("While searching"))
-        self.amount(more, "search.min_own_gold", FIF.SHOPPING_CART, "Don't search while my gold is below",
-                    "Each Next costs gold. 0 always searches.")
+        self.share(more, "search.min_own_gold_share", FIF.SHOPPING_CART, "Don't search while my gold is below",
+                   "A share of what your gold storages hold: each Next costs gold. 0% always searches.",
+                   "storage.gold", "gold")
         self.switch(more, "search.sound_on_match", FIF.RINGER, "Sound on match",
                     "Beeps when it finds a base worth attacking.")
         self.depends("search.maintain_only", "search.min_gold", "search.min_elixir", "search.min_dark",
-                     "search.match_any", "search.min_own_gold",
+                     "search.match_any", "search.min_own_gold_share",
                      "search.sound_on_match", when=False)
 
     def _attacking_tab(self, page: Page) -> None:
@@ -1347,6 +1399,7 @@ class FarmbotWindow(FluentWindow):
         self.depends("bot.collect_resources", "bot.collect_gold", "bot.collect_elixir", "bot.collect_dark")
         self.switch(village, "bot.collect_loot_cart", FIF.SHOPPING_CART, "Collect the loot cart",
                     "Empties the loot cart when it shows \"Collect\".")
+        self._storage_group(page, "home")
         walls = page.add(SettingCardGroup("Walls"))
         self.switch(walls, "walls.enabled", FIF.UP, "Upgrade walls with spare loot",
                     "Between attacks it upgrades a wall from the Build list. Off by default: it spends loot.")
@@ -1355,16 +1408,33 @@ class FarmbotWindow(FluentWindow):
                       "(the dearest wall).", {"cheapest": "Cheapest", "first": "First"}, width=90)
         self.segments(walls, "walls.use", FIF.MARKET, "Pay with", "Which resource may go on walls.",
                       {"gold": "Gold", "elixir": "Elixir", "both": "Either"}, width=90)
-        self.amount(walls, "walls.min_gold", FIF.SAVE, "Keep at least this much gold", "Walls only get what's above it.")
-        self.amount(walls, "walls.min_elixir", FIF.SAVE, "Keep at least this much elixir",
-                    "Walls only get what's above it.")
+        self.share(walls, "walls.keep_gold", FIF.SAVE, "Keep this much gold",
+                   "A share of what your gold storages hold; walls only get what's above it.", "storage.gold", "gold")
+        self.share(walls, "walls.keep_elixir", FIF.SAVE, "Keep this much elixir",
+                   "A share of what your elixir storages hold; walls only get what's above it.", "storage.elixir",
+                   "elixir")
         self.number(walls, "walls.max_per_round", FIF.TILES, "Walls per round",
                     "At most this many between two attacks, all upgraded at once (as many as the spare loot covers).")
         self.switch(walls, "walls.only_when_full", FIF.CHECKBOX, "Only when storage is full",
                     "Spends gold or elixir on walls only once its storages are full.")
-        self.depends("walls.enabled", "walls.pick", "walls.use", "walls.min_gold", "walls.min_elixir",
+        self.depends("walls.enabled", "walls.pick", "walls.use", "walls.keep_gold", "walls.keep_elixir",
                      "walls.max_per_round", "walls.only_when_full")
-        self._note(page, self._template_note("Collecting resources", "Collecting the loot cart", "Upgrading walls"))
+        ups = page.add(SettingCardGroup("Upgrades"))
+        self.switch(ups, "upgrade.enabled", FIF.UP, "Upgrade when storage is full",
+                    "Spends a full storage's resource on the dearest upgrades it covers, while builders are "
+                    "free. Off by default: it spends loot. Runs before walls, keeping one builder for them.")
+        self.segments(ups, "upgrade.first", FIF.PEOPLE, "Builders go to first",
+                      "That kind of building is upgraded first, then the others; Any: the dearest of anything.",
+                      {"hero": "Heroes", "defense": "Defenses", "resource": "Resources", "army": "Army",
+                       "none": "Any"}, width=90)
+        self.switch(ups, "upgrade.buildings", FIF.HOME, "Buildings and heroes", "With the free builders.")
+        self.switch(ups, "upgrade.lab", FIF.EDUCATION, "Research", "In the laboratory, when it's free (elixir or "
+                    "dark elixir).")
+        self.switch(ups, "upgrade.pets", FIF.HEART, "Pets", "Last, with the dark elixir left, when the pet house "
+                    "is free.")
+        self.depends("upgrade.enabled", "upgrade.first", "upgrade.buildings", "upgrade.lab", "upgrade.pets")
+        self._note(page, self._template_note("Collecting resources", "Collecting the loot cart", "Upgrading walls",
+                                             "Upgrades"))
 
     def _clan_tab(self, page: Page) -> None:
         from farmbot.units import SIEGE_MACHINES, SPELLS, TROOPS
@@ -1467,19 +1537,35 @@ class FarmbotWindow(FluentWindow):
                           "battles")
         self.depends("builder.collect_cart", "builder.cart_every_min", "builder.cart_every_max")
 
+        self._storage_group(page, "builder")
         walls = page.add(SettingCardGroup("Walls"))
         self.switch(walls, "builder.walls", FIF.UP, "Upgrade builder base walls with spare loot",
                     "Before each battle it upgrades the cheapest wall. Off by default: it spends loot.")
         self.segments(walls, "builder.walls_use", FIF.MARKET, "Pay with", "Which resource may go on walls.",
                       {"gold": "Gold", "elixir": "Elixir", "both": "Either"}, width=90)
-        self.amount(walls, "builder.walls_min_gold", FIF.SAVE, "Keep at least this much gold",
-                    "Walls only get what's above it.")
-        self.amount(walls, "builder.walls_min_elixir", FIF.SAVE, "Keep at least this much elixir",
-                    "Walls only get what's above it.")
+        self.share(walls, "builder.walls_keep_gold", FIF.SAVE, "Keep this much gold",
+                   "A share of what your builder gold storages hold; walls only get what's above it.",
+                   "storage.builder_gold", "gold")
+        self.share(walls, "builder.walls_keep_elixir", FIF.SAVE, "Keep this much elixir",
+                   "A share of what your builder elixir storages hold; walls only get what's above it.",
+                   "storage.builder_elixir", "elixir")
         self.number(walls, "builder.walls_per_round", FIF.TILES, "Walls per round",
                     "At most this many between two battles.")
-        self.depends("builder.walls", "builder.walls_use", "builder.walls_min_gold", "builder.walls_min_elixir",
+        self.depends("builder.walls", "builder.walls_use", "builder.walls_keep_gold", "builder.walls_keep_elixir",
                      "builder.walls_per_round")
+
+        ups = page.add(SettingCardGroup("Upgrades"))
+        self.switch(ups, "builder.upgrade", FIF.UP, "Upgrade when storage is full",
+                    "Spends a full gold or elixir storage on the dearest upgrades it covers, while builders are "
+                    "free. Off by default: it spends loot. Runs before walls, keeping one builder for them.")
+        self.segments(ups, "builder.upgrade_first", FIF.PEOPLE, "Builders go to first",
+                      "That kind of building is upgraded first, then the others; Any: the dearest of anything.",
+                      {"hero": "Heroes", "defense": "Defenses", "resource": "Resources", "army": "Army",
+                       "none": "Any"}, width=90)
+        self.switch(ups, "builder.upgrade_lab", FIF.EDUCATION, "Research",
+                    "In the star laboratory, when it's free (elixir).")
+        self.depends("builder.upgrade", "builder.upgrade_first", "builder.upgrade_lab")
+        self._note(page, self._template_note("Builder base upgrades", "Upgrades"))
 
     def _when_to_play(self) -> Page:
         page = Page("when_to_play", "When to play", "The hours it may play, its breaks, and when it stops by itself.")
@@ -2250,6 +2336,7 @@ class FarmbotWindow(FluentWindow):
         form = self.collect()
         _, errors = validate(form)
         self.has_errors = bool(errors)
+        self._show_shares(form)
         for path, card in self.cards.items():
             card.show_error(errors.get(path))
         for path, cards in self.mirror_cards.items():
@@ -2405,6 +2492,7 @@ class FarmbotWindow(FluentWindow):
                       on_resources=lambda loot: self.events.put(("resources", loot)),
                       on_attack=lambda record: self.events.put(("attack", record)),
                       on_builder=lambda battle: self.events.put(("builder", battle)),
+                      on_storage_max=lambda village, maxes: self.events.put(("storage_max", (village, maxes))),
                       pause_event=self.pause_event,
                       reopen_device=(lambda: restart_emulator(self.config.device))
                       if self.config.device.mode in ("bluestacks", "ldplayer") else None)
@@ -2633,6 +2721,12 @@ class FarmbotWindow(FluentWindow):
                 elif kind == "resources":
                     self.resources_label.setText(
                         f"You have  gold {data.gold:,}  ·  elixir {data.elixir:,}  ·  dark {data.dark:,}")
+                elif kind == "storage_max":  # read in the game: shown (and saved) like a typed amount
+                    village, maxes = data
+                    for resource, most in maxes.items():
+                        path = f"storage.{'builder_' if village == 'builder' else ''}{resource}"
+                        if path in self.bindings:
+                            self.bindings[path].set(f"{most:,}")
                 elif kind == "builder":
                     self._bb_show(data)
                     self._bb_stage("Done")
@@ -2783,15 +2877,7 @@ def _short(value: int) -> str:
 
 
 def create_app() -> QApplication:
-    if sys.platform == "win32":
-        # Own taskbar entry and icon, rather than grouping under python.exe.
-        import ctypes
-
-        try:
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("COCFARM.App")
-        except (AttributeError, OSError):
-            pass
-    app = QApplication.instance() or QApplication(sys.argv[:1])
+    app = splash.application()
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(QIcon(str(LOGO)))
     setTheme(Theme.DARK)
@@ -2801,8 +2887,9 @@ def create_app() -> QApplication:
 
 def run_gui(config_path: str, serial: str | None = None) -> int:
     app = create_app()
+    splash.message("Building the window…")
     window = FarmbotWindow(config_path, serial)
-    window.show()
+    splash.finish(window)  # shows the window
     return app.exec()
 
 

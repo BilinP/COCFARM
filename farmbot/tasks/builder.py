@@ -119,6 +119,67 @@ def go_to_home_village(game: Game) -> bool:
     return True
 
 
+# Putting the camera back where a picture of the view was taken (upgrading
+# moves it onto what was upgraded, and the elixir cart is looked for at a
+# fixed spot). The builder base's map holds two bases, so there's no
+# middle to centre on as at home: the two pictures are matched instead,
+# by features (they only need to overlap in part).
+VIEW_AREA = (150, 240, 1000, 760)  # x0, y0, x1, y1: the map, clear of the buttons, trophies and resource bars
+VIEW_FEATURES = 1500
+VIEW_RATIO = 0.75  # Lowe's ratio test
+VIEW_AGREE = 15  # matches that must agree on the shift (within VIEW_NEAR px)
+VIEW_NEAR = 6
+VIEW_STEP = 350  # px per drag at most
+VIEW_MS = 900
+VIEW_TRIES = 9
+# No overlap: drag the map one way and look again, then back past where it
+# started the other way (where it was 0, -300, 0, +300, 0, ... drags away).
+VIEW_SEARCH = [(-300, -300), (300, 300), (300, 300), (-300, -300)]
+
+
+def view_shift(reference: np.ndarray, screen: np.ndarray) -> tuple[int, int] | None:
+    """How far the map has moved from ``reference`` to ``screen`` (what was
+    at p is now at p + shift), or ``None`` if they don't overlap enough."""
+    x0, y0, x1, y1 = VIEW_AREA
+    mask = np.zeros(reference.shape[:2], np.uint8)
+    mask[y0:y1, x0:x1] = 255
+    orb = cv2.ORB_create(VIEW_FEATURES)
+    k1, d1 = orb.detectAndCompute(cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY), mask)
+    k2, d2 = orb.detectAndCompute(cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY), mask)
+    if d1 is None or d2 is None or len(k1) < 2 or len(k2) < 2:
+        return None
+    pairs = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(d1, d2, k=2)
+    good = [p[0] for p in pairs if len(p) == 2 and p[0].distance < VIEW_RATIO * p[1].distance]
+    if len(good) < VIEW_AGREE:
+        return None
+    shifts = np.array([np.subtract(k2[m.trainIdx].pt, k1[m.queryIdx].pt) for m in good])
+    shift = np.median(shifts, axis=0)
+    if int(np.sum(np.all(np.abs(shifts - shift) <= VIEW_NEAR, axis=1))) < VIEW_AGREE:
+        return None
+    return round(shift[0]), round(shift[1])
+
+
+def restore_view(game: Game, reference: np.ndarray) -> bool:
+    """Drag the map back to where it was in ``reference`` (a zoomed-out
+    screen). True once it's there."""
+    cx, cy = (VIEW_AREA[0] + VIEW_AREA[2]) // 2, (VIEW_AREA[1] + VIEW_AREA[3]) // 2
+    searched = 0
+    for _ in range(VIEW_TRIES):
+        shift = view_shift(reference, game.refresh())
+        log.debug("Builder base view: %s from where it was", shift)
+        if shift is None:
+            dx, dy = VIEW_SEARCH[searched % len(VIEW_SEARCH)]
+            searched += 1
+        else:
+            if max(map(abs, shift)) <= VIEW_NEAR:
+                return True
+            dx, dy = (int(np.clip(-v, -VIEW_STEP, VIEW_STEP)) for v in shift)
+        game.swipe(cx - dx // 2, cy - dy // 2, cx + dx // 2, cy + dy // 2, VIEW_MS)
+        game.wait(0.8)
+    log.info("Couldn't put the builder base view back")
+    return False
+
+
 # ------------------------------------------------------------------ collecting
 def _in_cart_area(x: int, y: int) -> bool:
     x0, y0, x1, y1 = CART_AREA
@@ -196,26 +257,31 @@ def _green_button(screen: np.ndarray, region: tuple[int, int, int, int]) -> tupl
     return round(x0 + cx), round(y0 + cy)
 
 
-def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], Loot | None]) -> int:
+def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], Loot | None],
+                  keep: dict[str, int]) -> int:
     """Spend spare builder gold or elixir on builder base walls: Build →
     scroll to the cheapest "Wall x N" → Upgrade → the green price button.
-    Returns how many walls were upgraded."""
-    from farmbot.config import WallsConfig
+    ``keep``: how much of each resource stays. Returns how many walls were
+    upgraded."""
     from farmbot.tasks.village import _cost_kind, _wall_budget, find_wall_entry
 
     needed = (T.BUILD, T.WALL_SUGGESTION, T.BB_UPGRADE, T.BB_UPGRADE_TITLE, T.CLOSE)
     if not cfg.walls or not all(game.has(n) for n in needed):
         return 0
-    budget_cfg = WallsConfig(enabled=True, use=cfg.walls_use, min_gold=cfg.walls_min_gold,
-                             min_elixir=cfg.walls_min_elixir)
     done = 0
+    view = None  # the view before the first wall: selecting one moves the camera onto it
     while done < cfg.walls_per_round:
         game.zoom_out()
         loot = read_resources()
-        budget = _wall_budget(budget_cfg, loot) if loot else []
+        budget = _wall_budget(cfg.walls_use, loot, keep) if loot else []
         if not budget:
+            if not done:
+                log.info("Builder walls: %s", "nothing to spare above what's kept" if keep else
+                         "how much the storages hold isn't known yet")
             break
         game.refresh()
+        if view is None:
+            view = game.screen.copy()
         if not game.click(T.BUILD) or not game.wait_for(T.CLOSE, timeout=4):
             log.info("Builder walls: the Build list didn't open")
             break
@@ -263,6 +329,11 @@ def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], L
         if not game.click(T.CLOSE):
             break
         game.wait(0.8)
+    if view is not None:
+        # The map holds two bases: put the camera back, or the boat home
+        # (and the elixir cart) can be out of sight.
+        game.zoom_out()
+        restore_view(game, view)
     return done
 
 

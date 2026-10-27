@@ -45,6 +45,8 @@ RUNNING_LINES = {  # status line -> (headline, what comes next)
     "Looking after the village": ("Collecting loot and looking after the village", "Next: look for a base to attack."),
     "Upgrading walls": ("Upgrading walls with spare loot", ""),
     "Upgrading builder base walls": ("Upgrading builder base walls with spare loot", ""),
+    "Upgrading": ("Spending a full storage on upgrades", "Walls get what's left."),
+    "Upgrading (builder base)": ("Spending a full builder storage on upgrades", "Walls get what's left."),
     "Donating": ("Donating troops to the clan", ""),
     "Requesting troops": ("Asking the clan for Clan Castle troops", ""),
     "Sailing to the builder base": ("Sailing to the builder base", "Next: a builder battle."),

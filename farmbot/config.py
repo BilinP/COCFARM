@@ -70,11 +70,6 @@ class RegionsConfig:
     own_gold: list[int] = field(default_factory=lambda: [-320, 25, 130, 32])
     own_elixir: list[int] = field(default_factory=lambda: [-320, 78, 130, 32])
     own_dark: list[int] = field(default_factory=lambda: [-285, 130, 95, 32])
-    # A patch at the empty end (left) of each resource bar: bars fill from
-    # the right, so this only turns the resource's colour when it's full.
-    full_gold: list[int] = field(default_factory=lambda: [-409, 33, 24, 14])
-    full_elixir: list[int] = field(default_factory=lambda: [-409, 83, 24, 14])
-    full_dark: list[int] = field(default_factory=lambda: [-340, 133, 24, 14])
 
     def rect(self, name: str) -> Rect:
         return Rect.from_list(getattr(self, name))
@@ -89,8 +84,9 @@ class SearchConfig:
     max_searches: int = 150
     next_delay: float = 2.5  # seconds to wait for the next base to load
     sound_on_match: bool = False
-    # Skip searching while your own gold is below this (0 = always search).
-    min_own_gold: int = 50_000
+    # Skip searching while your own gold is below this share of what your
+    # gold storages hold (0 = always search).
+    min_own_gold_share: float = 0.01
     maintain_only: bool = False  # never search; just look after the village
 
 
@@ -328,9 +324,9 @@ class WallsConfig:
 
     enabled: bool = False
     use: str = "both"  # "gold", "elixir" or "both"
-    # Only spend while you have more than this; the rest is kept.
-    min_gold: int = 15_000_000
-    min_elixir: int = 15_000_000
+    # Keep this share of what the storages hold; walls get the rest.
+    keep_gold: float = 0.7
+    keep_elixir: float = 0.7
     max_per_round: int = 3  # walls upgraded between two attacks at most
     # Which wall: "cheapest" (the list sorted Cost Min) or "first" (Cost Max:
     # the dearest).
@@ -339,7 +335,21 @@ class WallsConfig:
     only_when_full: bool = False
 
 
+@dataclass
+class UpgradeConfig:
+    """Upgrading buildings, heroes, research and pets once a storage is full
+    (see ``farmbot/tasks/upgrade.py``)."""
+
+    enabled: bool = False
+    # The kind of building that gets builders first ("none": dearest of any kind).
+    first: str = "hero"
+    buildings: bool = True
+    lab: bool = True
+    pets: bool = True  # last: the dark elixir heroes and research leave
+
+
 WALL_RESOURCES = ("gold", "elixir", "both")
+UPGRADE_FIRST = ("hero", "defense", "resource", "army", "none")
 WALL_PICKS = ("cheapest", "first")
 MODES = ("home", "builder", "auto")  # auto: one village until its storages are full, then the other
 THEMES = ("auto", "light", "dark")
@@ -379,9 +389,15 @@ class BuilderConfig:
     # Spend spare builder gold or elixir on builder base walls between battles.
     walls: bool = False
     walls_use: str = "both"  # "gold", "elixir" or "both"
-    walls_min_gold: int = 1_000_000  # keep at least this much; walls get the rest
-    walls_min_elixir: int = 1_000_000
+    # Keep this share of what the builder storages hold; walls get the rest.
+    walls_keep_gold: float = 0.2
+    walls_keep_elixir: float = 0.2
     walls_per_round: int = 3
+    # Upgrade buildings, heroes and research once a builder storage is full
+    # (as the home village's upgrade.*; one builder stays for the walls).
+    upgrade: bool = False
+    upgrade_first: str = "hero"
+    upgrade_lab: bool = True
     battle_timeout: float = 400.0  # both stages together
     return_home_after: bool = False  # sail back to the home village when the bot stops
     # The troop bar (bot coordinates at 860 x 672).
@@ -402,6 +418,39 @@ RESOURCES = ("gold", "elixir", "dark")
 
 
 @dataclass
+class StorageConfig:
+    """What your storages hold (0: not known yet). The bot reads it in the
+    game, the first time it's in that village each day; with ``read`` (or
+    ``builder_read``) off it keeps the amounts here instead."""
+
+    gold: int = 0
+    elixir: int = 0
+    dark: int = 0
+    read: bool = True
+    builder_gold: int = 0
+    builder_elixir: int = 0
+    builder_read: bool = True
+
+    def of(self, village: str) -> dict[str, int]:
+        """The known amounts of ``village`` ("home" or "builder")."""
+        if village == "builder":
+            known = {"gold": self.builder_gold, "elixir": self.builder_elixir}
+        else:
+            known = {"gold": self.gold, "elixir": self.elixir, "dark": self.dark}
+        return {k: v for k, v in known.items() if v > 0}
+
+    def set(self, village: str, maxes: dict[str, int]) -> None:
+        for kind, most in maxes.items():
+            setattr(self, f"builder_{kind}" if village == "builder" else kind, most)
+
+    def keep(self, village: str, shares: dict[str, float]) -> dict[str, int]:
+        """Each share of what that storage holds, as an amount (resources
+        whose storage size isn't known are left out)."""
+        maxes = self.of(village)
+        return {k: round(share * maxes[k]) for k, share in shares.items() if k in maxes}
+
+
+@dataclass
 class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     regions: RegionsConfig = field(default_factory=RegionsConfig)
@@ -415,7 +464,9 @@ class Config:
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     bot: BotConfig = field(default_factory=BotConfig)
     walls: WallsConfig = field(default_factory=WallsConfig)
+    upgrade: UpgradeConfig = field(default_factory=UpgradeConfig)
     builder: BuilderConfig = field(default_factory=BuilderConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
 
     def validate(self) -> None:
         bad = [s for s in self.attack.sides if s not in SIDES]
@@ -460,6 +511,10 @@ class Config:
             raise ValueError(f"walls.use must be one of {WALL_RESOURCES}")
         if self.walls.pick not in WALL_PICKS:
             raise ValueError(f"walls.pick must be one of {WALL_PICKS}")
+        if self.upgrade.first not in UPGRADE_FIRST:
+            raise ValueError(f"upgrade.first must be one of {UPGRADE_FIRST}")
+        if self.builder.upgrade_first not in UPGRADE_FIRST:
+            raise ValueError(f"builder.upgrade_first must be one of {UPGRADE_FIRST}")
         if not 1 <= self.attack.waves <= 3:
             raise ValueError("attack.waves must be 1, 2 or 3")
         bad_hours = [h for h in self.schedule.active_hours if not 0 <= h <= 23]
@@ -475,7 +530,12 @@ class Config:
 # them, so they're skipped quietly.
 REMOVED_SETTINGS = {"bot.quick_train", "bot.army_recipe", "clan.request_text", "search.dead_base",
                     "search.dead_base_collectors", "attack.use_cc",
-                    "search.min_total", "search.dark_weight"}
+                    "search.min_total", "search.dark_weight",
+                    # Storages are judged full from what they hold (read in the game), not
+                    # the bars' colour; amounts to keep became shares of what they hold.
+                    "regions.full_gold", "regions.full_elixir", "regions.full_dark",
+                    "search.min_own_gold", "walls.min_gold", "walls.min_elixir", "builder.walls_min_gold",
+                    "builder.walls_min_elixir"}
 
 
 # One unit each to donate became lists: older files' choices carry over.

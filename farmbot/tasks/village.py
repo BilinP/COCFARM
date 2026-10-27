@@ -13,6 +13,9 @@ import numpy as np
 from farmbot.config import WallsConfig
 from farmbot.game import Game, T
 from farmbot.geometry import Rect
+from farmbot.tasks.build_list import (HUD_SHIFT, LIST_BOTTOM_FROM_BOTTOM, LIST_PAGE, LIST_STEP, LIST_SWIPE_FROM_BOTTOM,
+                                      LIST_SWIPE_TO_Y, LIST_SWIPE_X, LIST_TOP, MAX_SORTED_SCROLLS, SLOW_SWIPE_MS,
+                                      green_confirm, set_filter)
 from farmbot.tasks.search import Loot
 
 log = logging.getLogger(__name__)
@@ -264,32 +267,20 @@ def _cost_kind(screen: np.ndarray, x: int, y: int, offset: tuple[int, int] = WAL
     return None
 
 
-def _wall_budget(cfg: WallsConfig, loot: Loot) -> list[str]:
-    """Resources that may go on walls, the one with most to spare first."""
-    spare = {"gold": loot.gold - cfg.min_gold, "elixir": loot.elixir - cfg.min_elixir}
-    allowed = [k for k in ("gold", "elixir") if cfg.use in (k, "both") and spare[k] > 0]
+def _wall_budget(use: str, loot: Loot, keep: dict[str, int]) -> list[str]:
+    """Resources that may go on walls (``use``), the one with most to spare
+    above what's kept first; one without an amount to keep is left alone."""
+    spare = {k: getattr(loot, k) - keep[k] for k in ("gold", "elixir") if k in keep}
+    allowed = [k for k in spare if use in (k, "both") and spare[k] > 0]
     return sorted(allowed, key=lambda k: -spare[k])
 
 
-# The Buildings & Heroes list hangs on the screen's right edge, so on wider
-# screens (phones) it's measured from there: x from the right edge, y from
-# the bottom. The walls are one block in it, dearest first ("Wall x 10 3 000
-# 000" ... "Wall x 85 1 000 000"), with other buildings above and below.
-LIST_SWIPE_X = 247
-LIST_SWIPE_FROM_BOTTOM = 220  # where a swipe starts
-LIST_SWIPE_TO_Y = 250  # where a long swipe ends
-LIST_STEP = 150  # a short swipe: under two rows
-LIST_TOP = 70  # the list's rows start under its title...
-LIST_BOTTOM_FROM_BOTTOM = 110  # ...and end above its tabs
+# The walls in the Buildings & Heroes list (its geometry is in build_list.py).
+# Unsorted, they're one block in it, dearest first ("Wall x 10 3 000 000" ...
+# "Wall x 85 1 000 000"), with other buildings above and below.
 ROW_PITCH = 4.1  # rows are this many "Wall x" heights apart (82 px at 860 x 672)
 MAX_SCROLLS = 8  # long swipes to reach the walls
 MAX_STEPS = 6  # short swipes to reach the block's first or last wall
-# While the list is open it pushes the resource bar this many "Wall x"
-# heights to the left (487 px at 860 x 672).
-HUD_SHIFT = 23.2
-LIST_PAGE = 400  # a swipe in a sorted list: under the list's height, so no row is skipped
-SLOW_SWIPE_MS = 900
-MAX_SORTED_SCROLLS = 30  # the whole list, top to bottom
 ROW_BELOW = 1.6  # a row's price ends this many "Wall x" heights below its text
 # A row's price, in "Wall x" heights from the middle of its "Wall x" text.
 PRICE_X, PRICE_Y, PRICE_W, PRICE_H = 9.5, 0.4, 7, 1.4
@@ -344,49 +335,6 @@ def find_wall_entry(game: Game, pick: str = "cheapest"):
     return None
 
 
-def _lit(screen: np.ndarray, match) -> bool:
-    """Whether a filter menu button is on (yellow): the strip of button
-    just above its text."""
-    patch = screen[max(match.y - match.h, 0):max(match.y - match.h // 2 - 2, 1),
-                   max(match.x - match.w // 2, 0):match.x + match.w // 2]
-    if patch.size == 0:
-        return False
-    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
-    return float(np.median(hsv[:, :, 1])) >= LIT_SATURATION and float(np.median(hsv[:, :, 2])) >= LIT_VALUE
-
-
-LIT_SATURATION, LIT_VALUE = 180, 190  # on: 218, 234; off (brown): 125, 148
-
-
-def sort_list(game: Game, order: str) -> bool:
-    """Sort the open Buildings & Heroes list with its filter menu: ``order``
-    is T.SORT_COST_MIN (cheapest first) or T.SORT_COST_MAX. Taps the sort
-    only if it isn't on already (a second tap turns it off). True if the
-    list is sorted that way."""
-    if not (game.has(T.LIST_FILTER) and game.has(order)):
-        return False
-    game.refresh()
-    button = game.find(T.LIST_FILTER)
-    if button is None:
-        return False
-    game.tap_match(button)
-    # The menu opens below the button, left of the list.
-    menu = Rect(0, button.y, button.x + button.w, game.size[1] - button.y)
-    sort = game.wait_for(order, timeout=3) and game.find(order, region=menu)
-    if not sort:
-        return False
-    if not _lit(game.screen, sort):
-        game.tap_match(sort)
-        game.wait(0.8)
-        game.refresh()
-        sort = game.find(order, region=menu)
-        if sort is None or not _lit(game.screen, sort):
-            log.info("Walls: the sort didn't turn on")
-    game.tap_match(button)  # closes the menu
-    game.wait(1.0)
-    return True
-
-
 def first_wall(game: Game):
     """In a sorted list, scroll down to the first "Wall x N" row and return
     it once its whole row shows; ``None`` if the list ends without one."""
@@ -414,12 +362,13 @@ def _wall_price(game: Game, entry) -> int | None:
 
 
 def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Loot | None],
-                  full: set[str] | None = None) -> int:
+                  keep: dict[str, int], full: set[str] | None = None) -> int:
     """Spend spare gold or elixir on walls, all in one go: Build → scroll to
     the cheapest "Wall x N", or the first one the list shows (``cfg.pick``;
     the game selects one of those walls) → Upgrade More until as many are
     selected as ``max_per_round`` (and the spare, at the row's price) allow
-    → Upgrade in the resource with most to spare → Confirm. ``full``: the
+    → Upgrade in the resource with most to spare → Confirm. ``keep``: how
+    much of each resource stays (not known: none of it goes). ``full``: the
     full storages, for ``only_when_full``. Returns how many walls were
     upgraded."""
     needed = (T.BUILD, T.WALL_SUGGESTION, T.UPGRADE, T.UPGRADE_CONFIRM, T.CLOSE)
@@ -429,13 +378,16 @@ def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Lo
     # numbers can't be read: zoom out first.
     game.zoom_out()
     loot = read_resources()
-    budget = _wall_budget(cfg, loot) if loot else []
+    budget = _wall_budget(cfg.use, loot, keep) if loot else []
     if cfg.only_when_full:
         budget = [k for k in budget if k in (full or set())]
     if not budget:
+        unknown = [k for k in ("gold", "elixir") if cfg.use in (k, "both") and k not in keep]
+        log.info("Walls: %s", f"how much {' and '.join(unknown)} the storages hold isn't known yet" if unknown
+                 else "nothing to spare above what's kept" + (" (or not full)" if cfg.only_when_full else ""))
         return 0
     try:
-        return _upgrade_walls(game, cfg, read_resources, loot, budget)
+        return _upgrade_walls(game, cfg, read_resources, loot, budget, keep)
     finally:
         # Selecting a wall moved the camera to it and zoomed in: the next
         # battle's view starts from the village's, so put it back.
@@ -445,7 +397,7 @@ def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Lo
 
 
 def _upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Loot | None],
-                   loot: Loot, budget: list[str]) -> int:
+                   loot: Loot, budget: list[str], keep: dict[str, int]) -> int:
     game.refresh()
     if not game.click(T.BUILD) or not game.wait_for(T.CLOSE, timeout=4):
         log.info("Walls: the Build list didn't open")
@@ -454,7 +406,7 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., L
     # Sorted by cost, the first wall down the list is the cheapest (Cost
     # Min) or the dearest (Cost Max). Without the filter's pictures, the
     # walls are found where the game lists them by itself.
-    if sort_list(game, T.SORT_COST_MIN if cfg.pick == "cheapest" else T.SORT_COST_MAX):
+    if set_filter(game, sort=T.SORT_COST_MIN if cfg.pick == "cheapest" else T.SORT_COST_MAX):
         entry = first_wall(game)
     else:
         entry = find_wall_entry(game, cfg.pick)
@@ -473,7 +425,7 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., L
     if kind is None:
         log.info("Walls: no upgrade payable with %s (buttons cost %s)", budget, list(buttons))
         return 0
-    spare = getattr(loot, kind) - getattr(cfg, f"min_{kind}")
+    spare = getattr(loot, kind) - keep[kind]
     if price:
         count = min(cfg.max_per_round, spare // price)
     else:  # price unread: one wall can't take much below the minimum
@@ -507,10 +459,16 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., L
         log.info("Walls: the %s Upgrade button went away", kind)
         return 0
     game.tap_match(buttons[kind])
-    # One wall: the upgrade window's Confirm. Several: an "Upgrade Walls"
-    # question with Cancel and Okay.
-    confirm = T.UPGRADE_CONFIRM if count == 1 or not game.has(T.OKAY) else T.OKAY
-    if not game.click_when_visible(confirm, timeout=4):
+    # One wall: the upgrade window's green Confirm (never the grey one that
+    # spends a Hammer). Several: an "Upgrade Walls" question with Cancel and
+    # Okay.
+    if count == 1 or not game.has(T.OKAY):
+        confirm = game.wait_for(T.UPGRADE_CONFIRM, timeout=4) and green_confirm(game)
+        if confirm:
+            game.tap_match(confirm)
+    else:
+        confirm = game.click_when_visible(T.OKAY, timeout=4)
+    if not confirm:
         log.info("Walls: the upgrade window didn't open")
         return 0
     game.wait(1.5)

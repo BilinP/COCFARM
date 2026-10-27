@@ -125,6 +125,13 @@ class T:
     FILTER_RESOURCE = "buttons/filter/resource"
     FILTER_NEW = "buttons/filter/new"
     FILTER_PERMANENT = "buttons/filter/permanent"
+    FILTER_TROOPS = "buttons/filter/troops"  # the Army Upgrades tab's types
+    FILTER_SPELLS = "buttons/filter/spells"
+    FILTER_SIEGE = "buttons/filter/siege"
+    # A list row's price icon (right of the number).
+    COST_GOLD = "buttons/cost/gold"
+    COST_ELIXIR = "buttons/cost/elixir"
+    COST_DARK = "buttons/cost/dark"
     # Builder base
     BB_HOME_BOAT = "builder/home_boat"  # home village, bottom left: sails to the builder base
     BB_BUILDER_BOAT = "builder/builder_boat"  # builder base, top right: sails back
@@ -144,6 +151,10 @@ class T:
     BB_CART_COLLECT = "builder/cart_collect"  # Collect in the Elixir Cart window
     BB_UPGRADE = "builder/upgrade"  # under a selected builder base building
     BB_UPGRADE_TITLE = "builder/upgrade_title"  # "Upgrade to level N?" window (price on a green button)
+    BB_FILTER_GOLD = "builder/filter/gold"  # the Build list's filter menu, builder base resources
+    BB_FILTER_ELIXIR = "builder/filter/elixir"
+    BB_COST_GOLD = "builder/cost/gold"  # right of a builder base row's price
+    BB_COST_ELIXIR = "builder/cost/elixir"
     LOOT_CART = "buttons/loot_cart"  # the "Collect" label over the loot cart
     LOOT_CART_COLLECT = "buttons/loot_cart_collect"  # the Collect button once it is selected
     # Full-collector bubbles (one tap empties every collector of that kind)
@@ -162,6 +173,7 @@ class T:
     DONATE = "buttons/donate"
     CONFIRM = "buttons/confirm"  # "Confirm" on notices such as "The Event has ended"
     GEM = "icons/gem"  # a gem: a Confirm window showing one is never pressed
+    STORAGE_MAX = "icons/storage_max"  # "Max:" in the box a tapped resource bar opens
     # "Defensive Layout obstructed" after asking for a battle, and its Attack button
     LAYOUT_OBSTRUCTED = "buttons/layout_obstructed"
     OBSTRUCTED_ATTACK = "buttons/obstructed_attack"
