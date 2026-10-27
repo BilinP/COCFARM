@@ -8,6 +8,21 @@ plugins {
     id("com.chaquo.python")
 }
 
+// This PC's Python 3.10, for preparing the app's Python packages: "python.path=" in
+// local.properties, or else Chaquopy looks for "py -3.10" / python3.10 itself.
+val localProperties = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+
+// The release key: "release.keystore=" in local.properties names its keystore.properties (storeFile,
+// keyAlias), kept outside the repository; its password is in the COCFARM_KEY_PASSWORD environment
+// variable, not in any file. Phones only install an update signed with the same key as the app they
+// have, so it never changes.
+val releasePassword: String? = System.getenv("COCFARM_KEY_PASSWORD")
+val releaseKey = localProperties.getProperty("release.keystore")?.let { file(it) }?.takeIf { it.exists() }?.let { path ->
+    Properties().apply { path.inputStream().use { load(it) } }
+}
+
 // The app's version is COCFARM's (farmbot/__init__.py): updates compare it with GitHub's releases.
 val cocfarmVersion = Regex("__version__ = \"([0-9.]+)\"")
     .find(rootProject.file("../farmbot/__init__.py").readText())!!.groupValues[1]
@@ -33,19 +48,35 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    signingConfigs {
+        create("release") {
+            if (releaseKey != null) {
+                storeFile = file(releaseKey.getProperty("storeFile"))
+                storePassword = releasePassword
+                keyAlias = releaseKey.getProperty("keyAlias")
+                keyPassword = releasePassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Signed with the debug key until there's a release key: fine for installing by hand.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }
 
-// This PC's Python 3.10, for preparing the app's Python packages: "python.path=" in
-// local.properties, or else Chaquopy looks for "py -3.10" / python3.10 itself.
-val localProperties = Properties().apply {
-    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+// A release build without the key would make an app that can never be updated.
+tasks.matching { it.name == "assembleRelease" || it.name == "packageRelease" }.configureEach {
+    doFirst {
+        check(releaseKey != null) {
+            "No release key: set release.keystore= in android/local.properties to the key's keystore.properties"
+        }
+        check(!releasePassword.isNullOrEmpty()) {
+            "No release key password: set the COCFARM_KEY_PASSWORD environment variable (then open a new terminal)"
+        }
+    }
 }
 
 chaquopy {

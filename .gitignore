@@ -20,3 +20,10 @@ _update/
 tests/
 docs/
 samples/
+
+# Signing keys and their settings: never in the repository (see android/release.ps1)
+*.jks
+*.keystore
+*.p12
+*.pfx
+keystore.properties
