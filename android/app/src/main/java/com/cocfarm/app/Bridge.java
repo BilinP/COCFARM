@@ -15,7 +15,12 @@ public final class Bridge {
         void onStatus(String text);
     }
 
+    public interface ProgressListener {
+        void onProgress(long done, long size);
+    }
+
     static volatile Listener listener;
+    static volatile ProgressListener progress;  // an update being downloaded
     static volatile String lastStatus = "Ready when you are.";
     // Asked for by the player (the floating button, the notification or the home screen): the bot
     // acts on them at its next safe point.
@@ -136,6 +141,26 @@ public final class Bridge {
             touch.button.refresh();
         }
         status(lastStatus);
+    }
+
+    /** "Sound on match": the phone's notification sound. */
+    public static void ding() {
+        BotService service = BotService.instance;
+        if (service == null) {
+            return;
+        }
+        android.net.Uri sound = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION);
+        android.media.Ringtone ringtone = android.media.RingtoneManager.getRingtone(service, sound);
+        if (ringtone != null) {
+            ringtone.play();
+        }
+    }
+
+    public static void updateProgress(long done, long size) {
+        ProgressListener l = progress;
+        if (l != null) {
+            l.onProgress(done, size);
+        }
     }
 
     public static void status(String text) {

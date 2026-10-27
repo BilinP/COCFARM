@@ -1,6 +1,7 @@
 package com.cocfarm.app;
 
-import android.os.Bundle;
+import android.content.Context;
+import android.content.ContextWrapper;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
@@ -17,9 +18,9 @@ import android.widget.GridLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.widget.NestedScrollView;
 
-import com.google.android.material.appbar.MaterialToolbar;
+import com.google.android.material.button.MaterialButton;
 import com.google.android.material.card.MaterialCardView;
 import com.google.android.material.chip.Chip;
 import com.google.android.material.chip.ChipGroup;
@@ -27,7 +28,6 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.divider.MaterialDivider;
 import com.google.android.material.materialswitch.MaterialSwitch;
 import com.google.android.material.slider.Slider;
-import com.google.android.material.tabs.TabLayout;
 import com.google.android.material.textfield.MaterialAutoCompleteTextView;
 import com.google.android.material.textfield.TextInputLayout;
 
@@ -43,12 +43,13 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 /**
- * Every setting, page by page. What's on it comes from cocfarm_settings.py,
- * and it's checked and saved there with the same rules as on Windows: a
- * change is saved a moment after it's made, and a mistake shows in red
- * on its setting. A farming bot picks the change up straight away.
+ * Every setting, page by page: each page is one of the home screen's tabs.
+ * What's on it comes from cocfarm_settings.py, and it's checked and saved
+ * there with the same rules as on Windows: a change is saved a moment after
+ * it's made, and a mistake shows in red on its setting. A farming bot picks
+ * the change up straight away. (Built in the home screen's context.)
  */
-public class SettingsActivity extends AppCompatActivity {
+final class SettingsForm extends ContextWrapper {
     private final Handler main = new Handler(Looper.getMainLooper());
     // Setting path -> shows (or, given null, clears) its mistake.
     private final Map<String, Consumer<String>> errors = new HashMap<>();
@@ -57,63 +58,54 @@ public class SettingsActivity extends AppCompatActivity {
     private JSONArray pages;
     private JSONObject values;
     private LinearLayout content;
-    private MaterialToolbar toolbar;
-    private String folder;
+    private final TextView statusLine;
+    private final String folder;
     private final Runnable save = this::save;
     private boolean pending;  // a change waiting to be saved
 
-    @Override
-    protected void onCreate(Bundle state) {
-        super.onCreate(state);
-        folder = getExternalFilesDir(null).getAbsolutePath();
-        try {
-            JSONObject screen = new JSONObject(Bridge.python(this).getModule("cocfarm_settings")
-                    .callAttr("load", folder).toString());
-            pages = screen.getJSONArray("pages");
-            values = screen.getJSONObject("values");
-        } catch (JSONException e) {
-            throw new IllegalStateException(e);
-        }
-        setContentView(R.layout.activity_settings);
-        toolbar = findViewById(R.id.toolbar);
-        toolbar.setNavigationOnClickListener(v -> finish());
-        status("Changes save by themselves", R.color.cf_muted);
-        content = findViewById(R.id.content);
-        TabLayout tabs = findViewById(R.id.tabs);
-        for (int i = 0; i < pages.length(); i++) {
-            tabs.addTab(tabs.newTab().setText(pages.optJSONObject(i).optString("title")));
-        }
-        tabs.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
-            public void onTabSelected(TabLayout.Tab tab) {
-                showPage(tab.getPosition());
-            }
-
-            public void onTabUnselected(TabLayout.Tab tab) {
-            }
-
-            public void onTabReselected(TabLayout.Tab tab) {
-            }
-        });
-        showPage(0);
+    SettingsForm(Context screen, String folder, TextView statusLine) {
+        super(screen);
+        this.folder = folder;
+        this.statusLine = statusLine;
     }
 
-    @Override
-    protected void onPause() {
-        if (pending) {  // leaving with a change not saved yet
+    /** Read the settings (Python: off the main thread). */
+    void load() throws JSONException {
+        JSONObject screen = new JSONObject(Bridge.python(this).getModule("cocfarm_settings")
+                .callAttr("load", folder).toString());
+        pages = screen.getJSONArray("pages");
+        values = screen.getJSONObject("values");
+    }
+
+    int pageCount() {
+        return pages.length();
+    }
+
+    String title(int page) {
+        return pages.optJSONObject(page).optString("title");
+    }
+
+    /** Save a change still waiting (the screen is going away). */
+    void flush() {
+        if (pending) {
             main.removeCallbacks(save);
             save();
         }
-        super.onPause();
     }
 
     // ------------------------------------------------------------- pages
 
-    private void showPage(int index) {
-        content.removeAllViews();
+    /** A page of settings, built afresh (the controls of the page shown before are let go). */
+    View page(int index) {
+        NestedScrollView scroll = Ui.column(this);
+        content = Ui.inside(scroll);
         errors.clear();
         dependents.clear();
         dependsOn.clear();
-        ((View) content.getParent()).scrollTo(0, 0);
+        TextView note = text("Changes save by themselves.", com.google.android.material.R.style.TextAppearance_Material3_BodySmall,
+                R.color.cf_muted);
+        note.setPadding(dp(4), dp(16), dp(4), 0);
+        content.addView(note);
         JSONArray groups = pages.optJSONObject(index).optJSONArray("groups");
         for (int g = 0; g < groups.length(); g++) {
             JSONObject group = groups.optJSONObject(g);
@@ -139,6 +131,7 @@ public class SettingsActivity extends AppCompatActivity {
             }
         }
         refreshDependents();
+        return scroll;
     }
 
     private View item(JSONObject item) {
@@ -162,6 +155,13 @@ public class SettingsActivity extends AppCompatActivity {
             error.setText(message == null ? "" : message);
             error.setVisibility(message == null ? View.GONE : View.VISIBLE);
         };
+        if (kind.equals("button")) {  // does something: its title is on the button, the answer under it
+            words.removeViewAt(0);
+            box.addView(words);
+            box.addView(actionButton(item, error));
+            box.addView(error);
+            return box;
+        }
         if (kind.equals("switch")) {  // the words and the switch on one line; the whole line flips it
             MaterialSwitch toggle = new MaterialSwitch(this);
             toggle.setChecked(values.optBoolean(path));
@@ -219,6 +219,55 @@ public class SettingsActivity extends AppCompatActivity {
             default:  // amount, number, text
                 return field(path, kind, "", item.optString("suffix"));
         }
+    }
+
+    /** A button that runs one of cocfarm_settings' actions (test_alert, check_update); its answer shows in ``answer``. */
+    private View actionButton(JSONObject item, TextView answer) {
+        MaterialButton button = new MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle);
+        button.setText(item.optString("title"));
+        LinearLayout.LayoutParams spot = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        spot.topMargin = dp(6);
+        button.setLayoutParams(spot);
+        String action = item.optString("action");
+        button.setOnClickListener(v -> {
+            button.setEnabled(false);
+            answer.setTextColor(getColor(R.color.cf_muted));
+            answer.setText("Working…");
+            answer.setVisibility(View.VISIBLE);
+            main.removeCallbacks(save);
+            String form = values.toString();
+            new Thread(() -> {
+                String said;
+                int colour = R.color.cf_text;
+                try {
+                    // A change still waiting (say, a webhook just pasted) is saved first.
+                    com.chaquo.python.PyObject settings = Bridge.python(this).getModule("cocfarm_settings");
+                    settings.callAttr("save", folder, form);
+                    pending = false;
+                    if (action.equals("check_update")) {
+                        JSONObject found = new JSONObject(settings.callAttr("check_update", folder, true).toString());
+                        said = found.isNull("version") ? found.optString("note")
+                                : "COCFARM " + found.optString("version") + " is out: update it from the home screen.";
+                        colour = found.isNull("version") ? R.color.cf_text : R.color.cf_good;
+                    } else {
+                        said = settings.callAttr(action, folder).toString();
+                        colour = said.startsWith("✓") ? R.color.cf_good : said.startsWith("✗") ? R.color.cf_bad : R.color.cf_text;
+                    }
+                } catch (Exception e) {
+                    said = "✗ " + e.getMessage();
+                    colour = R.color.cf_bad;
+                }
+                String text = said;
+                int tone = colour;
+                main.post(() -> {
+                    button.setEnabled(true);
+                    answer.setText(text);
+                    answer.setTextColor(getColor(tone));
+                });
+            }, action).start();
+        });
+        return button;
     }
 
     private TextInputLayout field(String path, String kind, String label, String suffix) {
@@ -488,8 +537,9 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void status(String text, int colour) {
-        toolbar.setSubtitle(text);
-        toolbar.setSubtitleTextColor(getColor(colour));
+        statusLine.setText(text);
+        statusLine.setTextColor(getColor(colour));
+        statusLine.setVisibility(View.VISIBLE);
     }
 
     private void refreshDependents() {

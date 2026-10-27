@@ -92,6 +92,13 @@ PAGES = [
             _item("notify.on_storage_full", "switch", "When storage is full"),
             _item("notify.on_stopped", "switch", "When the bot stops", "After a run, or when a problem stops it."),
             _item("notify.daily_summary", "switch", "Daily summary", "Yesterday's attacks and loot, after midnight."),
+            _item("", "button", "Send a test alert", "Posts a message to the webhook, to check it works.",
+                  action="test_alert"),
+        ]},
+        {"title": "COCFARM", "items": [
+            _item("bot.check_updates", "switch", "Check for updates",
+                  "Looks for a new version on GitHub now and then (at most hourly) and offers it on the home screen."),
+            _item("", "button", "Check now", "", action="check_update"),
         ]},
     ]},
     {"title": "Home village", "groups": [
@@ -106,6 +113,8 @@ PAGES = [
                   "On: attack when any one amount above is met. Off: all of them must be met."),
             _item("search.min_own_gold", "amount", "Don't search while my gold is below",
                   "Each Next costs gold. 0 always searches."),
+            _item("search.sound_on_match", "switch", "Sound on match",
+                  "Plays the notification sound when it finds a base worth attacking."),
             _item("search.max_searches", "number", "Give up searching after",
                   "Bases to skip before going back to the village and starting over.", suffix="bases"),
         ]},
@@ -264,7 +273,10 @@ def _paths() -> list[str]:
     for page in PAGES:
         for group in page["groups"]:
             for item in group["items"]:
-                out += [item["low"], item["high"]] if item["kind"] == "range" else [item["path"]]
+                if item["kind"] == "range":
+                    out += [item["low"], item["high"]]
+                elif item["kind"] != "button":  # a button does something; it has no value
+                    out.append(item["path"])
     return out
 
 
@@ -288,6 +300,108 @@ def info(folder: str) -> str:
     library = TemplateLibrary(os.path.join(folder, cfg.bot.templates))
     missing = [] if cfg.search.maintain_only else catalog.missing(library, required_only=True)
     return json.dumps({"version": __version__, "missing": [p.title for p in missing]})
+
+
+UPDATE_ASSET = "COCFARM-android.apk"  # the Android app, attached to COCFARM's GitHub releases
+UPDATE_DIR = "_update"
+
+
+def history_summary(folder: str) -> str:
+    """The attack history for the History screen: totals for today, the last
+    7 days and all time, gains per hour, the last 14 days, and recent attacks."""
+    from datetime import date, timedelta
+
+    from farmbot import history
+    from farmbot.tasks.search import Loot
+
+    cfg = load_config(ensure_settings(folder))
+    rows = history.read_all(os.path.join(folder, cfg.bot.history)) if cfg.bot.history else []
+    days = history.daily_totals(rows)
+    today = date.today()
+
+    def total(since):
+        count, loot = 0, Loot(0, 0, 0)
+        for day, (n, gained) in days.items():
+            if since is None or day >= since:
+                count, loot = count + n, history.add(loot, gained)
+        return {"attacks": count, "gained": [loot.gold, loot.elixir, loot.dark]}
+
+    hourly = history.per_hour([r for r in rows if r.time.date() >= today - timedelta(days=6)])
+    chart = []
+    for back in range(13, -1, -1):
+        day = today - timedelta(days=back)
+        n, gained = days.get(day, (0, Loot(0, 0, 0)))
+        chart.append({"day": day.isoformat(), "attacks": n, "gained": [gained.gold, gained.elixir, gained.dark]})
+    recent = [{"time": r.time.isoformat(timespec="minutes"), "target": [r.target.gold, r.target.elixir, r.target.dark],
+               "gained": [r.gained.gold, r.gained.elixir, r.gained.dark] if r.gained else None}
+              for r in reversed(rows[-100:])]
+    return json.dumps({"today": total(today), "week": total(today - timedelta(days=6)), "all": total(None),
+                       "hour": [hourly.gold, hourly.elixir, hourly.dark] if hourly else None,
+                       "days": chart, "recent": recent})
+
+
+def test_alert(folder: str) -> str:
+    """Send a test message to the Discord webhook: what happened, in a few words."""
+    from farmbot.notify import Notifier
+
+    notifier = Notifier(load_config(ensure_settings(folder)).notify)
+    if not notifier.configured:
+        return "Paste a Discord webhook first."
+    return "✓ Sent: check the channel." if notifier.test() else "✗ Discord didn't take it. Check the webhook."
+
+
+def look_at_base(folder: str) -> str:
+    """What the bot made of the last base it scouted: lines of text, and the
+    picture with what it found drawn on (saved next to it)."""
+    import cv2
+
+    from farmbot.inspect import describe
+    from farmbot.vision import TemplateLibrary, Vision
+
+    cfg = load_config(ensure_settings(folder))
+    screen = cv2.imread(os.path.join(folder, "cache", "base.png"))
+    if screen is None:
+        return json.dumps({"lines": ["No base yet: start farming, and the last base it scouts shows here."]})
+    vision = Vision(TemplateLibrary(os.path.join(folder, cfg.bot.templates)), cfg.bot.threshold)
+    lines, overlay = describe(screen, cfg, vision)
+    cv2.imwrite(os.path.join(folder, "cache", "seen.jpg"), overlay, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return json.dumps({"lines": lines, "picture": os.path.join(folder, "cache", "seen.jpg")})
+
+
+def check_update(folder: str, force: bool = False) -> str:
+    """Is a newer COCFARM for Android out? (GitHub is asked at most hourly,
+    or once a minute when ``force``.)"""
+    from pathlib import Path
+
+    from farmbot import update
+
+    cfg = load_config(ensure_settings(folder))
+    if not (cfg.bot.check_updates or force):
+        return json.dumps({"version": None, "note": "Update checks are off."})
+    found = update.check(cfg.bot.update_repo, force=force, state_path=Path(folder) / "update.json", asset=UPDATE_ASSET)
+    release = found.release
+    if release and not release.download:  # a release for Windows only
+        release = None
+    return json.dumps({"version": release.version if release else None, "note": found.note,
+                       "page": release.url if release else ""})
+
+
+def download_update(folder: str) -> str:
+    """Download the newer app (resuming a part download) and check it: its path."""
+    from pathlib import Path
+
+    from farmbot import update
+
+    cfg = load_config(ensure_settings(folder))
+    found = update.check(cfg.bot.update_repo, state_path=Path(folder) / "update.json", asset=UPDATE_ASSET)
+    if not found.release or not found.release.download:
+        raise update.UpdateError("There's no newer version to download.")
+    from java import jclass
+
+    bridge = jclass("com.cocfarm.app.Bridge")
+    path = update.download(found.release, Path(folder) / UPDATE_DIR, suffix=".apk",
+                           progress=lambda done, size: bridge.updateProgress(int(done), int(size)))
+    return str(path)
 
 
 def load(folder: str) -> str:

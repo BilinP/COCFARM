@@ -8,6 +8,10 @@ plugins {
     id("com.chaquo.python")
 }
 
+// The app's version is COCFARM's (farmbot/__init__.py): updates compare it with GitHub's releases.
+val cocfarmVersion = Regex("__version__ = \"([0-9.]+)\"")
+    .find(rootProject.file("../farmbot/__init__.py").readText())!!.groupValues[1]
+
 android {
     namespace = "com.cocfarm.app"
     compileSdk = 36
@@ -16,8 +20,8 @@ android {
         applicationId = "com.cocfarm.app"
         minSdk = 24  // Python 3.10's OpenCV for Android needs Android 7
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = cocfarmVersion.split(".").fold(0) { code, part -> code * 100 + part.toInt() }  // 0.6.1 -> 601
+        versionName = cocfarmVersion
         ndk {
             // Phones, and x86_64 emulators such as LDPlayer and BlueStacks.
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -71,4 +75,5 @@ dependencies {
     // The look: Material 3 cards, switches, sliders, text fields and dialogs.
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.core:core-splashscreen:1.0.1")  // the launch screen, on every Android version
 }

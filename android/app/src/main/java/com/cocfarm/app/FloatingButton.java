@@ -104,7 +104,8 @@ final class FloatingButton {
     }
 
     private boolean overGame() {
-        return GAME.equals(service.foregroundPackage());
+        String app = service.foregroundPackage();
+        return app.isEmpty() || GAME.equals(app);  // "": not known yet (the service just started)
     }
 
     /**

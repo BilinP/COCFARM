@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The logo on the launch screen: kept inside the circle Android shows icons in. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/cocfarm_logo"
+    android:inset="18%" />

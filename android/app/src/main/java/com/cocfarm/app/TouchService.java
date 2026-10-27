@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 public class TouchService extends AccessibilityService {
     static volatile TouchService instance;
     private static final long TAP_MS = 40;
+    private static final long BURST_MS = 300;
     private volatile String foreground = "";
     FloatingButton button;
 
@@ -63,8 +64,16 @@ public class TouchService extends AccessibilityService {
         return foreground;
     }
 
-    /** Play a gesture and wait until it's done (or failed). */
+    /**
+     * Play a gesture and wait until it's done (or failed). Only in the game:
+     * with another app in front (COCFARM's own screen, say) the taps would
+     * land on that app, so nothing is played. (Not known yet, as when this
+     * service has just started: it's taken to be the game.)
+     */
     boolean play(GestureDescription gesture, long longestMs) {
+        if (!foreground.isEmpty() && !FloatingButton.GAME.equals(foreground)) {
+            return false;
+        }
         CountDownLatch done = new CountDownLatch(1);
         boolean[] ok = {false};
         // Only a gesture that crosses the floating button needs it out of the way.
@@ -115,7 +124,8 @@ public class TouchService extends AccessibilityService {
      */
     boolean tapMany(int[] xs, int[] ys, long gapMs) {
         long gap = Math.max(gapMs, TAP_MS + 10);  // one finger lifts before the next lands
-        int most = Math.max(1, GestureDescription.getMaxStrokeCount());
+        // Short gestures: switching apps mid-burst leaves at most this much to land on the other app.
+        int most = (int) Math.max(1, Math.min(GestureDescription.getMaxStrokeCount(), BURST_MS / gap));
         for (int start = 0; start < xs.length; start += most) {
             int end = Math.min(xs.length, start + most);
             GestureDescription.Builder builder = new GestureDescription.Builder();

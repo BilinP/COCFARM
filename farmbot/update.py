@@ -110,15 +110,15 @@ def _save(path: Path, state: dict) -> None:
         log.debug("Couldn't save %s: %s", path, exc)
 
 
-def _release(data: dict, repo: str) -> Release:
+def _release(data: dict, repo: str, asset: str = ASSET) -> Release:
     tag = str(data.get("tag_name") or "")
     numbers = parse_version(tag)  # "v0.5.0-10" (a build of main) is COCFARM 0.5.0
     release = Release(".".join(map(str, numbers)) if len(numbers) == 3 else tag.lstrip("v"), str(data.get("html_url") or f"https://github.com/{repo}/releases"))
-    for asset in data.get("assets") or []:
-        if asset.get("name") == ASSET:
-            release.download = str(asset.get("browser_download_url") or "")
-            release.size = int(asset.get("size") or 0)
-            digest = str(asset.get("digest") or "")
+    for item in data.get("assets") or []:
+        if item.get("name") == asset:
+            release.download = str(item.get("browser_download_url") or "")
+            release.size = int(item.get("size") or 0)
+            digest = str(item.get("digest") or "")
             release.sha256 = digest.split(":", 1)[1].lower() if digest.startswith("sha256:") else ""
     return release
 
@@ -142,8 +142,10 @@ def _at(when: float) -> str:
 
 
 def check(repo: str, current: str = __version__, *, force: bool = False, state_path: Path | None = None,
-          now: Callable[[], float] = time.time, get: Callable[[str, dict], Response] | None = None) -> Check:
+          now: Callable[[], float] = time.time, get: Callable[[str, dict], Response] | None = None,
+          asset: str = ASSET) -> Check:
     """Is a newer release of ``repo`` ("owner/name") out than ``current``?
+    (``asset``: the file it downloads, the Windows zip or the Android app.)
 
     Asks GitHub at most every :data:`CHECK_EVERY` seconds (``force``: at most
     every :data:`MIN_GAP`), never while it says the limit is used up, and
@@ -153,8 +155,8 @@ def check(repo: str, current: str = __version__, *, force: bool = False, state_p
         return Check(None, "Update checks are off.")
     state_path = state_path or STATE
     state = _load(state_path)
-    if state.get("repo") != repo:
-        state = {"repo": repo}
+    if state.get("repo") != repo or state.get("asset", ASSET) != asset:
+        state = {"repo": repo, "asset": asset}
     t = now()
     gap = MIN_GAP if force else CHECK_EVERY
     if t < state.get("wait_until", 0):
@@ -174,7 +176,7 @@ def check(repo: str, current: str = __version__, *, force: bool = False, state_p
             return _answer(state, current, "Couldn't reach GitHub. Check your internet connection.")
         if status == 200:
             try:
-                state["latest"] = asdict(_release(json.loads(body), repo))
+                state["latest"] = asdict(_release(json.loads(body), repo, asset))
             except (ValueError, TypeError, AttributeError) as exc:
                 log.debug("Odd answer from GitHub: %s", exc)
             state["etag"] = _header(answer, "ETag")
@@ -204,14 +206,16 @@ def _answer(state: dict, current: str, note: str) -> Check:
 
 
 def download(release: Release, folder: Path | None = None, progress: Callable[[int, int], None] | None = None,
-             cancel: threading.Event | None = None, opener: Callable[[str, dict], object] | None = None) -> Path:
-    """Download the release's zip into ``folder`` and check it. A part
-    download left from last time is resumed rather than started over."""
+             cancel: threading.Event | None = None, opener: Callable[[str, dict], object] | None = None,
+             suffix: str = ".zip") -> Path:
+    """Download the release's zip (or, with ``suffix`` ".apk", the Android
+    app) into ``folder`` and check it. A part download left from last time
+    is resumed rather than started over."""
     if not release.download:
-        raise UpdateError("This release has no COCFARM-windows.zip to download.")
+        raise UpdateError("This release has no download for this version of COCFARM.")
     folder = folder or WORK
     folder.mkdir(exist_ok=True)
-    zip_path = folder / f"COCFARM-{release.version}.zip"
+    zip_path = folder / f"COCFARM-{release.version}{suffix}"
     if zip_path.exists() and _matches(zip_path, release):
         return zip_path
     part = zip_path.with_suffix(".part")
