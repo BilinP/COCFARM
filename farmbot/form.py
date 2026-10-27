@@ -89,6 +89,7 @@ FIELDS = [
     Field("builder.walls_per_round", "int", 1, 50),
     Field("walls.enabled", "bool"),
     Field("walls.use", "text"),
+    Field("walls.pick", "text"),
     Field("walls.min_gold", "amount"),
     Field("walls.min_elixir", "amount"),
     Field("walls.max_per_round", "int", 1, 50),

@@ -332,9 +332,13 @@ class WallsConfig:
     min_gold: int = 15_000_000
     min_elixir: int = 15_000_000
     max_per_round: int = 3  # walls upgraded between two attacks at most
+    # Which wall: "cheapest" (the last in the list's block of walls, scrolled
+    # down to) or "first" (the block's first, the dearest suggestion).
+    pick: str = "cheapest"
 
 
 WALL_RESOURCES = ("gold", "elixir", "both")
+WALL_PICKS = ("cheapest", "first")
 MODES = ("home", "builder", "auto")  # auto: one village until its storages are full, then the other
 THEMES = ("auto", "light", "dark")
 BUILDER_CORNERS = ("auto", "left", "top", "right")
@@ -452,6 +456,8 @@ class Config:
             raise ValueError(f"builder.corner must be one of {BUILDER_CORNERS}")
         if self.walls.use not in WALL_RESOURCES:
             raise ValueError(f"walls.use must be one of {WALL_RESOURCES}")
+        if self.walls.pick not in WALL_PICKS:
+            raise ValueError(f"walls.pick must be one of {WALL_PICKS}")
         if not 1 <= self.attack.waves <= 3:
             raise ValueError("attack.waves must be 1, 2 or 3")
         bad_hours = [h for h in self.schedule.active_hours if not 0 <= h <= 23]

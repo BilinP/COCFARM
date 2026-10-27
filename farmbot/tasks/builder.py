@@ -178,8 +178,6 @@ def collect_elixir_cart(game: Game) -> bool:
 
 # ------------------------------------------------------------------ walls
 BB_ICON_OFFSET = (39, -65)  # cost icon relative to the builder Upgrade button's text
-LIST_SWIPE = ((930, 700), (930, 250))  # scrolls the Buildings & Heroes list down
-MAX_SCROLLS = 8
 
 
 def _green_button(screen: np.ndarray, region: tuple[int, int, int, int]) -> tuple[int, int] | None:
@@ -198,30 +196,12 @@ def _green_button(screen: np.ndarray, region: tuple[int, int, int, int]) -> tupl
     return round(x0 + cx), round(y0 + cy)
 
 
-def _find_wall_entry(game: Game):
-    """Scroll the Buildings & Heroes list to the walls and return the lowest
-    "Wall x N" entry in view: the list runs from dearest to cheapest."""
-    (sx, sy), (ex, ey) = LIST_SWIPE
-    for _ in range(MAX_SCROLLS):
-        walls = game.find_all(T.WALL_SUGGESTION)
-        if walls:
-            game.swipe(sx, sy, sx, sy - 150)  # a little further, for cheaper walls below
-            game.wait(1.0)
-            game.refresh()
-            walls = game.find_all(T.WALL_SUGGESTION) or walls
-            return max(walls, key=lambda m: m.y)
-        game.swipe(sx, sy, ex, ey)
-        game.wait(1.0)
-        game.refresh()
-    return None
-
-
 def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], Loot | None]) -> int:
     """Spend spare builder gold or elixir on builder base walls: Build →
     scroll to the cheapest "Wall x N" → Upgrade → the green price button.
     Returns how many walls were upgraded."""
     from farmbot.config import WallsConfig
-    from farmbot.tasks.village import _cost_kind, _wall_budget
+    from farmbot.tasks.village import _cost_kind, _wall_budget, find_wall_entry
 
     needed = (T.BUILD, T.WALL_SUGGESTION, T.BB_UPGRADE, T.BB_UPGRADE_TITLE, T.CLOSE)
     if not cfg.walls or not all(game.has(n) for n in needed):
@@ -240,8 +220,7 @@ def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], L
             log.info("Builder walls: the Build list didn't open")
             break
         game.wait(1.2)
-        game.refresh()
-        entry = _find_wall_entry(game)
+        entry = find_wall_entry(game)
         if entry is None:
             log.info("No builder base wall to upgrade in the list")
             break
