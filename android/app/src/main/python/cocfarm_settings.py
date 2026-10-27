@@ -41,7 +41,7 @@ window_scale = 0.0
 [regions]
 own_gold = [-215, 25, 150, 32]  # wide enough for 9 digits
 own_elixir = [-215, 78, 150, 32]
-own_dark = [-160, 130, 95, 32]
+own_dark = [-215, 130, 150, 32]  # 360 000 needs the width too
 # Left (empty) end of each resource bar: only coloured when that storage is full.
 full_gold = [-284, 33, 24, 14]
 full_elixir = [-284, 83, 24, 14]

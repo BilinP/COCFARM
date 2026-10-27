@@ -3,7 +3,9 @@
 Templates are PNG crops of game UI taken from your own screenshots
 (see ``farmbot crop``). A template is addressed by its path relative to
 the template root without the extension, e.g. ``buttons/attack``. A
-directory name addresses every PNG in it, e.g. ``troops``.
+directory name addresses every PNG in it, e.g. ``troops``. ``name@phone.png``
+beside ``name.png`` is another look of the same button (drawn differently
+on phones), matched as well.
 """
 
 from __future__ import annotations
@@ -54,7 +56,10 @@ class TemplateLibrary:
         if target.is_dir():
             return sorted(target.glob("*.png"))
         file = target.with_suffix(".png")
-        return [file] if file.exists() else []
+        if not file.exists():
+            return []
+        # name@phone.png: the same button as drawn somewhere else (phones draw some bigger)
+        return [file, *sorted(target.parent.glob(f"{target.name}@*.png"))]
 
     def has(self, name: str) -> bool:
         return bool(self.paths(name))
@@ -118,7 +123,16 @@ def _resized(image: np.ndarray, scale: float) -> np.ndarray:
 
 
 ADAPTIVE_NEAR = 0.15  # a picture this close to matching at the window size gets the fine size search
-ADAPTIVE_REST = 20  # misses before a fine size search that found nothing is tried again
+ADAPTIVE_REST = 20  # near misses before a fine size search that found nothing is tried again
+ADAPTIVE_NEARER = 0.03  # ... or sooner, once the picture comes this much nearer
+# Phones draw some panels between those sizes (Buildings & Heroes at 0.95x,
+# the clan chat at 1.06x on a 2340 x 1080 screen): sizes this far apart are
+# tried in between, so the fine search (each +-0.03) leaves no gaps.
+WINDOW_STEP = 0.06
+# Tablets draw windows smaller or bigger than their buttons (the army window
+# at 0.86x, the builder Start Attack window at 1.3x on a 2000 x 1200 one): sizes across
+# this range are tried too.
+WINDOW_RANGE = (0.84, 1.32)
 
 
 def _score(screen: np.ndarray, template: np.ndarray, region: Rect | None = None) -> float:
@@ -153,7 +167,9 @@ class Vision:
         self.window_scale = 1.0
         self.scales: dict[str, float] = {}
         self.fixed_scales: set[str] = set()  # set in the config: never second-guessed
-        self._rest: dict[str, int] = {}  # template name -> misses left before its next fine size search
+        # template name -> (near misses left before its next fine size search, how near the failed one was)
+        self._rest: dict[str, tuple[int, float]] = {}
+        self._half: tuple[np.ndarray, np.ndarray] | None = None  # (screen, a half-size copy of it)
 
     def font(self, name: str) -> Font:
         if name not in self._fonts:
@@ -182,36 +198,52 @@ class Vision:
                 if found:
                     self.scales[tname] = 1.0
             if not found and self.adaptive and tname not in self.scales and self.window_scale != 1.0 \
-                    and self._ready(tname) \
-                    and max(_score(screen, _resized(image, size), region) for size in self.window_sizes()) \
-                    >= threshold - ADAPTIVE_NEAR:
-                # Most misses are buttons that simply aren't on screen: a look
-                # at each likely size rules them out before the fine search.
-                # (Some screens, phones among them, draw windows a little off
-                # these sizes: close to one is worth the search.)
-                scale, score = best_scale(screen, image, self.window_sizes(), region)
+                    and (near := self._near_size(screen, image, region))[0] >= threshold - ADAPTIVE_NEAR \
+                    and self._ready(tname, near[0]):
+                # Most misses are buttons that simply aren't on screen: a quick
+                # look at each likely size, on a half-size screenshot, rules
+                # them out before the fine search. (Some screens, phones among
+                # them, draw windows a little off these sizes: close to one is
+                # worth the search, around the size that came closest.)
+                scale, score = best_scale(screen, image, [near[1]], region)
                 if score >= threshold:
                     self.scales[tname] = scale
                     found = match_template(screen, _resized(image, scale), threshold, region, tname)
                 else:
-                    self._rest[tname] = ADAPTIVE_REST
+                    self._rest[tname] = (ADAPTIVE_REST, near[0])
             matches.extend(found)
         return sorted(matches, key=lambda m: -m.score)
+
+    def _near_size(self, screen: np.ndarray, image: np.ndarray, region: Rect | None) -> tuple[float, float]:
+        """``(score, size)``: the window size at which ``image`` comes
+        closest to matching, from a half-size copy of ``screen`` (made once
+        per screenshot)."""
+        if self._half is None or self._half[0] is not screen:
+            self._half = (screen, cv2.resize(screen, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA))
+        half = self._half[1]
+        part = region and Rect(region.x // 2, region.y // 2, region.w // 2, region.h // 2)
+        return max((_score(half, _resized(image, size / 2), part), size) for size in self.window_sizes())
 
     def window_sizes(self) -> list[float]:
         """Sizes a window's picture may show at: the HUD's, the window size,
         and its inverse. Pictures taken where a window was shrunk come out
         that much bigger on screens wider than 16:9 (phones), which don't
-        shrink it."""
-        return sorted({1.0, self.window_scale, round(1 / self.window_scale, 2)})
+        shrink it; tablets draw them anywhere in WINDOW_RANGE. Sizes in
+        between are tried too (see WINDOW_STEP)."""
+        ends = sorted({1.0, self.window_scale, round(1 / self.window_scale, 2), *WINDOW_RANGE})
+        low, high = ends[0], ends[-1]
+        steps = max(1, -int(-(high - low) // WINDOW_STEP))  # rounded up
+        return sorted(set(ends) | {round(low + (high - low) * i / steps, 2) for i in range(steps + 1)})
 
-    def _ready(self, tname: str) -> bool:
-        """Whether a fine size search for ``tname`` may run now (after one
-        found nothing, it rests for a number of misses)."""
-        left = self._rest.get(tname, 0)
-        if left:
-            self._rest[tname] = left - 1
-        return not left
+    def _ready(self, tname: str, near: float) -> bool:
+        """Whether a fine size search for ``tname`` may run now: after one
+        found nothing, it rests for a number of near misses, unless the
+        picture comes clearly nearer (the screen changed: a list scrolled)."""
+        left, failed = self._rest.get(tname, (0, 0.0))
+        if left and near < failed + ADAPTIVE_NEARER:
+            self._rest[tname] = (left - 1, failed)
+            return False
+        return True
 
     def find(
         self,

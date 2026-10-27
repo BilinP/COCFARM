@@ -19,7 +19,7 @@ to deploy, green = on the field, grey = dead.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import cv2
@@ -62,6 +62,7 @@ def in_builder_base(game: Game) -> bool:
 BOAT_SIZES = (0.9, 1.0, 1.1, 1.2, 1.3)  # the village isn't always zoomed all the way out
 BOAT_THRESHOLD = 0.85
 BOAT_DRAG = (500, 250, 400, 600, 600)  # x1, y1, x2, y2, ms: pulls the builder base's dock down into view
+HOME_BOAT_DRAG = (500, 560, 640, 220, 600)  # pulls the home village's dock (bottom left) up into view
 
 
 def _find_scaled(game: Game, name: str) -> tuple[int, int] | None:
@@ -87,6 +88,12 @@ def go_to_builder_base(game: Game) -> bool:
         return True
     game.zoom_out()
     boat = _find_scaled(game, T.BB_HOME_BOAT)
+    if boat is None:
+        # On short screens (phones) the dock, bottom left, can sit off screen
+        # or under the bottom buttons: drag the map up into view.
+        game.swipe(*HOME_BOAT_DRAG)
+        game.wait(1)
+        boat = _find_scaled(game, T.BB_HOME_BOAT)
     if boat is None:
         raise BuilderError("boat to the builder base not visible; is the home village showing?")
     game.tap(*boat)
@@ -178,8 +185,6 @@ def collect_elixir_cart(game: Game) -> bool:
 
 # ------------------------------------------------------------------ walls
 BB_ICON_OFFSET = (39, -65)  # cost icon relative to the builder Upgrade button's text
-LIST_SWIPE = ((930, 700), (930, 250))  # scrolls the Buildings & Heroes list down
-MAX_SCROLLS = 8
 
 
 def _green_button(screen: np.ndarray, region: tuple[int, int, int, int]) -> tuple[int, int] | None:
@@ -198,30 +203,12 @@ def _green_button(screen: np.ndarray, region: tuple[int, int, int, int]) -> tupl
     return round(x0 + cx), round(y0 + cy)
 
 
-def _find_wall_entry(game: Game):
-    """Scroll the Buildings & Heroes list to the walls and return the lowest
-    "Wall x N" entry in view: the list runs from dearest to cheapest."""
-    (sx, sy), (ex, ey) = LIST_SWIPE
-    for _ in range(MAX_SCROLLS):
-        walls = game.find_all(T.WALL_SUGGESTION)
-        if walls:
-            game.swipe(sx, sy, sx, sy - 150)  # a little further, for cheaper walls below
-            game.wait(1.0)
-            game.refresh()
-            walls = game.find_all(T.WALL_SUGGESTION) or walls
-            return max(walls, key=lambda m: m.y)
-        game.swipe(sx, sy, ex, ey)
-        game.wait(1.0)
-        game.refresh()
-    return None
-
-
 def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], Loot | None]) -> int:
     """Spend spare builder gold or elixir on builder base walls: Build →
     scroll to the cheapest "Wall x N" → Upgrade → the green price button.
     Returns how many walls were upgraded."""
     from farmbot.config import WallsConfig
-    from farmbot.tasks.village import _cost_kind, _wall_budget
+    from farmbot.tasks.village import _cost_kind, _wall_budget, find_wall_entry
 
     needed = (T.BUILD, T.WALL_SUGGESTION, T.BB_UPGRADE, T.BB_UPGRADE_TITLE, T.CLOSE)
     if not cfg.walls or not all(game.has(n) for n in needed):
@@ -241,7 +228,7 @@ def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], L
             break
         game.wait(1.2)
         game.refresh()
-        entry = _find_wall_entry(game)
+        entry = find_wall_entry(game)
         if entry is None:
             log.info("No builder base wall to upgrade in the list")
             break
@@ -343,9 +330,9 @@ def hero_out(screen: np.ndarray, cfg: BuilderConfig) -> bool:
 
 
 # The hero's health bar over its card (bot coordinates at 860 x 672): it
-# starts here and is this long when full. It sits lower before the hero is
+# starts this far left of the card's centre and is this long when full. It sits lower before the hero is
 # placed (between the two bases) than once it's on the field.
-BAR_LEFT, BAR_LENGTH = 33, 72
+BAR_INSET, BAR_LENGTH = 35, 72
 SWAP_BUTTON = (17, 58)  # the green swap button, relative to (hero_x, card_y)
 PICKER_SLOTS = ((-35, 83), (63, 83), (161, 83))  # hero portraits relative to the "Change Heroes" title
 
@@ -357,7 +344,8 @@ def hero_health(screen: np.ndarray, cfg: BuilderConfig) -> float | None:
     card = cv2.cvtColor(screen[y - 10:y + 40, x - 30:x + 30], cv2.COLOR_BGR2HSV)
     if card.size and float(np.median(card[:, :, 1])) < 30:
         return 0.0
-    band = cv2.cvtColor(screen[y - 70:y - 18, BAR_LEFT - 6:BAR_LEFT + BAR_LENGTH + 6], cv2.COLOR_BGR2HSV)
+    left = x - BAR_INSET
+    band = cv2.cvtColor(screen[y - 70:y - 18, max(left - 6, 0):left + BAR_LENGTH + 6], cv2.COLOR_BGR2HSV)
     h, s, v = band[:, :, 0].astype(int), band[:, :, 1], band[:, :, 2]
     fill = (s > 150) & (v > 140) & (((h >= 35) & (h <= 65)) | ((h >= 18) & (h < 35)) | (h >= 170) | (h <= 6))
     best = 0
@@ -495,30 +483,112 @@ def ready_troops(screen: np.ndarray, cfg: BuilderConfig) -> list[Slot]:
     return [s for s in slots if card_state(screen, s.x, cfg) == "ready"]
 
 
+# ------------------------------------------------------------------ the screen
+PC_SIZE = (1177, 920)  # the 860 x 672 screen the positions here were measured on (bot coordinates)
+HERO_ART_DROP = 7.5  # the hero card's art sits this far below the card's centre (card_y)
+CARD_SIZES = np.arange(0.9, 1.21, 0.01)
+CARD_MATCH = 0.8  # the hero's card art scores 0.96+ on phones and tablets
+# Phones and tablets: the map's corners, from the base's centre (bot
+# coordinates at 860 x 672, times the map's size), kept inside the part of
+# the screen that holds no buttons (Surrender bottom left, the damage
+# bottom right, the timer and names at the top).
+BASE_TO_CORNER = {"left": (-395, 13), "top": (0, -290), "right": (400, 0)}
+SAFE_SIDES, SAFE_TOP, SAFE_ABOVE_BAR = (200, 230), 100, 40
+
+
+@dataclass
+class Layout:
+    """Where a builder battle's parts are on this screen. The constants
+    here were measured on the PC's 860 x 672 screen; phones and tablets draw
+    the troop bar a little bigger (1.03-1.06x, centred) and show the map at
+    their own size and place, which moves with each zoom."""
+
+    cfg: BuilderConfig  # with the troop bar where it is on this screen
+    size: tuple[int, int]  # the screen (bot coordinates)
+    map_scale: float = 1.0  # the map's size relative to the PC's
+    bar_top: int = 780  # the troop bar's top edge
+
+    @property
+    def pc(self) -> bool:
+        """The PC's screen: the map's corners are where they were measured."""
+        w, h = self.size
+        return abs(w / h - PC_SIZE[0] / PC_SIZE[1]) < 0.05
+
+
+def battle_layout(game: Game, cfg: BuilderConfig) -> Layout:
+    """This screen's layout, from the hero's card art in the troop bar."""
+    screen = game.refresh()
+    h, w = screen.shape[:2]
+    layout = Layout(cfg, (w, h))
+    if layout.pc:
+        return layout
+    best = (0.0, 1.0, (0.0, 0.0))
+    for _, art in [i for key in HEROES if game.has(HEROES[key]) for i in game.vision.library.get(HEROES[key])]:
+        area = screen[h // 2:, :w // 2]
+        for k in CARD_SIZES:
+            t = cv2.resize(art, None, fx=k, fy=k)
+            _, score, _, (x, y) = cv2.minMaxLoc(cv2.matchTemplate(area, t, cv2.TM_CCOEFF_NORMED))
+            if score > best[0]:
+                best = (score, float(k), (x + t.shape[1] / 2, h // 2 + y + t.shape[0] / 2))
+    score, k, (x, y) = best
+    if score >= CARD_MATCH:
+        hero_x, card_y = x, y - HERO_ART_DROP * k
+    else:  # no hero card (none picked): as phones draw the bar, centred
+        k = 1.05
+        hero_x, card_y = w / 2 + k * (cfg.hero_x - PC_SIZE[0] / 2), h - k * (PC_SIZE[1] - cfg.card_y)
+    log.info("Troop bar at %.2fx, the hero's card at (%d, %d)", k, hero_x, card_y)
+    layout.cfg = replace(cfg, hero_x=round(hero_x), card_y=round(card_y), card_step=cfg.card_step * k,
+                         first_troop_x=round(hero_x + k * (cfg.first_troop_x - cfg.hero_x)))
+    layout.map_scale = max(h / PC_SIZE[1], w / 1605)  # how far the game zooms out: by height, or for wide screens by width
+    layout.bar_top = round(card_y - k * (cfg.card_y - 780))
+    return layout
+
+
 # ------------------------------------------------------------------ placement
-def base_centre(screen: np.ndarray) -> tuple[int, int]:
+def base_centre(screen: np.ndarray, layout: Layout | None = None) -> tuple[int, int]:
     """Where the enemy buildings are thickest: bright or warm pixels on the
     dull teal ground, inside the map."""
     hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
     h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
     mask = ((v > 150) | ((s > 120) & ((h < 35) | (h > 130)))).astype(np.uint8) * 255
     inside = np.zeros_like(mask)
-    cv2.fillPoly(inside, [MAP], 255)
+    if layout is None or layout.pc:
+        cv2.fillPoly(inside, [MAP], 255)
+        boost = 650
+    else:  # where the map is isn't known: all of it that holds no buttons
+        (left, right), top = SAFE_SIDES, SAFE_TOP
+        inside[top:layout.bar_top, left:screen.shape[1] - right] = 255
+        boost = layout.bar_top - round(140 * layout.map_scale)
     mask &= inside
-    mask[650:] = 0  # the Boost buttons
+    mask[boost:] = 0  # the Boost buttons
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     density = cv2.blur(mask.astype(np.float32), (121, 91))
     y, x = np.unravel_index(int(np.argmax(density)), density.shape)
     return int(x), int(y)
 
 
-def pick_corner(screen: np.ndarray, cfg: BuilderConfig) -> tuple[str, tuple[int, int]]:
+def corners(screen: np.ndarray, layout: Layout | None = None) -> dict[str, tuple[int, int]]:
+    """Where to go in at each corner. On phones and tablets: out from the
+    base, inside the part of the screen without buttons (a point off the
+    map's ground is refused and moved in towards the base)."""
+    if layout is None or layout.pc:
+        return CORNERS
+    cx, cy = base_centre(screen, layout)
+    w = screen.shape[1]
+    (left, right), top = SAFE_SIDES, SAFE_TOP
+    return {name: (int(np.clip(cx + dx * layout.map_scale, left, w - right)),
+                   int(np.clip(cy + dy * layout.map_scale, top, layout.bar_top - SAFE_ABOVE_BAR)))
+            for name, (dx, dy) in BASE_TO_CORNER.items()}
+
+
+def pick_corner(screen: np.ndarray, cfg: BuilderConfig, layout: Layout | None = None) -> tuple[str, tuple[int, int]]:
     """The configured corner, or (``auto``) the one farthest from the base."""
-    if cfg.corner in CORNERS:
-        return cfg.corner, CORNERS[cfg.corner]
-    cx, cy = base_centre(screen)
-    name = max(CORNERS, key=lambda k: np.hypot(CORNERS[k][0] - cx, (CORNERS[k][1] - cy) / ISO_RATIO))
-    return name, CORNERS[name]
+    points = corners(screen, layout)
+    if cfg.corner in points:
+        return cfg.corner, points[cfg.corner]
+    cx, cy = base_centre(screen, layout)
+    name = max(points, key=lambda k: np.hypot(points[k][0] - cx, (points[k][1] - cy) / ISO_RATIO))
+    return name, points[name]
 
 
 # ------------------------------------------------------------------ battle
@@ -546,7 +616,7 @@ def start_battle(game: Game) -> None:
     deadline = game.clock() + 60
     while True:
         game.refresh()
-        if game.find(T.BB_BATTLE_STARTS) or game.find(T.BB_BATTLE_ENDS):
+        if banner(game, T.BB_BATTLE_STARTS) or banner(game, T.BB_BATTLE_ENDS):
             break
         if attack_despite_obstructed_layout(game):
             continue
@@ -582,7 +652,8 @@ def place_first(game: Game, slot: Slot, start: tuple[int, int], centre: tuple[in
     return None
 
 
-def deploy_stage(game: Game, cfg: BuilderConfig, first: bool = False) -> tuple[float, list[Slot]]:
+def deploy_stage(game: Game, cfg: BuilderConfig, first: bool = False,
+                 layout: Layout | None = None) -> tuple[float, list[Slot]]:
     """Hero at the far corner, then (``troop_delay`` s later) every ready
     troop there too. Returns when the hero landed and the troops sent.
     On the ``first`` base, the hero is set to ``cfg.first_hero`` first."""
@@ -590,8 +661,8 @@ def deploy_stage(game: Game, cfg: BuilderConfig, first: bool = False) -> tuple[f
     if first and cfg.use_hero and cfg.first_hero in HEROES:
         choose_hero(game, cfg, cfg.first_hero)
     screen = game.refresh()
-    side, point = pick_corner(screen, cfg)
-    centre = base_centre(screen)
+    side, point = pick_corner(screen, cfg, layout)
+    centre = base_centre(screen, layout)
     troops = ready_troops(screen, cfg)
     log.info("Stage: hero and %d troop card(s) from the %s corner", len(troops), side)
     hero = Slot(0, cfg.hero_x)
@@ -650,13 +721,48 @@ def _fire_abilities(game: Game, batch: list[Slot], cfg: BuilderConfig) -> int:
 
 
 BANNER_THRESHOLD = 0.8  # "Battle starts in" scores 0.87+ on it, under 0.75 on "Battle ends in"
+# The timer's caption, top middle: a long line of text, which only matches
+# within a hundredth or two of its size (0.97x on one phone scores 0.91,
+# 0.99x 0.58), so its sizes are tried closely, around the top middle only,
+# and (until it has shown once and its size is known) every few seconds.
+BANNER_AREA = (80, 260)  # px from the top; px either side of the middle
+BANNER_SIZES = np.arange(0.84, 1.33, 0.01)
+BANNER_SEARCH_EVERY = 4.0  # seconds
+_banner_sizes: dict[str, float] = {}  # picture -> the size it showed at
+_banner_searched: dict[str, float] = {}  # banner -> when its sizes were last all tried
+
+
+def banner(game: Game, name: str, threshold: float | None = None) -> bool:
+    """``name`` ("Battle starts in" or "Battle ends in") is showing."""
+    from farmbot.vision import _resized, _score
+
+    if not game.has(name):
+        return False
+    threshold = game.vision.default_threshold if threshold is None else threshold
+    screen = game.screen if game.screen is not None else game.refresh()
+    middle = screen.shape[1] // 2
+    strip = screen[:BANNER_AREA[0], max(middle - BANNER_AREA[1], 0):middle + BANNER_AREA[1]]
+    pictures = game.vision.library.get(name)
+    for picture, image in pictures:
+        known = _banner_sizes.get(picture)
+        if known is not None and _score(strip, _resized(image, known)) >= threshold:
+            return True
+    if any(picture in _banner_sizes for picture, _ in pictures)             or game.clock() - _banner_searched.get(name, -BANNER_SEARCH_EVERY) < BANNER_SEARCH_EVERY:
+        return False
+    _banner_searched[name] = game.clock()
+    for picture, image in pictures:
+        score, size = max((_score(strip, _resized(image, k)), float(k)) for k in BANNER_SIZES)
+        if score >= threshold:
+            _banner_sizes[picture] = size
+            return True
+    return False
 
 
 def stage_reset(game: Game) -> bool:
     """The first base fell and the second began: its "Battle starts in"
     countdown is up. (The cards alone can't tell: between the bases the
     survivors' cards look much like ready ones.)"""
-    return game.has(T.BB_BATTLE_STARTS) and game.find(T.BB_BATTLE_STARTS, threshold=BANNER_THRESHOLD) is not None
+    return banner(game, T.BB_BATTLE_STARTS, BANNER_THRESHOLD)
 
 
 @dataclass
@@ -677,12 +783,14 @@ def attack(game: Game, cfg: BuilderConfig, on_stage: Callable[[int], None] | Non
     """One builder battle, every stage, back to the builder base.
     ``on_stage`` hears each base as it begins (1, 2)."""
     start_battle(game)
+    layout = battle_layout(game, cfg)
+    cfg = layout.cfg
     stages = 0
     started = game.clock()
     while stages < MAX_STAGES:
         if on_stage:
             on_stage(stages + 1)
-        landed, troops = deploy_stage(game, cfg, first=stages == 0)
+        landed, troops = deploy_stage(game, cfg, first=stages == 0, layout=layout)
         stages += 1
         batches = [troops[i:i + cfg.ability_batch] for i in range(0, len(troops), max(cfg.ability_batch, 1))]
         next_batch = game.clock() + cfg.ability_delay

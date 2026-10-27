@@ -150,6 +150,9 @@ class Bot:
                     return
                 self.game.wait(2)
             log.info("Game loaded: %s", screen.value)
+            shown = getattr(device, "game_shown", None)  # phones: the screenshots prove it's in front
+            if shown:
+                shown()
 
     def _daily_summary(self, day: date) -> None:
         if not self.config.bot.history:

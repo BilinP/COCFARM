@@ -89,6 +89,14 @@ public final class Bridge {
         context.startActivity(launch);
     }
 
+    /**
+     * The bot's screenshots show the game: it's in front, whatever the last "in front" event said
+     * (one doesn't always come when the game is brought back).
+     */
+    public static void gameInFront(String pkg) {
+        touch().noteForeground(pkg);
+    }
+
     /** Close the game: to the home screen, then end it in the background (no root can force-stop it). */
     public static void stopApp(String pkg) {
         touch().home();

@@ -117,6 +117,10 @@ class AndroidDevice:
         Bridge.startApp(package)
         self.played = True
 
+    def game_shown(self) -> None:
+        """The screenshots show the game (after start_app): it's in front."""
+        Bridge.gameInFront(self.package)
+
     def stop_app(self, package: str) -> None:
         Bridge.stopApp(package)
 

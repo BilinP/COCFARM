@@ -52,7 +52,7 @@ def identify(game: Game, refresh: bool = True) -> Screen:
         return Screen.CHEST
     if _seen(game, T.RETURN_HOME) or _seen(game, T.BB_RETURN_HOME):
         return Screen.RESULTS
-    if any(_seen(game, name) for name in (T.END_BATTLE, T.BB_BATTLE_STARTS, T.BB_BATTLE_ENDS)):
+    if _seen(game, T.END_BATTLE) or builder.banner(game, T.BB_BATTLE_STARTS) or builder.banner(game, T.BB_BATTLE_ENDS):
         return Screen.BATTLE
     if any(_seen(game, name) for name in POPUP_BUTTONS):
         return Screen.POPUP

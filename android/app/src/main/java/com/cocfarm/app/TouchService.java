@@ -64,6 +64,14 @@ public class TouchService extends AccessibilityService {
         return foreground;
     }
 
+    /** An app known to be in front without an event saying so. */
+    void noteForeground(String app) {
+        foreground = app;
+        if (button != null) {
+            button.refresh();
+        }
+    }
+
     /**
      * Play a gesture and wait until it's done (or failed). Only in the game:
      * with another app in front (COCFARM's own screen, say) the taps would
