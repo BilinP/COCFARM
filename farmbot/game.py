@@ -107,6 +107,24 @@ class T:
     WALL_SUGGESTION = "buttons/wall_suggestion"  # "Wall x N" in that list
     UPGRADE = "buttons/upgrade"  # under a selected building (gold and elixir versions look alike)
     UPGRADE_CONFIRM = "buttons/upgrade_confirm"  # "Confirm" in the upgrade window
+    UPGRADE_MORE = "buttons/upgrade_more"  # under a selected wall: starts picking more of its level
+    ADD_WALL = "buttons/add_wall"  # then: the green "+1" on Add Wall
+    ADD_WALLS_10 = "buttons/add_wall_10"  # the green "+10" on the other Add Wall
+    # The Buildings & Heroes list's filter menu (the slider button left of its
+    # title). The buttons light up yellow when on; the resource and type
+    # ones aren't used yet (for upgrading other things later).
+    LIST_FILTER = "buttons/list_filter"
+    SORT_COST_MAX = "buttons/filter/cost_max"  # "Max" of Cost Max: dearest first
+    SORT_COST_MIN = "buttons/filter/cost_min"  # "Min" of Cost Min: cheapest first
+    FILTER_GOLD = "buttons/filter/gold"
+    FILTER_ELIXIR = "buttons/filter/elixir"
+    FILTER_DARK = "buttons/filter/dark"
+    FILTER_ARMY = "buttons/filter/army"
+    FILTER_DEFENSE = "buttons/filter/defense"
+    FILTER_HERO = "buttons/filter/hero"
+    FILTER_RESOURCE = "buttons/filter/resource"
+    FILTER_NEW = "buttons/filter/new"
+    FILTER_PERMANENT = "buttons/filter/permanent"
     # Builder base
     BB_HOME_BOAT = "builder/home_boat"  # home village, bottom left: sails to the builder base
     BB_BUILDER_BOAT = "builder/builder_boat"  # builder base, top right: sails back

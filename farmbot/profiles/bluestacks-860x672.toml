@@ -14,9 +14,9 @@ window_scale = 0.94
 "buttons/attack" = 0.66
 
 [regions]
-own_gold = [-195, 25, 130, 32]
-own_elixir = [-195, 78, 130, 32]
-own_dark = [-160, 130, 95, 32]
+own_gold = [-215, 25, 150, 32]
+own_elixir = [-215, 78, 150, 32]
+own_dark = [-180, 130, 115, 32]
 # Left (empty) end of each resource bar: only coloured when that storage is full.
 full_gold = [-284, 33, 24, 14]
 full_elixir = [-284, 83, 24, 14]

@@ -8,6 +8,7 @@ from typing import Callable
 
 from farmbot.config import RegionsConfig, SearchConfig
 from farmbot.game import Game, T
+from farmbot.geometry import Rect
 
 log = logging.getLogger(__name__)
 
@@ -74,18 +75,24 @@ def read_settled_loot(game: Game, regions: RegionsConfig, interval: float = 0.3)
     return None
 
 
-def own_gold(game: Game, regions: RegionsConfig) -> int | None:
-    """Your gold, read from the home village's resource bar."""
-    return game.read_number(game.region(regions.rect("own_gold")), T.LOOT_FONT)
+def _own(game: Game, regions: RegionsConfig, name: str, shift: int = 0) -> int | None:
+    r = game.region(regions.rect(name))
+    return game.read_number(Rect(r.x - shift, r.y, r.w, r.h), T.LOOT_FONT)
 
 
-def own_resources(game: Game, regions: RegionsConfig) -> Loot | None:
+def own_gold(game: Game, regions: RegionsConfig, shift: int = 0) -> int | None:
+    """Your gold, read from the home village's resource bar (``shift``
+    pixels further left: a window open on the right pushes the bar over)."""
+    return _own(game, regions, "own_gold", shift)
+
+
+def own_resources(game: Game, regions: RegionsConfig, shift: int = 0) -> Loot | None:
     """Your gold, elixir and dark elixir from the home village's resource bar."""
-    gold = own_gold(game, regions)
-    elixir = game.read_number(game.region(regions.rect("own_elixir")), T.LOOT_FONT)
+    gold = own_gold(game, regions, shift)
+    elixir = _own(game, regions, "own_elixir", shift)
     if gold is None or elixir is None:
         return None
-    dark = game.read_number(game.region(regions.rect("own_dark")), T.LOOT_FONT) or 0
+    dark = _own(game, regions, "own_dark", shift) or 0
     return Loot(gold, elixir, dark)
 
 

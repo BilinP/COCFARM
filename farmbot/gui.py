@@ -1351,15 +1351,19 @@ class FarmbotWindow(FluentWindow):
         self.switch(walls, "walls.enabled", FIF.UP, "Upgrade walls with spare loot",
                     "Between attacks it upgrades a wall from the Build list. Off by default: it spends loot.")
         self.segments(walls, "walls.pick", FIF.SCROLL, "Which wall",
-                      "Cheapest: scrolls down the list to the last wall. First: the first wall the list shows "
-                      "(the dearest).", {"cheapest": "Cheapest", "first": "First"}, width=90)
+                      "Cheapest: sorts the Build list Cost Min and takes the first wall. First: sorts it Cost Max "
+                      "(the dearest wall).", {"cheapest": "Cheapest", "first": "First"}, width=90)
         self.segments(walls, "walls.use", FIF.MARKET, "Pay with", "Which resource may go on walls.",
                       {"gold": "Gold", "elixir": "Elixir", "both": "Either"}, width=90)
         self.amount(walls, "walls.min_gold", FIF.SAVE, "Keep at least this much gold", "Walls only get what's above it.")
         self.amount(walls, "walls.min_elixir", FIF.SAVE, "Keep at least this much elixir",
                     "Walls only get what's above it.")
-        self.number(walls, "walls.max_per_round", FIF.TILES, "Walls per round", "At most this many between two attacks.")
-        self.depends("walls.enabled", "walls.pick", "walls.use", "walls.min_gold", "walls.min_elixir", "walls.max_per_round")
+        self.number(walls, "walls.max_per_round", FIF.TILES, "Walls per round",
+                    "At most this many between two attacks, all upgraded at once (as many as the spare loot covers).")
+        self.switch(walls, "walls.only_when_full", FIF.CHECKBOX, "Only when storage is full",
+                    "Spends gold or elixir on walls only once its storages are full.")
+        self.depends("walls.enabled", "walls.pick", "walls.use", "walls.min_gold", "walls.min_elixir",
+                     "walls.max_per_round", "walls.only_when_full")
         self._note(page, self._template_note("Collecting resources", "Collecting the loot cart", "Upgrading walls"))
 
     def _clan_tab(self, page: Page) -> None:

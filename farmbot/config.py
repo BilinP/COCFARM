@@ -332,9 +332,11 @@ class WallsConfig:
     min_gold: int = 15_000_000
     min_elixir: int = 15_000_000
     max_per_round: int = 3  # walls upgraded between two attacks at most
-    # Which wall: "cheapest" (the last in the list's block of walls, scrolled
-    # down to) or "first" (the block's first, the dearest suggestion).
+    # Which wall: "cheapest" (the list sorted Cost Min) or "first" (Cost Max:
+    # the dearest).
     pick: str = "cheapest"
+    # Only spend a resource on walls once its storages are full.
+    only_when_full: bool = False
 
 
 WALL_RESOURCES = ("gold", "elixir", "both")
@@ -541,12 +543,28 @@ def _siege_out_of_main(clan: ClanConfig) -> None:
     clan.donate_siege = list(dict.fromkeys(siege))
 
 
+# Where the starting profile read your resources before 0.6.3: too narrow
+# for a number starting with a wide digit ("20 000 000" read as
+# 10 000 000). Settings still holding them get the wider ones.
+OLD_OWN_REGIONS = {"own_gold": [-195, 25, 130, 32], "own_elixir": [-195, 78, 130, 32],
+                   "own_dark": [-160, 130, 95, 32]}
+NEW_OWN_REGIONS = {"own_gold": [-215, 25, 150, 32], "own_elixir": [-215, 78, 150, 32],
+                   "own_dark": [-180, 130, 115, 32]}
+
+
+def _widen_own_regions(regions: RegionsConfig) -> None:
+    for name, old in OLD_OWN_REGIONS.items():
+        if list(getattr(regions, name)) == old:
+            setattr(regions, name, list(NEW_OWN_REGIONS[name]))
+
+
 def load_config(path: str | Path | None) -> Config:
     config = Config()
     if path is not None:
         # utf-8-sig: Notepad (and PowerShell) can save the file with a byte-order mark.
         _merge(config, tomllib.loads(Path(path).read_text(encoding="utf-8-sig")), "")
     _siege_out_of_main(config.clan)
+    _widen_own_regions(config.regions)
     config.validate()
     return config
 

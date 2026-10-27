@@ -206,9 +206,11 @@ class Bot:
         self._game_restarts = 0
         self.ensure_game_running()
 
-    def read_resources(self) -> Loot | None:
+    def read_resources(self, shift: int = 0) -> Loot | None:
+        """Your resources; ``shift``: the bar is that many pixels further
+        left (pushed over by a window open on the right)."""
         self.game.refresh()
-        loot = search.own_resources(self.game, self.config.regions)
+        loot = search.own_resources(self.game, self.config.regions, shift)
         if loot is not None:
             self.resources = loot
             if self._on_resources:
@@ -256,7 +258,8 @@ class Bot:
         self.checkpoint()
         if cfg.walls.enabled:
             self.status("Upgrading walls")
-            village.upgrade_walls(self.game, cfg.walls, self.read_resources)
+            full = search.full_storages(self.game, cfg.regions) if cfg.walls.only_when_full else None
+            village.upgrade_walls(self.game, cfg.walls, self.read_resources, full)
         if (cfg.clan.donate or cfg.clan.request_troops) and self._in_clan is None:
             self._in_clan = clan.in_clan(self.game)
             if self._in_clan is False:

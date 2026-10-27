@@ -93,6 +93,7 @@ FIELDS = [
     Field("walls.min_gold", "amount"),
     Field("walls.min_elixir", "amount"),
     Field("walls.max_per_round", "int", 1, 50),
+    Field("walls.only_when_full", "bool"),
     # Clan
     Field("clan.donate", "bool"),
     Field("clan.donate_main", "units"),
