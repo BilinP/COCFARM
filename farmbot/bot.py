@@ -11,6 +11,7 @@ from typing import Callable
 from farmbot import accounts, history, screens
 from farmbot.notify import Notifier
 from farmbot.config import Config
+from farmbot.device import DeviceError
 from farmbot.game import Game, Stopped, T
 from farmbot.history import AttackRecord
 from farmbot.tasks import attack, builder, clan, search, upgrade, village
@@ -24,6 +25,10 @@ MAX_GAME_RESTARTS = 1  # game restarts without a good round before the emulator 
 STORAGE_MAX_TRIES = 3  # readings a day of what a village's storages hold, until one works
 IDLE_WAIT = 60.0  # seconds between village rounds when not attacking
 STARTUP_TIMEOUT = 90  # seconds to wait for the home village after starting the game
+# An emulator answers ADB before Android has finished starting up, and a game
+# started then is closed again: start it once Android has been up this long.
+BOOT_SETTLE = 20.0
+START_TRIES = 3  # starts of the game, if it closes while loading
 
 
 class Bot:
@@ -185,7 +190,10 @@ class Bot:
     # -- game -----------------------------------------------------------
     def ensure_game_running(self) -> None:
         device, package = self.game.device, self.config.device.package
-        if device.foreground_package() != package:
+        if device.foreground_package() == package:
+            return
+        self._wait_for_android()
+        for _ in range(START_TRIES):
             log.info("Starting %s", package)
             device.start_app(package)
             self.game.wait(5)
@@ -197,8 +205,32 @@ class Bot:
                 if self.game.clock() >= deadline:
                     log.info("Nothing known on screen after %ds; carrying on", STARTUP_TIMEOUT)
                     return
+                if device.foreground_package() != package:
+                    break  # it closed while loading
                 self.game.wait(2)
-            log.info("Game loaded: %s", screen.value)
+            else:
+                log.info("Game loaded: %s", screen.value)
+                return
+            log.info("The game closed while loading; starting it again")
+            self.game.wait(5)
+
+    def _wait_for_android(self) -> None:
+        """Until Android has finished starting up and been up ``BOOT_SETTLE``
+        seconds (an emulator that was just opened)."""
+        shell = getattr(self.game.device, "shell", None)
+        if shell is None:
+            return
+        deadline = self.game.clock() + STARTUP_TIMEOUT
+        try:
+            while shell("getprop", "sys.boot_completed").strip() != "1" and self.game.clock() < deadline:
+                self.game.wait(2)
+            up = float(shell("cat", "/proc/uptime").split()[0])
+        except (DeviceError, ValueError, IndexError):
+            return
+        if up < BOOT_SETTLE:
+            log.info("Android started %ds ago: waiting %ds before starting the game", up, BOOT_SETTLE - up)
+            self.status("Waiting for the emulator to finish starting up")
+            self.game.wait(BOOT_SETTLE - up)
 
     def _daily_summary(self, day: date) -> None:
         if not self.config.bot.history:

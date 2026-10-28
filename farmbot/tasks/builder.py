@@ -27,7 +27,7 @@ import numpy as np
 
 from farmbot.config import BuilderConfig
 from farmbot.tasks.search import Loot
-from farmbot.game import VIEW_STILL, Game, T, view_change
+from farmbot.game import VIEW_AREA, VIEW_NEAR, VIEW_STILL, Game, T, view_change, view_shift
 
 log = logging.getLogger(__name__)
 
@@ -153,11 +153,6 @@ def go_to_home_village(game: Game) -> bool:
 # fixed spot). The builder base's map holds two bases, so there's no
 # middle to centre on as at home: the two pictures are matched instead,
 # by features (they only need to overlap in part).
-VIEW_AREA = (150, 240, 1000, 760)  # x0, y0, x1, y1: the map, clear of the buttons, trophies and resource bars
-VIEW_FEATURES = 1500
-VIEW_RATIO = 0.75  # Lowe's ratio test
-VIEW_AGREE = 15  # matches that must agree on the shift (within VIEW_NEAR px)
-VIEW_NEAR = 6
 VIEW_STEP = 350  # px per drag at most
 # Shorter drags read as taps in the game: they select (and a drag starting on
 # a selected building moves it). A smaller move goes out and back.
@@ -167,28 +162,6 @@ VIEW_TRIES = 9
 # No overlap: drag the map one way and look again, then back past where it
 # started the other way (where it was 0, -300, 0, +300, 0, ... drags away).
 VIEW_SEARCH = [(-300, -300), (300, 300), (300, 300), (-300, -300)]
-
-
-def view_shift(reference: np.ndarray, screen: np.ndarray) -> tuple[int, int] | None:
-    """How far the map has moved from ``reference`` to ``screen`` (what was
-    at p is now at p + shift), or ``None`` if they don't overlap enough."""
-    x0, y0, x1, y1 = VIEW_AREA
-    mask = np.zeros(reference.shape[:2], np.uint8)
-    mask[y0:y1, x0:x1] = 255
-    orb = cv2.ORB_create(VIEW_FEATURES)
-    k1, d1 = orb.detectAndCompute(cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY), mask)
-    k2, d2 = orb.detectAndCompute(cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY), mask)
-    if d1 is None or d2 is None or len(k1) < 2 or len(k2) < 2:
-        return None
-    pairs = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(d1, d2, k=2)
-    good = [p[0] for p in pairs if len(p) == 2 and p[0].distance < VIEW_RATIO * p[1].distance]
-    if len(good) < VIEW_AGREE:
-        return None
-    shifts = np.array([np.subtract(k2[m.trainIdx].pt, k1[m.queryIdx].pt) for m in good])
-    shift = np.median(shifts, axis=0)
-    if int(np.sum(np.all(np.abs(shifts - shift) <= VIEW_NEAR, axis=1))) < VIEW_AGREE:
-        return None
-    return round(shift[0]), round(shift[1])
 
 
 def restore_view(game: Game, reference: np.ndarray) -> bool:
@@ -431,11 +404,15 @@ def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], L
 
 
 def _close_all(game: Game) -> None:
-    for _ in range(2):  # leave nothing open
+    """Leave nothing open, and no wall selected (see ``village.deselect``)."""
+    from farmbot.tasks.village import deselect
+
+    for _ in range(2):
         game.refresh()
         if not game.click(T.CLOSE):
             break
         game.wait(0.8)
+    deselect(game)
 
 
 def _upgrade_walls(game: Game, read_resources: Callable[[], Loot | None], loot: Loot, budget: list[str],
@@ -481,11 +458,7 @@ def _upgrade_walls(game: Game, read_resources: Callable[[], Loot | None], loot: 
         log.info("Builder walls: the upgrade window didn't open")
         return 0
     game.wait(1.5)
-    for _ in range(2):  # the upgrade window and Buildings & Heroes
-        game.refresh()
-        if not game.click(T.CLOSE):
-            break
-        game.wait(0.8)
+    _close_all(game)  # the upgrade window and Buildings & Heroes, and the walls' selection
     game.zoom_out()
     after = read_resources()
     if after is None:

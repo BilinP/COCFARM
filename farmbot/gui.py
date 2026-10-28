@@ -44,7 +44,7 @@ from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox,
                             isDarkTheme, qconfig, setCustomStyleSheet, setTheme, setThemeColor)
 
 from farmbot import __version__, accounts, catalog, icons, splash
-from farmbot.config import Config, ensure_config, load_config
+from farmbot.config import EMULATORS, Config, ensure_config, load_config
 from farmbot.form import BY_PATH, apply_form, form_values, parse_amount, validate
 from farmbot.friendly import Problem, Status, describe_status, explain
 from farmbot.geometry import Rect
@@ -57,7 +57,7 @@ ASSETS = Path(__file__).parent / "assets"
 LOGO = ASSETS / "cocfarm.png"
 ACCENT = "#4c9aff"
 ICON_TOOLS = getattr(FIF, "DEVELOPER_TOOLS", FIF.SETTING)
-MEMORY_CHOICES = (2048, 4096, 8192)  # MB; sizes both BlueStacks and LDPlayer accept
+MEMORY_CHOICES = (2048, 4096, 8192)  # MB; sizes BlueStacks, LDPlayer and MuMu all accept
 DPI_CHOICES = (160, 240, 320)
 TRAINED_DISPLAY = {"device.display_width": 860, "device.display_height": 672, "device.display_dpi": 240}
 TRAINED_NOTE = "COCFARM is trained on 860 x 672 at 240 DPI; other values may stop it reading the game."
@@ -1962,13 +1962,14 @@ class FarmbotWindow(FluentWindow):
         step = self._step(page, 0)
         self.segments(step, "device.mode", FIF.CONNECT if hasattr(FIF, "CONNECT") else FIF.WIFI, "Emulator",
                       "The Android emulator Clash of Clans runs in on this PC. Other: any device by its address "
-                      "(Advanced).", {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "manual": "Other"}, width=100)
+                      "(Advanced).", {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "mumu": "MuMu",
+                                     "manual": "Other"}, width=90)
         self.bluestacks_info = BodyLabel("")
         self.bluestacks_info.setWordWrap(True)
         self.bluestacks_info.setMinimumWidth(240)
         self.bluestacks_info.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         refresh = PushButton(FIF.SYNC, "Look again")
-        refresh.setToolTip("Look for BlueStacks and LDPlayer again, e.g. after installing one")
+        refresh.setToolTip("Look for BlueStacks, LDPlayer and MuMu again, e.g. after installing one")
         refresh.clicked.connect(self._find_bluestacks)
         self.found_card = self._card(step, None, FIF.INFO, "On this PC", "", self.bluestacks_info, refresh)
         self.instance_box = EditableComboBox()
@@ -2078,7 +2079,7 @@ class FarmbotWindow(FluentWindow):
     def _steps_done(self) -> list[bool]:
         mode = self.bindings["device.mode"].get()
         found = (mode == "manual" or (mode == "bluestacks" and self._found.get("bluestacks"))
-                 or (mode == "ldplayer" and self._found.get("ldplayer")))
+                 or (mode in ("ldplayer", "mumu") and self._found.get(mode)))
         form = self.collect()
         loot = any(str(form.get(p, "0")).strip() not in ("", "0") for p in
                    ("search.min_gold", "search.min_elixir", "search.min_dark"))
@@ -2157,8 +2158,8 @@ class FarmbotWindow(FluentWindow):
         self._bind("device.memory", bind_choice(memory, {str(mb): f"{mb} MB" for mb in MEMORY_CHOICES}))
         self._card(emulator, "device.memory", ICON_TOOLS, "Memory", "2048 MB is enough for the game.", memory)
         self.depends("device.set_resources", "device.cpus", "device.memory")
-        self.depends("device.mode", "device.enable_adb", "device.set_display", "device.set_resources",
-                     when=("bluestacks", "ldplayer"))
+        self.depends("device.mode", "device.set_display", "device.set_resources", when=EMULATORS)
+        self.depends("device.mode", "device.enable_adb", when=("bluestacks", "ldplayer"))  # always on in MuMu
         self.ldplayer_box = EditableComboBox()
         self.ldplayer_box.setFixedWidth(240)
         self.ldplayer_box.setPlaceholderText("Newest installed")
@@ -2168,6 +2169,9 @@ class FarmbotWindow(FluentWindow):
         self.number(emulator, "device.ldplayer_index", FIF.TILES, "LDPlayer instance number",
                     "0 is the first instance in LDMultiPlayer.")
         self.depends("device.mode", "device.ldplayer", "device.ldplayer_index", when="ldplayer")
+        self.number(emulator, "device.mumu_index", FIF.TILES, "MuMu instance number",
+                    "0 is the first instance in MuMu Multi-instance.")
+        self.depends("device.mode", "device.mumu_index", when="mumu")
         self.text(emulator, "device.serial", FIF.CONNECT if hasattr(FIF, "CONNECT") else FIF.WIFI, "Device address",
                   "For Emulator = Other: the ADB address of any emulator or phone, e.g. 127.0.0.1:5555.", width=200)
         self.depends("device.mode", "device.serial", when="manual")
@@ -2412,8 +2416,8 @@ class FarmbotWindow(FluentWindow):
         self.seen_view.show()
 
     def _find_bluestacks(self) -> None:
-        """Fill in what's installed: BlueStacks and every LDPlayer."""
-        from farmbot import bluestacks, ldplayer
+        """Fill in what's installed: BlueStacks, every LDPlayer, and MuMu."""
+        from farmbot import bluestacks, ldplayer, mumu
 
         lines = []
         install = bluestacks.find_install()
@@ -2432,11 +2436,14 @@ class FarmbotWindow(FluentWindow):
         self.ldplayer_box.setText(current)
         lines.append(("✓ " + ", ".join(i.name for i in installs) + ": installed") if installs
                      else "✗ LDPlayer: not installed")
-        if install is None and not installs:
-            lines.append("Install BlueStacks 5 (bluestacks.com) or LDPlayer 9 (ldplayer.net), then press Look again.")
-        self._found = {"bluestacks": install is not None, "ldplayer": bool(installs)}
+        mumu_install = mumu.find_install()
+        lines.append("✓ MuMu Player: installed" if mumu_install else "✗ MuMu Player: not installed")
+        self._found = {"bluestacks": install is not None, "ldplayer": bool(installs), "mumu": mumu_install is not None}
+        if not any(self._found.values()):
+            lines.append("Install BlueStacks 5 (bluestacks.com), LDPlayer 9 (ldplayer.net) or MuMu Player "
+                         "(mumuplayer.com), then press Look again.")
         self.bluestacks_info.setText(chr(10).join(lines))
-        tint(self.bluestacks_info, WARN if install is None and not installs else None)
+        tint(self.bluestacks_info, WARN if not any(self._found.values()) else None)
         self._show_steps()
 
     # ------------------------------------------------------------ form state
@@ -2618,7 +2625,7 @@ class FarmbotWindow(FluentWindow):
                       on_account=self._account_from_bot,
                       pause_event=self.pause_event,
                       reopen_device=(lambda: restart_emulator(self.config.device))
-                      if self.config.device.mode in ("bluestacks", "ldplayer") else None)
+                      if self.config.device.mode in EMULATORS else None)
             bot.run()
         except Exception as exc:  # shown in the window instead of a silent thread death
             log.error("Bot stopped: %s", exc)
@@ -2664,7 +2671,8 @@ class FarmbotWindow(FluentWindow):
         threading.Thread(target=work, daemon=True).start()
 
     def _emulator_name(self) -> str:
-        return {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer"}.get(self.config.device.mode, "the emulator")
+        return {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "mumu": "MuMu Player"}.get(
+            self.config.device.mode, "the emulator")
 
     def _show_device(self, ok: bool, message: str) -> None:
         if ok:

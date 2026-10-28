@@ -26,7 +26,7 @@ from farmbot.tasks.build_list import (BUILDER, HOME, HUD_SHIFT_PX, BuildList, Ro
                                       free_builders, open_tab, rows, set_filter, tab_free, upgrade_row)
 from farmbot.tasks.builder import restore_view
 from farmbot.tasks.search import Loot
-from farmbot.tasks.village import _close_windows
+from farmbot.tasks.village import _close_windows, deselect
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +134,7 @@ def _leave(game: Game, view: np.ndarray | None = None) -> None:
     view starts from the village's, so put it back (to ``view``, a picture
     of it, if given; else to the middle)."""
     _close_windows(game)
+    deselect(game)  # a pinch on what's still selected would move it
     game.zoom_out()
     if view is None:
         game.center_view()
@@ -206,11 +207,13 @@ def _research(game: Game, budget: dict[str, int], read_resources: Reader, lst: B
 
 def _pets(game: Game, budget: dict[str, int], read_resources: Reader) -> int:
     open_tab(game, "pets")
-    if busy(game):
+    # The tab's counter ("0/1") says so even when the pet's bar under way is
+    # green rather than grey.
+    if busy(game) or tab_free(game, "pets") == 0:
         log.info("Upgrades: the pet house is busy")
         return 0
     # The pets tab has no filter, and only a few rows: the dearest that fits.
     affordable = [r for r in rows(game, ("dark",)) if r.price <= budget["dark"]]
     if not affordable:
         return 0
-    return int(_spend(game, max(affordable, key=lambda r: r.price), budget, read_resources, "a pet", HOME))
+    return int(_spend(game, max(affordable, key=lambda r: r.price), budget, read_resources, "pet", HOME))

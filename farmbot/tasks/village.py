@@ -393,6 +393,7 @@ def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Lo
         for i, kind in enumerate(budget):
             if i:  # the last pass spent some: read again with the list closed
                 _close_windows(game)
+                deselect(game)
                 game.zoom_out()
                 loot = read_resources()
                 if loot is None or getattr(loot, kind) <= keep[kind]:
@@ -403,6 +404,7 @@ def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Lo
         # Selecting a wall moved the camera to it and zoomed in: the next
         # battle's view starts from the village's, so put it back.
         _close_windows(game)
+        deselect(game)
         game.zoom_out()
         game.center_view()
 
@@ -469,6 +471,7 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., L
     after = read_resources(round(HUD_SHIFT * entry.h))
     if after is None:
         _close_windows(game)
+        deselect(game)
         game.zoom_out()
         after = read_resources()
     if after is None:
@@ -550,6 +553,17 @@ def _close_windows(game: Game) -> None:
         if not game.click(T.CLOSE):
             break
         game.wait(0.8)
+
+
+def deselect(game: Game) -> None:
+    """Leave nothing selected: the walls just upgraded stay selected once
+    the windows are closed, and a pinch whose finger lands on one moves it
+    instead of zooming (seen on LDPlayer). Opening the Build list and
+    closing it again drops the selection (Back would ask to quit the game)."""
+    game.refresh()
+    if game.click(T.BUILD) and game.wait_for(T.CLOSE, timeout=4):
+        game.wait(0.5)
+        _close_windows(game)
 
 
 CART_BELOW_LABEL = 1.9  # the cart sits this many label heights below its label

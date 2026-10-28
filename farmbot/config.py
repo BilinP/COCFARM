@@ -16,16 +16,19 @@ from typing import Any
 from farmbot.geometry import Rect
 
 SIDES = ("nw", "ne", "sw", "se")
+EMULATORS = ("bluestacks", "ldplayer", "mumu")  # device.mode values COCFARM finds, sets up and starts by itself
 
 
 @dataclass
 class DeviceConfig:
     # "bluestacks": find BlueStacks 5 and its ADB port automatically.
     # "ldplayer": find LDPlayer 9+ and its instance automatically.
+    # "mumu": find MuMu Player 12+ and its instance automatically.
     # "manual": connect to ``serial`` (any emulator or phone).
     mode: str = "bluestacks"
     ldplayer: str = ""  # install folder or name ("LDPlayer 9"); empty = the newest found
     ldplayer_index: int = 0  # which LDPlayer instance
+    mumu_index: int = 0  # which MuMu Player instance
     bluestacks_instance: str = ""  # display or internal name; empty = the main instance
     launch_emulator: bool = True  # start BlueStacks if it is not running
     launch_timeout: float = 120.0  # seconds to wait for it to boot
@@ -490,8 +493,8 @@ class Config:
             raise ValueError(f"unknown attack side(s) {bad}; use {SIDES}")
         if not self.attack.sides:
             raise ValueError("attack.sides needs at least one side")
-        if self.device.mode not in ("bluestacks", "ldplayer", "manual"):
-            raise ValueError('device.mode must be "bluestacks", "ldplayer" or "manual"')
+        if self.device.mode not in EMULATORS + ("manual",):
+            raise ValueError('device.mode must be "bluestacks", "ldplayer", "mumu" or "manual"')
         bad_kinds = [k for k in self.bot.stop_when_full if k not in RESOURCES]
         if bad_kinds:
             raise ValueError(f"bot.stop_when_full: unknown {bad_kinds}; use {RESOURCES}")

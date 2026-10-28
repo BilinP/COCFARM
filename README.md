@@ -6,7 +6,7 @@
 <img src="farmbot/assets/cocfarm.png" alt="COCFARM logo" width="96" align="right">
 
 **A Clash of Clans farming bot for Windows.** It plays the game for you on an
-Android emulator (BlueStacks or LDPlayer): it attacks, collects your loot and
+Android emulator (BlueStacks, LDPlayer or MuMu Player): it attacks, collects your loot and
 looks after your village, in **both the home village and the builder base**.
 
 [![windows-exe](https://github.com/BilinP/COCFARM/actions/workflows/windows-exe.yml/badge.svg)](https://github.com/BilinP/COCFARM/actions/workflows/windows-exe.yml)
@@ -33,8 +33,9 @@ looks after your village, in **both the home village and the builder base**.
 
 ## Get started
 
-1. **Install an emulator** ([BlueStacks 5](https://www.bluestacks.com/), or
-   [LDPlayer 9 or 14](https://www.ldplayer.net/)) and sign in to Clash of Clans in it.
+1. **Install an emulator** ([BlueStacks 5](https://www.bluestacks.com/),
+   [LDPlayer 9 or 14](https://www.ldplayer.net/), or [MuMu Player](https://www.mumuplayer.com/))
+   and sign in to Clash of Clans in it.
 2. **Download COCFARM.** Get `COCFARM-windows.zip` from the
    [latest release](https://github.com/BilinP/COCFARM/releases/latest) and unzip it anywhere.
 3. **Open `COCFARM.exe`.** If Windows warns you, click **More info → Run anyway**.
@@ -55,10 +56,12 @@ Home village and builder base attacks were tested live on each of these (COCFARM
 | BlueStacks 5 | 5.22.110.1028 (Pie 64-bit) | 9 |
 | LDPlayer 9 | 9.5.25.0 | 9 |
 | LDPlayer 14 | 14.0.29.2 | 14 |
+| MuMu Player | 6.8.9.0 (COCFARM 0.9.0) | 15 |
 
 Other versions will likely work too. If yours doesn't, please
 [report it](https://github.com/BilinP/COCFARM/issues/new/choose) with the emulator and its version.
 Run one emulator at a time: BlueStacks and LDPlayer use the same connection port.
+COCFARM sets the emulator's screen (860 × 672), CPU cores and memory by itself; you can turn that off under **Advanced**.
 
 ## A quick look
 

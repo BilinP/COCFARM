@@ -214,6 +214,7 @@ PAN_SURE = 0.6
 PAN_STILL = 8
 PAN_TRIES = 3
 PAN_MS = 900  # slow, so the map doesn't keep sliding after the finger lifts
+PAN_LEAST = 80  # px: shorter drags count as taps in the game
 
 
 def view_change(before: np.ndarray, after: np.ndarray) -> float:
@@ -228,6 +229,37 @@ def view_change(before: np.ndarray, after: np.ndarray) -> float:
 
 class Stopped(Exception):
     """Raised inside long waits when the bot is asked to stop."""
+
+
+# Matching two pictures of the map by features (they only need to overlap
+# in part): how far the camera moved between them.
+VIEW_AREA = (150, 240, 1000, 760)  # x0, y0, x1, y1: the map, clear of the buttons, trophies and resource bars
+VIEW_FEATURES = 1500
+VIEW_RATIO = 0.75  # Lowe's ratio test
+VIEW_AGREE = 15  # matches that must agree on the shift (within VIEW_NEAR px)
+VIEW_NEAR = 6
+
+
+def view_shift(reference: np.ndarray, screen: np.ndarray) -> tuple[int, int] | None:
+    """How far the map has moved from ``reference`` to ``screen`` (what was
+    at p is now at p + shift), or ``None`` if they don't overlap enough."""
+    x0, y0, x1, y1 = VIEW_AREA
+    mask = np.zeros(reference.shape[:2], np.uint8)
+    mask[y0:y1, x0:x1] = 255
+    orb = cv2.ORB_create(VIEW_FEATURES)
+    k1, d1 = orb.detectAndCompute(cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY), mask)
+    k2, d2 = orb.detectAndCompute(cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY), mask)
+    if d1 is None or d2 is None or len(k1) < 2 or len(k2) < 2:
+        return None
+    pairs = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(d1, d2, k=2)
+    good = [p[0] for p in pairs if len(p) == 2 and p[0].distance < VIEW_RATIO * p[1].distance]
+    if len(good) < VIEW_AGREE:
+        return None
+    shifts = np.array([np.subtract(k2[m.trainIdx].pt, k1[m.queryIdx].pt) for m in good])
+    shift = np.median(shifts, axis=0)
+    if int(np.sum(np.all(np.abs(shifts - shift) <= VIEW_NEAR, axis=1))) < VIEW_AGREE:
+        return None
+    return round(shift[0]), round(shift[1])
 
 
 class Game:
@@ -260,6 +292,9 @@ class Game:
         vision.fixed_scales = set(self.picture_scales)
         self.raw: np.ndarray | None = None
         self.screen: np.ndarray | None = None
+        # Each village's view once centred (measured the first time in a run):
+        # later centring drags straight back to it.
+        self.centred_views: dict[str, np.ndarray] = {}
         # When each anchor last failed to give the UI scale. Measuring takes about a second, so while
         # the game loads it's tried again every CALIBRATE_RETRY seconds, not on every screenshot.
         self._calibration_tried: dict[str, float] = {}
@@ -430,14 +465,22 @@ class Game:
             before = after
         return True
 
-    def center_view(self) -> bool:
+    def center_view(self, village: str = "home") -> bool:
         """Drag the map so the view sits in the middle of its range.
 
         The game keeps the camera where it was left, and a view dragged to
         one side (by a stray touch, or by zooming out around an off-centre
-        spot) hides part of the base. The map is dragged to one end and then
-        the other, measuring how far the picture moves, and then back to
-        halfway. False if the picture couldn't be followed (a popup, say)."""
+        spot) hides part of the base. The first time in a run, the map is
+        dragged to one end and then the other, measuring how far the
+        picture moves, and then back to halfway; that view is kept (per
+        ``village``), and after that the map is dragged straight back to it.
+        False if the picture couldn't be followed (a popup, say)."""
+        centred = self.centred_views.get(village)
+        if centred is not None:
+            if self._back_to(centred):
+                return True
+            log.info("Centring the view: can't find the centred view (another zoom?); measuring again")
+            del self.centred_views[village]
         prev = self.refresh().copy()
         # Drags no longer than keeps the followed piece of the map on screen
         # (a short screen, such as a phone's, has less room above and below it).
@@ -456,8 +499,34 @@ class Game:
         move = [round((lo + hi) / 2 - p) for lo, hi, p in zip(low, high, pos)]
         log.info("Centring the view: range %dx%d px, moving it %s", high[0] - low[0], high[1] - low[1], tuple(move))
         if max(map(abs, move)) >= PAN_STILL:
-            self._drag_view(prev, *move)
+            self._pan(*move)
+        self.centred_views[village] = self.refresh().copy()
         return True
+
+    def _back_to(self, centred: np.ndarray) -> bool:
+        """Drag the map back to the ``centred`` view. False if it can't be
+        found in the screen (zoomed differently, or a window over it)."""
+        for _ in range(PAN_TRIES):
+            shift = view_shift(centred, self.refresh())
+            if shift is None:
+                return False
+            if max(map(abs, shift)) < PAN_STILL:
+                log.info("Centring the view: back where it was centred")
+                return True
+            self._pan(-shift[0], -shift[1])
+        return False
+
+    def _pan(self, dx: int, dy: int) -> None:
+        """Move the picture by (dx, dy) with drags none of which is short
+        enough to count as a tap (which selects, and a drag starting on a
+        selected building moves it): a small move goes out and back."""
+        moves = [(dx, dy)]
+        if np.hypot(dx, dy) < PAN_LEAST:
+            moves = [(dx + PAN_LEAST, dy), (-PAN_LEAST, 0)]
+        cx, cy = PAN_CENTER
+        for mx, my in moves:
+            self.swipe(cx - mx // 2, cy - my // 2, cx + mx // 2, cy + my // 2, PAN_MS)
+            self.wait(0.8)
 
     def _drag_view(self, before: np.ndarray, dx: int, dy: int):
         """Drag the map by (dx, dy) bot px. Returns how far the picture

@@ -126,7 +126,7 @@ RULES = [
     (r"instance .* not found|has no instance",
      "The emulator instance picked in Setup doesn't exist",
      "COCFARM doesn't know which emulator window to play in.", "setup", "Open Setup"),
-    (r"(BlueStacks|LDPlayer)[^.]* (was )?not found|not installed",
+    (r"(BlueStacks|LDPlayer|MuMu)[^.]* (was )?not found|not installed",
      "COCFARM can't find {emulator}",
      "The game runs inside the emulator, so nothing can be played. Install it, or pick the other one.",
      "setup", "Open Setup"),

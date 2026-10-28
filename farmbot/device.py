@@ -14,7 +14,7 @@ import struct
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Protocol
 
 import cv2
@@ -92,6 +92,10 @@ class TouchScreen:
     slots: bool = False
     btn_touch: bool = False  # it reports BTN_TOUCH (key 014a) with each touch
     pressure: int = 0  # ABS_MT_PRESSURE's maximum (003a); 0: it has none
+    # The display's rotation (1: 90 degrees, 3: 270) when the touchscreen's
+    # axes are the device's natural portrait ones and the screen shows
+    # landscape (MuMu): positions are turned to match. 0: as the screen.
+    rotation: int = 0
 
 
 def parse_touchscreen(getevent: str, event_size: int = 24) -> TouchScreen | None:
@@ -138,8 +142,21 @@ def _packer(touch: TouchScreen):
 
 def _scaled(x: float, y: float, size: tuple[int, int], touch: TouchScreen) -> tuple[int, int]:
     w, h = size
-    return (round(min(max(x, 0), w - 1) * touch.max_x / max(w - 1, 1)),
-            round(min(max(y, 0), h - 1) * touch.max_y / max(h - 1, 1)))
+    x, y = min(max(x, 0), w - 1), min(max(y, 0), h - 1)
+    if touch.rotation == 1:  # the screen's x runs down the touchscreen, its y right to left
+        return round((h - 1 - y) * touch.max_x / max(h - 1, 1)), round(x * touch.max_y / max(w - 1, 1))
+    if touch.rotation == 3:
+        return round(y * touch.max_x / max(h - 1, 1)), round((w - 1 - x) * touch.max_y / max(w - 1, 1))
+    return round(x * touch.max_x / max(w - 1, 1)), round(y * touch.max_y / max(h - 1, 1))
+
+
+def _rotation(dumpsys: str) -> int:
+    """The display's rotation (0-3) from ``dumpsys window displays``."""
+    found = re.search(r"mCurrentRotation=(?:ROTATION_)?(\d+)", dumpsys)
+    if not found:
+        return 1
+    value = int(found.group(1))
+    return value // 90 if value >= 90 else value
 
 
 def tap_events(touch: TouchScreen) -> int:
@@ -303,6 +320,11 @@ class AdbDevice:
                 found = parse_touchscreen(self.shell("getevent", "-p"), 24 if "64" in abi else 16)
                 if found:
                     self._dd = "no such tool" not in self.shell("echo | dd of=/dev/null 2>&1; true").lower()
+                    if not self._size:
+                        self.screenshot()
+                    w, h = self._size
+                    if (found.max_x > found.max_y) != (w > h) and found.max_x != found.max_y:
+                        found = replace(found, rotation=_rotation(self.shell("dumpsys", "window", "displays")))
             except DeviceError:
                 found = None
             log.info("Touchscreen: %s%s", found, "" if self._dd else " (no dd: writing with tail and head)")

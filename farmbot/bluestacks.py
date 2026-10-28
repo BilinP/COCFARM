@@ -281,6 +281,10 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
         from farmbot import ldplayer
 
         return ldplayer.open_device(cfg, sleep=sleep, clock=clock)
+    if cfg.mode == "mumu":
+        from farmbot import mumu
+
+        return mumu.open_device(cfg, sleep=sleep, clock=clock)
     install = find() if cfg.mode == "bluestacks" or cfg.adb_path in ("", "adb") else None
     adb = adb_program(cfg, install)
     if cfg.mode == "manual":
@@ -360,6 +364,10 @@ def restart_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sl
         from farmbot import ldplayer
 
         ldplayer.quit_instance(cfg)
+    elif cfg.mode == "mumu":
+        from farmbot import mumu
+
+        mumu.quit_instance(cfg)
     elif cfg.mode == "bluestacks":
         log.warning("Closing BlueStacks to start it again")
         stop_player(sleep)

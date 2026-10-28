@@ -148,6 +148,7 @@ FIELDS = [
     Field("device.memory", "int", 2048, 8192),
     Field("device.ldplayer", "text"),
     Field("device.ldplayer_index", "int", 0, 99),
+    Field("device.mumu_index", "int", 0, 99),
     Field("device.serial", "text"),
     Field("device.adb_path", "text"),
 ]
