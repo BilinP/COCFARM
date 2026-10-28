@@ -113,10 +113,8 @@ PICTURES: list[Picture] = [
             "Upgrading walls"),
     Picture(T.UPGRADE_MORE, "Upgrade More", "A selected wall: the words \"Upgrade More\" (both lines).",
             "Upgrading walls"),
-    Picture(T.ADD_WALL, "Add Wall +1", "After Upgrade More: the green \"+1\" on the Add Wall button.",
-            "Upgrading walls"),
-    Picture(T.ADD_WALLS_10, "Add Wall +10", "After Upgrade More: the green \"+10\" on the other Add Wall button.",
-            "Upgrading walls"),
+    Picture(T.ADD_WALL, "Add Wall", "After Upgrade More: the words \"Add Wall\" under a button (the same on "
+            "both, +10 and +1, at every wall level).", "Upgrading walls"),
     Picture(T.LIST_FILTER, "List filter", "Build list, left of its title: the slider button.", "Upgrading walls"),
     Picture(T.SORT_COST_MIN, "Cost Min", "Build list filter menu: the word \"Min\" of Cost Min.", "Upgrading walls"),
     Picture(T.SORT_COST_MAX, "Cost Max", "Build list filter menu: the word \"Max\" of Cost Max.", "Upgrading walls"),

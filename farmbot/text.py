@@ -83,6 +83,23 @@ def digit_groups(boxes: list[tuple[int, int]]) -> list[int] | None:
     return groups
 
 
+def _number_run(found: list[tuple[int, np.ndarray]]) -> list[tuple[int, np.ndarray]]:
+    """The pieces of the number: split where there's a wide gap (an icon
+    either side of it, such as the builder base's boat behind the resource
+    bars, left of the digits), the run with the most pieces (the first of
+    equal ones)."""
+    if not found:
+        return found
+    widths = [mask.shape[1] for _, mask in found]
+    width = float(np.median([w for w in widths if w > 0.5 * max(widths)] or [1]))
+    runs = [[found[0]]]
+    for (x0, m0), piece in zip(found, found[1:]):
+        if piece[0] - (x0 + m0.shape[1]) > 2 * width:
+            runs.append([])
+        runs[-1].append(piece)
+    return max(runs, key=len)
+
+
 def _normalize(mask: np.ndarray) -> np.ndarray:
     resized = cv2.resize(mask, GLYPH_BOX, interpolation=cv2.INTER_AREA)
     return (resized >= 128).astype(np.float32)
@@ -154,7 +171,7 @@ class Font:
         confidence: a character inside it isn't recognised, or the digit
         grouping is wrong. Unlike :meth:`read`, nothing is silently dropped,
         so a hard-to-see digit can't turn 241 953 into 24 953."""
-        found = pieces(screen, region, style)
+        found = _number_run(pieces(screen, region, style))
         groups = digit_groups([(x, mask.shape[1]) for x, mask in found])
         if groups is None:
             return None

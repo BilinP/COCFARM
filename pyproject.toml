@@ -27,7 +27,7 @@ cocfarm = "farmbot.cli:gui_main"  # the GUI without a console window
 include = ["farmbot*"]
 
 [tool.setuptools.package-data]
-farmbot = ["assets/*.png", "profiles/*.toml"]
+farmbot = ["assets/*.png", "profiles/*.toml", "ocr.ps1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

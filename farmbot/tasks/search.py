@@ -103,6 +103,7 @@ def own_resources(game: Game, regions: RegionsConfig, shift: int = 0) -> Loot | 
 MAX_STYLE = TextStyle(min_height_ratio=0.85)
 MAX_ROW = (33, 30)  # top and height of the "Max:" row, below the bar's middle
 MAX_SPAN = (190, 40)  # the row reaches this far left of the bar's number and right of it
+LEAST_STORAGE = 1000  # no storage holds less (a town hall 1's gold storage holds 1 500)
 
 
 def _max_region(game: Game, regions: RegionsConfig, kind: str) -> Rect:
@@ -146,11 +147,17 @@ def storage_maxes(game: Game, regions: RegionsConfig, kinds: tuple[str, ...] = (
     game.refresh()
     maxes = {}
     for kind in kinds:
-        if _own(game, regions, f"own_{kind}") is None:
+        held = _own(game, regions, f"own_{kind}")
+        if held is None:
             continue  # no such bar
         most = storage_max(game, regions, kind)
-        if most:
+        # A misread size (say, numbers read at the wrong place before the
+        # UI's scale is known) would make that storage look full, or keep
+        # nothing of it: only a size that can hold what's in it is kept.
+        if most and most >= max(held, LEAST_STORAGE):
             maxes[kind] = most
+        elif most:
+            log.info("Storage size read as %s for %s holding %s: not believed", f"{most:,}", kind, f"{held:,}")
     return maxes
 
 

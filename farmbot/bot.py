@@ -8,7 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable
 
-from farmbot import history, screens
+from farmbot import accounts, history, screens
 from farmbot.notify import Notifier
 from farmbot.config import Config
 from farmbot.game import Game, Stopped, T
@@ -41,6 +41,7 @@ class Bot:
         reopen_device: Callable[[], object] | None = None,
         notifier: Notifier | None = None,
         on_storage_max: Callable[[str, dict[str, int]], None] | None = None,
+        on_account: Callable[[object], str | None] | None = None,
     ):
         self.game = game
         self.config = config
@@ -56,6 +57,11 @@ class Bot:
         self._next_request: float | None = None  # clock time the next troop request is due
         self._in_clan: bool | None = None  # checked once per run, in the chat
         self._on_resources = on_resources
+        # Profiles: given the player name's picture, puts that account's
+        # settings in place and returns its profile (None: not sure).
+        self._on_account = on_account
+        self._account: str | None = None
+        self._account_mask = None  # the name seen when the profile was last picked
         self._on_attack = on_attack
         self._on_builder = on_builder
         self._on_storage_max = on_storage_max
@@ -68,6 +74,8 @@ class Bot:
         self.auto_village: str | None = None
         self.full_villages: set[str] = set()
         self._since_cart = 0  # builder battles since the elixir cart was last emptied
+        self._since_collect: int | None = None  # builder battles since the collectors were emptied
+        self._since_home_collect: int | None = None  # home village rounds since the collectors were emptied
         self._cart_due: int | None = None  # battles between cart visits, picked at random
         # Watchdog: restarting the game is tried first; if the errors carry on
         # (or ADB itself fails), the emulator is closed and opened again.
@@ -81,6 +89,40 @@ class Bot:
         # time the bot is in that village each day (upgraded storages hold
         # more); a failed reading is tried again the next rounds, a few times.
         self._storage_max_reads: dict[str, tuple[date, int, bool]] = {}  # village -> (day, tries, read)
+
+    def check_account(self) -> bool:
+        """With profiles on, after ``screens.settle``: if another account
+        is in the game, switch to its profile. True if the settings changed."""
+        if self._on_account is None:
+            return False
+        mask = accounts.name_mask(self.game.screen)
+        if mask is None:
+            return False
+        if self._account_mask is not None and accounts.likeness(mask, self._account_mask) >= accounts.SAME:
+            return False  # the same account as before
+        self.game.wait(1)  # a name half drawn, or a window opening over it, reads differently a second later
+        again = accounts.name_mask(self.game.refresh())
+        if again is None or accounts.likeness(mask, again) < accounts.SAME:
+            return False
+        name = self._on_account(mask)
+        if name is None:
+            return False
+        self._account_mask = mask
+        if name == self._account:
+            return False
+        first, self._account = self._account is None, name
+        log.info("Account: profile %s", name)
+        self.status(f"Playing with profile {name}")
+        if not first:  # what the bot learnt about the last account
+            self.resources = None
+            self.storage_full = False
+            self.auto_village = None
+            self.full_villages = set()
+            self._storage_max_reads = {}
+            self._since_collect = self._since_home_collect = None
+            self._in_clan = self._next_request = None
+            self._view_centred = False
+        return True
 
     def status(self, text: str) -> None:
         log.debug("Status: %s", text)
@@ -225,22 +267,35 @@ class Bot:
         return loot
 
     def read_storage_max(self, village: str = "home") -> None:
-        """What the ``village``'s storages hold, if not read yet today (and
-        not set by hand: storage.read / storage.builder_read off)."""
-        if not (self.config.storage.read if village == "home" else self.config.storage.builder_read):
+        """What the ``village``'s storages hold, if not read yet today or one
+        of the amounts is missing (cleared after switching accounts, say),
+        and not set by hand: storage.read / storage.builder_read off."""
+        storage = self.config.storage
+        if not (storage.read if village == "home" else storage.builder_read):
             return
         today = self._now().date()
+        read_on = "read_on" if village == "home" else "builder_read_on"
+        if getattr(storage, read_on) == today.isoformat() and {"gold", "elixir"} <= set(storage.of(village)):
+            return  # read today (kept in the settings, so a new start doesn't read it again)
         day, tries, read = self._storage_max_reads.get(village, (None, 0, False))
         if day != today:
             tries, read = 0, False
-        if read or tries >= STORAGE_MAX_TRIES:
+        if tries >= STORAGE_MAX_TRIES:
             return
-        kinds = ("gold", "elixir", "dark") if village == "home" else ("gold", "elixir")  # then gems
+        # Only in that village: the home village's third bar is dark elixir, the builder base's is gems,
+        # and tapping the gem bar opens the Shop.
+        wanted = screens.Screen.HOME if village == "home" else screens.Screen.BUILDER
+        if screens.identify(self.game) is not wanted:
+            log.info("Not reading what the storages hold: not in the %s", wanted.value)
+            return
+        kinds =("gold", "elixir", "dark") if village == "home" else ("gold", "elixir")  # then gems
         maxes = search.storage_maxes(self.game, self.config.regions, kinds)
         read = {"gold", "elixir"} <= set(maxes)  # dark elixir only from town hall 7
         self._storage_max_reads[village] = (today, tries + 1, read)
+        if read:
+            setattr(storage, read_on, today.isoformat())
         if maxes:
-            self.config.storage.set(village, maxes)
+            storage.set(village, maxes)
             if self._on_storage_max:
                 self._on_storage_max(village, maxes)
         where = "Storages" if village == "home" else "Builder storages"
@@ -251,13 +306,14 @@ class Bot:
                      "trying again next round" if tries + 1 < STORAGE_MAX_TRIES else
                      "trying again tomorrow")
 
-    def full_storages(self, village: str = "home") -> set[str]:
+    def full_storages(self, village: str = "home", loot: Loot | None = None) -> set[str]:
         """Which of the ``village``'s storages are full: what's in them
-        against what they hold (a storage whose size isn't known never is)."""
+        (``loot`` if just read, else read now) against what they hold (a
+        storage whose size isn't known never is)."""
         maxes = self.config.storage.of(village)
         if not maxes:
             return set()
-        loot = self.read_resources()
+        loot = loot or self.read_resources()
         return set() if loot is None else search.full_by_amount(loot, maxes)
 
     def _settle_attack(self, after: Loot | None) -> None:
@@ -295,8 +351,14 @@ class Bot:
         self.read_storage_max()
         self.checkpoint()
         if cfg.bot.collect_resources:
-            kinds = tuple(k for k in ("gold", "elixir", "dark") if getattr(cfg.bot, f"collect_{k}"))
-            village.collect_resources(self.game, kinds)
+            # The first round of a session always collects.
+            if self._since_home_collect is None or self._since_home_collect + 1 >= cfg.bot.collect_every:
+                kinds = tuple(k for k in ("gold", "elixir", "dark") if getattr(cfg.bot, f"collect_{k}"))
+                village.collect_resources(self.game, kinds)
+                self._since_home_collect = 0
+            else:
+                self._since_home_collect += 1
+                log.info("Collectors: next in %d round(s)", cfg.bot.collect_every - self._since_home_collect)
         if cfg.bot.collect_loot_cart:
             village.collect_loot_cart(self.game)
         self.checkpoint()
@@ -365,12 +427,26 @@ class Bot:
         if screens.settle(self.game) is not screens.Screen.BUILDER:
             self.status("Sailing to the builder base")
             builder.go_to_builder_base(self.game)
+            self.game.refresh()
+        if self.check_account():
+            return self.cycle()
         village.clear_popups(self.game)
         bcfg = self.config.builder
         self.read_storage_max("builder")
         self.checkpoint()
         if bcfg.collect_resources:
-            builder.collect_resources(self.game)
+            # The first battle of a session always collects.
+            if self._since_collect is None or self._since_collect >= bcfg.collect_every:
+                # A full storage's collectors can't be emptied (tapping them selects them instead).
+                full = self.full_storages("builder")
+                kinds = tuple(k for k in ("gold", "elixir", "gems") if k not in full)
+                if {"gold", "elixir"} & set(kinds):
+                    builder.collect_resources(self.game, kinds=kinds)
+                else:
+                    log.info("Builder storages full: not collecting")
+                self._since_collect = 0
+            else:
+                log.info("Builder collectors: next in %d battle(s)", bcfg.collect_every - self._since_collect)
         if bcfg.upgrade:
             # Before walls (one builder is kept for them), and before mode
             # "auto" moves on: spending a full storage keeps this village going.
@@ -407,6 +483,8 @@ class Bot:
                                 on_stage=lambda n: self.status(f"Attacking (builder base): base {n}"))
         seconds = self.game.clock() - started
         self._since_cart += 1
+        if self._since_collect is not None:
+            self._since_collect += 1
         self.attacks += 1
         self.attacks_today += 1
         self._since_break += 1
@@ -435,6 +513,8 @@ class Bot:
         if self.playing() == "builder":
             return self.builder_cycle()
         where = screens.settle(self.game)  # deal with chests, rewards, results, popups...
+        if where in (screens.Screen.HOME, screens.Screen.BUILDER) and self.check_account():
+            return self.cycle()  # with that account's settings (which may farm the other village)
         if where is screens.Screen.BUILDER:
             # The game can open in the builder base (it opens where it was left).
             self.status("Sailing to the home village")
@@ -443,7 +523,7 @@ class Bot:
         self.maintain_village()
         before = self.read_resources()
         wanted = cfg.bot.stop_when_full
-        if wanted and set(wanted) <= self.full_storages():
+        if wanted and set(wanted) <= self.full_storages(loot=before):
             if cfg.bot.mode == "auto":  # on to the builder base instead of stopping
                 self._village_full("home")
                 return False

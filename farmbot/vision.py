@@ -93,16 +93,59 @@ def match_template(
     th, tw = template.shape[:2]
     if area.shape[0] < th or area.shape[1] < tw:
         return []
-    scores = cv2.matchTemplate(area, template, cv2.TM_CCOEFF_NORMED)
-    ys, xs = np.where(scores >= threshold)
-    order = np.argsort(-scores[ys, xs])
+    hits = _coarse_hits(area, template, threshold)
+    if hits is None:
+        scores = cv2.matchTemplate(area, template, cv2.TM_CCOEFF_NORMED)
+        ys, xs = np.where(scores >= threshold)
+        hits = [(float(scores[y, x]), int(x), int(y)) for y, x in zip(ys, xs)]
+    hits.sort(key=lambda h: -h[0])
     spacing = min_distance if min_distance is not None else max(1, min(tw, th) // 2)
     kept: list[Match] = []
-    for i in order:
-        cx, cy = int(xs[i]) + ox + tw // 2, int(ys[i]) + oy + th // 2
+    for score, x, y in hits:
+        cx, cy = x + ox + tw // 2, y + oy + th // 2
         if all(abs(cx - m.x) >= spacing or abs(cy - m.y) >= spacing for m in kept):
-            kept.append(Match(name, cx, cy, float(scores[ys[i], xs[i]]), tw, th))
+            kept.append(Match(name, cx, cy, score, tw, th))
     return kept
+
+
+# Coarse to fine: a picture is looked for on a half-size screen first (about
+# a sixth of the work), and only the spots that come near are scored at full
+# size, so the scores (and what passes) are the full-size ones. A picture
+# that's there scores well above COARSE_DROP below the threshold at half
+# size; small pictures (blurred to nothing at half size) are matched in full.
+COARSE_MIN = 16  # px: a picture's smaller side for the coarse look
+COARSE_DROP = 0.2
+COARSE_PAD = 3  # px around a coarse spot (full size) searched again in full
+COARSE_MAX_SPOTS = 150  # more than this near: match in full (each spot is a tiny match, so many are still quicker)
+
+
+def _coarse_hits(area: np.ndarray, template: np.ndarray, threshold: float) -> list[tuple[float, int, int]] | None:
+    """``(score, x, y)`` of every full-size position scoring ``threshold``
+    or more (top-left corners in ``area``), found coarse to fine; ``None``
+    when the picture is too small for it, or too much comes near."""
+    th, tw = template.shape[:2]
+    if min(th, tw) < COARSE_MIN or min(area.shape[:2]) < 2 * min(th, tw):
+        return None
+    small = cv2.resize(area, (area.shape[1] // 2, area.shape[0] // 2), interpolation=cv2.INTER_AREA)
+    tsmall = cv2.resize(template, (tw // 2, th // 2), interpolation=cv2.INTER_AREA)
+    coarse = cv2.matchTemplate(small, tsmall, cv2.TM_CCOEFF_NORMED)
+    near = coarse >= threshold - COARSE_DROP
+    if not near.any():
+        return []
+    # One spot per neighbourhood: the best of each 3 x 3 block of coarse positions.
+    peaks = near & (coarse == cv2.dilate(coarse, np.ones((3, 3), np.uint8)))
+    ys, xs = np.nonzero(peaks)
+    if len(xs) > COARSE_MAX_SPOTS:
+        return None
+    found: dict[tuple[int, int], float] = {}
+    h, w = area.shape[:2]
+    for sx, sy in zip(xs, ys):
+        x0, y0 = max(2 * int(sx) - COARSE_PAD, 0), max(2 * int(sy) - COARSE_PAD, 0)
+        x1, y1 = min(2 * int(sx) + COARSE_PAD + 2 + tw, w), min(2 * int(sy) + COARSE_PAD + 2 + th, h)
+        scores = cv2.matchTemplate(area[y0:y1, x0:x1], template, cv2.TM_CCOEFF_NORMED)
+        for y, x in zip(*np.nonzero(scores >= threshold)):
+            found[(x0 + int(x), y0 + int(y))] = float(scores[y, x])
+    return [(score, x, y) for (x, y), score in found.items()]
 
 
 # Most buttons are drawn at the HUD's scale, but some windows (such as the
@@ -175,6 +218,10 @@ class Vision:
         for tname, image in self.library.get(name):
             cached = self.scales.get(tname, 1.0)
             found = match_template(screen, _resized(image, cached), threshold, region, tname)
+            if found and tname not in self.scales:
+                # Seen at its own size: later misses mean it isn't there, so
+                # they skip the look at the window size below (half the work).
+                self.scales[tname] = 1.0
             if not found and cached != 1.0 and tname not in self.fixed_scales:
                 # A size learned once (say, mid-animation) can be wrong for
                 # good: fall back to the picture's own size.
@@ -183,7 +230,7 @@ class Vision:
                     self.scales[tname] = 1.0
             if not found and self.adaptive and tname not in self.scales and self.window_scale != 1.0 \
                     and self._ready(tname) \
-                    and _score(screen, _resized(image, self.window_scale), region) >= threshold - ADAPTIVE_NEAR:
+                    and match_template(screen, _resized(image, self.window_scale), threshold - ADAPTIVE_NEAR, region):
                 # Most misses are buttons that simply aren't on screen: one
                 # look at the window size rules them out before the fine search.
                 scale, score = best_scale(screen, image, [1.0, self.window_scale], region)
@@ -194,6 +241,10 @@ class Vision:
                     self._rest[tname] = ADAPTIVE_REST
             matches.extend(found)
         return sorted(matches, key=lambda m: -m.score)
+
+    def likeness(self, screen: np.ndarray, image: np.ndarray) -> float:
+        """Best score of ``image`` at its own size or the window's."""
+        return max(_score(screen, _resized(image, s)) for s in {1.0, self.window_scale})
 
     def _ready(self, tname: str) -> bool:
         """Whether a fine size search for ``tname`` may run now (after one

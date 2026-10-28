@@ -13,7 +13,7 @@ import numpy as np
 
 from farmbot.device import Device
 from farmbot.geometry import Rect
-from farmbot.vision import Match, Vision, match_template
+from farmbot.vision import Match, Vision, _resized, best_scale, match_template
 
 log = logging.getLogger(__name__)
 
@@ -108,8 +108,10 @@ class T:
     UPGRADE = "buttons/upgrade"  # under a selected building (gold and elixir versions look alike)
     UPGRADE_CONFIRM = "buttons/upgrade_confirm"  # "Confirm" in the upgrade window
     UPGRADE_MORE = "buttons/upgrade_more"  # under a selected wall: starts picking more of its level
-    ADD_WALL = "buttons/add_wall"  # then: the green "+1" on Add Wall
-    ADD_WALLS_10 = "buttons/add_wall_10"  # the green "+10" on the other Add Wall
+    # then: the words "Add Wall" under the +10 button (left) and the +1 one (only +1
+    # when fewer than ten walls of that level are left). The words, not the
+    # buttons' wall pictures: those look different at every wall level.
+    ADD_WALL = "buttons/add_wall"
     # The Buildings & Heroes list's filter menu (the slider button left of its
     # title). The buttons light up yellow when on; the resource and type
     # ones aren't used yet (for upgrading other things later).
@@ -189,6 +191,14 @@ class T:
 # differently; Vision finds their buttons' sizes on its own.)
 ANCHORS = [T.BATTLE, T.NEXT, T.END_BATTLE]
 
+# The buttons under a selected building change size with the layout: with
+# the Buildings & Heroes list open they move into two rows, drawn about 1.3x
+# (the wall's Upgrade, Upgrade More, Add Wall). When one isn't found at the
+# usual sizes these are tried too, and the size that matched is tried first
+# from then on.
+ANY_SIZE = {T.UPGRADE, T.UPGRADE_MORE, T.ADD_WALL}
+ANY_SIZES = (1.3, 1.2, 1.1, 1.4, 0.85)
+
 # Zooming out: pinches at most, and the change (mean grey level, 0-255)
 # below which the view has stopped moving.
 ZOOM_PASSES = 3
@@ -198,7 +208,8 @@ VIEW_STILL = 3.0
 # a match must be, and the move below which the view counts as still.
 PAN_CENTER = (588, 420)
 PAN_DRAG = (420, 300)
-PAN_PATCH = (330, 560, 430, 750)
+PAN_PATCH = (330, 560, 430, 750)  # its height; it's placed in the middle of the screen's
+PAN_MARGIN = 20  # px kept between the followed piece, dragged, and the screen's edge
 PAN_SURE = 0.6
 PAN_STILL = 8
 PAN_TRIES = 3
@@ -252,6 +263,10 @@ class Game:
         # When each anchor last failed to give the UI scale. Measuring takes about a second, so while
         # the game loads it's tried again every CALIBRATE_RETRY seconds, not on every screenshot.
         self._calibration_tried: dict[str, float] = {}
+        self._any_sizes: dict[str, float] = {}  # ANY_SIZE picture -> the size it last matched at
+        # Finds on the screenshot in ``_seen_on``: (name, threshold, region) -> matches.
+        self._seen_on: np.ndarray | None = None
+        self._seen: dict[tuple, list[Match]] = {}
 
     # -- timing ---------------------------------------------------------
     def wait(self, seconds: float) -> None:
@@ -319,7 +334,45 @@ class Game:
         screen = self._current()
         if not self.ui_scale and name in ANCHORS and self._calibrate(name):
             screen = self.screen
-        return self.vision.find_all(screen, name, threshold, region)
+        # The same look at the same screenshot (the screen check, then the
+        # step that acts on it, say) is answered from the first one.
+        if self._seen_on is not screen:
+            self._seen_on, self._seen = screen, {}
+        key = (name, threshold, region)
+        if key not in self._seen:
+            found = self.vision.find_all(screen, name, threshold, region)
+            if not found and name in ANY_SIZE:
+                found = self._find_any_size(screen, name, threshold, region)
+            self._seen[key] = found
+        return list(self._seen[key])
+
+    def _find_any_size(self, screen: np.ndarray, name: str, threshold: float | None,
+                       region: Rect | None) -> list[Match]:
+        """``name`` at a size near one of ANY_SIZES (the one that last
+        matched is tried first, on its own: quick)."""
+        threshold = self.vision.default_threshold if threshold is None else threshold
+        for tname, image in self.vision.library.get(name):
+            last = self._any_sizes.get(tname)
+            if last:
+                found = match_template(screen, _resized(image, last), threshold, region, tname)
+                if found:
+                    return found
+            size, score = best_scale(screen, image, list(ANY_SIZES), region)
+            if score >= threshold:
+                log.debug("%s found at %.2fx its picture's size", tname, size)
+                self._any_sizes[tname] = size
+                return match_template(screen, _resized(image, size), threshold, region, tname)
+        return []
+
+    def likeness(self, name: str) -> float:
+        """How close ``name``'s best picture comes to matching the screen
+        (0..1): for logs, when a button that should be there isn't found."""
+        if not self.has(name):
+            return 0.0
+        screen = self._current()
+        return max(max(self.vision.likeness(screen, image),
+                       best_scale(screen, image, list(ANY_SIZES))[1] if name in ANY_SIZE else 0.0)
+                   for _, image in self.vision.library.get(name))
 
     def read_number(self, region: Rect, font: str) -> int | None:
         return self.vision.read_number(self._current(), region, font)
@@ -386,10 +439,13 @@ class Game:
         the other, measuring how far the picture moves, and then back to
         halfway. False if the picture couldn't be followed (a popup, say)."""
         prev = self.refresh().copy()
+        # Drags no longer than keeps the followed piece of the map on screen
+        # (a short screen, such as a phone's, has less room above and below it).
+        drag_y = min(PAN_DRAG[1], (prev.shape[0] - (PAN_PATCH[1] - PAN_PATCH[0])) // 2 - PAN_MARGIN)
         pos, low, high = [0, 0], [0, 0], [0, 0]
         for sign in (1, -1):
             for _ in range(PAN_TRIES):
-                moved = self._drag_view(prev, sign * PAN_DRAG[0], sign * PAN_DRAG[1])
+                moved = self._drag_view(prev, sign * PAN_DRAG[0], sign * drag_y)
                 if moved is None:
                     return False
                 (dx, dy), prev = moved
@@ -411,7 +467,9 @@ class Game:
         self.wait(0.8)
         after = self.refresh().copy()
         y0, y1, x0, x1 = PAN_PATCH
-        if before.shape != after.shape or after.shape[0] < y1 or after.shape[1] < x1:
+        y0 = (after.shape[0] - (y1 - y0)) // 2  # in the middle of the screen's height, whatever it is
+        y1 = y0 + PAN_PATCH[1] - PAN_PATCH[0]
+        if before.shape != after.shape or y0 < 0 or after.shape[1] < x1:
             return None
         found = cv2.matchTemplate(after, before[y0:y1, x0:x1], cv2.TM_CCOEFF_NORMED)
         _, score, _, (x, y) = cv2.minMaxLoc(found)

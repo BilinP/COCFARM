@@ -419,6 +419,10 @@ class AdbDevice:
     def stop_app(self, package: str) -> None:
         self.shell("am", "force-stop", package)
 
+    def back(self) -> None:
+        """Android's back button: closes the game's open window."""
+        self.shell("input", "keyevent", "4")
+
     def foreground_package(self) -> str:
         out = self.shell("dumpsys", "window")
         for line in out.splitlines():

@@ -13,8 +13,9 @@ import cv2
 import numpy as np
 
 from farmbot import __version__, bluestacks, catalog, text
+from farmbot.accounts import load_active
 from farmbot.bot import Bot
-from farmbot.config import Config, ensure_config, load_config
+from farmbot.config import Config, ensure_config
 from farmbot.device import AdbDevice, DeviceError
 from farmbot.game import Game, T, normalize_screen
 from farmbot.geometry import Rect
@@ -26,8 +27,8 @@ def _config(args: argparse.Namespace) -> Config:
     # the starting profile on first run.
     if args.config is None:
         ensure_config("farmbot.toml")
-        return load_config("farmbot.toml")
-    return load_config(args.config)
+        return load_active("farmbot.toml")
+    return load_active(args.config)
 
 
 def _device(args: argparse.Namespace, cfg: Config) -> AdbDevice:

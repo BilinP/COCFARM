@@ -306,6 +306,7 @@ class BotConfig:
     collect_gold: bool = True
     collect_elixir: bool = True
     collect_dark: bool = True
+    collect_every: int = 7  # ...every N rounds (1 = each round); the first round after Start always collects
     collect_loot_cart: bool = True  # loot left over from defences, shown as a cart
     # Stop farming once all of these storages are full ("gold", "elixir", "dark").
     stop_when_full: list[str] = field(default_factory=list)
@@ -327,9 +328,8 @@ class WallsConfig:
     # Keep this share of what the storages hold; walls get the rest.
     keep_gold: float = 0.7
     keep_elixir: float = 0.7
-    max_per_round: int = 3  # walls upgraded between two attacks at most
-    # Which wall: "cheapest" (the list sorted Cost Min) or "first" (Cost Max:
-    # the dearest).
+    # Which wall: "cheapest" (the list sorted Cost Min) or "first" (the first
+    # one the list shows, unsorted: quicker).
     pick: str = "cheapest"
     # Only spend a resource on walls once its storages are full.
     only_when_full: bool = False
@@ -381,6 +381,9 @@ class BuilderConfig:
     stage_delay: float = 2.0  # wait for the second base to settle before deploying
     speed_up: bool = True  # press the 1x button so the battle plays at 4x
     collect_resources: bool = True  # empty the builder base gold mines, elixir collectors and gem mine
+    # ...every N battles (1 = before each one): looking means a trip over to
+    # the second base and back, and the collectors fill slowly.
+    collect_every: int = 7
     # Empty the elixir cart (defense rewards) every N battles, N picked at
     # random between these two each time.
     collect_cart: bool = True
@@ -392,7 +395,6 @@ class BuilderConfig:
     # Keep this share of what the builder storages hold; walls get the rest.
     walls_keep_gold: float = 0.2
     walls_keep_elixir: float = 0.2
-    walls_per_round: int = 3
     # Upgrade buildings, heroes and research once a builder storage is full
     # (as the home village's upgrade.*; one builder stays for the walls).
     upgrade: bool = False
@@ -420,16 +422,20 @@ RESOURCES = ("gold", "elixir", "dark")
 @dataclass
 class StorageConfig:
     """What your storages hold (0: not known yet). The bot reads it in the
-    game, the first time it's in that village each day; with ``read`` (or
-    ``builder_read``) off it keeps the amounts here instead."""
+    game, the first time it's in that village each day (kept here, so
+    starting again the same day doesn't read it again), and whenever an
+    amount is missing (cleared, say, after switching accounts); with
+    ``read`` (or ``builder_read``) off it keeps the amounts here instead."""
 
     gold: int = 0
     elixir: int = 0
     dark: int = 0
     read: bool = True
+    read_on: str = ""  # the day the home village's were last read (YYYY-MM-DD)
     builder_gold: int = 0
     builder_elixir: int = 0
     builder_read: bool = True
+    builder_read_on: str = ""
 
     def of(self, village: str) -> dict[str, int]:
         """The known amounts of ``village`` ("home" or "builder")."""
@@ -451,6 +457,15 @@ class StorageConfig:
 
 
 @dataclass
+class ProfilesConfig:
+    """One set of settings per Clash of Clans account (``farmbot/accounts.py``),
+    picked by the player name the village shows at the top left; an account
+    seen for the first time gets one, named after it."""
+
+    active: str = ""  # the profile in use; "" = this file's own settings (before any account was seen)
+
+
+@dataclass
 class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     regions: RegionsConfig = field(default_factory=RegionsConfig)
@@ -467,6 +482,7 @@ class Config:
     upgrade: UpgradeConfig = field(default_factory=UpgradeConfig)
     builder: BuilderConfig = field(default_factory=BuilderConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
+    profiles: ProfilesConfig = field(default_factory=ProfilesConfig)
 
     def validate(self) -> None:
         bad = [s for s in self.attack.sides if s not in SIDES]
@@ -535,7 +551,11 @@ REMOVED_SETTINGS = {"bot.quick_train", "bot.army_recipe", "clan.request_text", "
                     # the bars' colour; amounts to keep became shares of what they hold.
                     "regions.full_gold", "regions.full_elixir", "regions.full_dark",
                     "search.min_own_gold", "walls.min_gold", "walls.min_elixir", "builder.walls_min_gold",
-                    "builder.walls_min_elixir"}
+                    "builder.walls_min_elixir",
+                    # Walls: as many as the spare covers, not a set number a round.
+                    "walls.max_per_round", "builder.walls_per_round",
+                    # Profiles are always on (picked by the account in the game).
+                    "profiles.auto"}
 
 
 # One unit each to donate became lists: older files' choices carry over.
