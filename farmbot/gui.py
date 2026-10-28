@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (QAbstractButton, QApplication, QFileDialog, QGrid
 with contextlib.redirect_stdout(io.StringIO()):
     import qfluentwidgets  # noqa: F401
 from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox, ElevatedCardWidget,
-                            Action, FluentIcon as FIF, FluentWindow, InfoBar, InfoBarIcon, InfoBarPosition, LineEdit, ListWidget, MessageBox,
+                            Action, FluentIcon as FIF, FluentWindow, InfoBadge, InfoBadgePosition, InfoBar, InfoBarIcon, InfoBarPosition, LineEdit, ListWidget, MessageBox,
                             NavigationAvatarWidget, NavigationItemPosition, PlainTextEdit, PrimaryPushButton, ProgressBar, PushButton,
                             RoundMenu, SegmentedWidget,
                             SettingCard, SettingCardGroup, SimpleCardWidget, Slider, SmoothScrollArea,
@@ -568,6 +568,10 @@ class FarmbotWindow(FluentWindow):
         self.pages: dict[str, QWidget] = {}
         self.mirrors: dict[str, list[Binding]] = {}  # a setting shown on two pages
         self.mirror_cards: dict[str, list[Card]] = {}
+        # Red badges on the side bar's pages and the tabs holding a setting with a mistake.
+        self.error_badges: list[QWidget] = []
+        self.error_places: list[tuple[str, str | None]] = []  # (page, tab) of each, shown
+        self.first_error: Card | None = None
         self._syncing = False
         self.status_now = Status("ready", "")
         self.problem: Problem | None = None
@@ -657,6 +661,7 @@ class FarmbotWindow(FluentWindow):
         self.status_label = CaptionLabel("")
         self.status_label.setMinimumWidth(320)
         self.save_label = CaptionLabel("")
+        self.save_label.mousePressEvent = lambda _e: self._go_to_error()  # "Fix 1 setting": show it
         self.start_button = PrimaryPushButton(FIF.PLAY, "Start")
         self.start_button.setToolTip("Start farming (F5)")
         self.start_button.clicked.connect(self.start)
@@ -2496,14 +2501,67 @@ class FarmbotWindow(FluentWindow):
         self._show_big_buttons()
         if form.get("bot.theme") in THEMES and form.get("bot.theme") != self._theme:
             self._apply_theme(form.get("bot.theme"))
+        self._show_error_places(errors)
+        if not errors:
+            self.save_label.setToolTip("")
+            self.save_label.unsetCursor()
         if errors:
             self.save_label.setText(f"⚠ Fix {len(errors)} setting{'s' if len(errors) > 1 else ''}")
+            self.save_label.setToolTip("Show me")
+            self.save_label.setCursor(Qt.PointingHandCursor)
             tint(self.save_label, BAD)
             self.save_timer.stop()
         elif save:
             self.save_label.setText("Saving…")
             tint(self.save_label, MUTED)
             self.save_timer.start()
+
+    def _place_of(self, card: QWidget) -> tuple[str, str | None] | None:
+        """The page (and tab) a card is on."""
+        for key, page in self.pages.items():
+            if isinstance(page, TabbedPage):
+                for tab, body in page.tab_pages.items():
+                    if body.isAncestorOf(card):
+                        return key, tab
+            elif page.isAncestorOf(card):
+                return key, None
+        return None
+
+    def _show_error_places(self, errors: dict[str, str]) -> None:
+        """A red badge on each page and tab with a mistake in it (on the side
+        bar, and on the tab), so the setting can be found."""
+        cards = [c for path in errors for c in [self.cards.get(path), *self.mirror_cards.get(path, [])] if c]
+        places = list(dict.fromkeys(p for p in map(self._place_of, cards) if p))
+        self.first_error = cards[0] if cards else None
+        if places == self.error_places:
+            return
+        self.error_places = places
+        for badge in self.error_badges:
+            badge.hide()
+            badge.deleteLater()
+        self.error_badges = []
+        for page_key in dict.fromkeys(page for page, _ in places):
+            item = self.navigationInterface.widget(self.pages[page_key].objectName())
+            if item is not None:
+                self.error_badges.append(InfoBadge.error("!", self.navigationInterface, item,
+                                                         InfoBadgePosition.NAVIGATION_ITEM))
+        for page_key, tab in places:
+            page = self.pages[page_key]
+            if tab is not None and tab in page.tabs.items:
+                item = page.tabs.items[tab]
+                self.error_badges.append(InfoBadge.error("!", item.parentWidget(), item, InfoBadgePosition.TOP_RIGHT))
+
+    def _go_to_error(self) -> None:
+        """Open the page and tab of the first setting with a mistake, scrolled to it."""
+        card = self.first_error
+        place = self._place_of(card) if card is not None else None
+        if place is None:
+            return
+        page_key, tab = place
+        self.show_page(page_key, tab)
+        page = self.pages[page_key]
+        body = page.tab_pages[tab] if tab is not None else page
+        QTimer.singleShot(50, lambda: body.ensureWidgetVisible(card, 0, 80))
 
     def _autosave(self) -> bool:
         try:
