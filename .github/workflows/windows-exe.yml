@@ -16,6 +16,8 @@ on:
     # The android branch is the phone app: it has its own pipeline (android-apk).
     branches-ignore: [android]
     tags: ["v*"]
+    # Docs and pipeline changes alone make no new release (tags always build).
+    paths-ignore: ["**.md", "readme/**", ".github/**"]
   pull_request:
     branches-ignore: [android]
   workflow_dispatch:
