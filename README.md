@@ -97,6 +97,23 @@ If the game gets stuck, COCFARM restarts it by itself, and restarts the emulator
 For more detail, check `logs/farmbot.log` and the screenshots in `screens/errors/`
 in the COCFARM folder.
 
+## Community
+
+Questions, ideas and results go in [**Discussions**](https://github.com/BilinP/COCFARM/discussions):
+
+| Category | For |
+|---|---|
+| 📣 [Announcements](https://github.com/BilinP/COCFARM/discussions/categories/announcements) | New releases and news |
+| 🙏 [Q&A](https://github.com/BilinP/COCFARM/discussions/categories/q-a) | Questions about using COCFARM |
+| 🔌 [Setup and emulators](https://github.com/BilinP/COCFARM/discussions/categories/setup-and-emulators) | Installing, connecting, the Setup page |
+| ⚔️ [Home village](https://github.com/BilinP/COCFARM/discussions/categories/home-village) | Searching, attacking, collecting, walls, donations |
+| 🛠️ [Builder base](https://github.com/BilinP/COCFARM/discussions/categories/builder-base) | Builder battles, the hero, the elixir cart |
+| 💡 [Ideas](https://github.com/BilinP/COCFARM/discussions/categories/ideas) | Feature requests (upvote the ones you want) |
+| 🙌 [Show and tell](https://github.com/BilinP/COCFARM/discussions/categories/show-and-tell) | Your loot, settings and army |
+| 💬 [General](https://github.com/BilinP/COCFARM/discussions/categories/general) | Anything else |
+
+Found a bug? [Open an issue](https://github.com/BilinP/COCFARM/issues/new/choose); the form asks for what's needed to fix it.
+
 <details>
 <summary><b>For developers</b></summary>
 

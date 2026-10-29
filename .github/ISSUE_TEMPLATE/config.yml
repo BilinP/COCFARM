@@ -1,1 +1,11 @@
 blank_issues_enabled: false
+contact_links:
+  - name: ❓ Ask a question
+    url: https://github.com/BilinP/COCFARM/discussions/categories/q-a
+    about: Help with setup, settings or how something works. Bug reports are for things that are broken.
+  - name: 💡 Suggest an idea
+    url: https://github.com/BilinP/COCFARM/discussions/categories/ideas
+    about: Feature requests and ideas go in Discussions, where others can upvote them.
+  - name: 💬 Chat with other players
+    url: https://github.com/BilinP/COCFARM/discussions
+    about: Share results and settings, or just talk COCFARM.
