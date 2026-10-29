@@ -34,7 +34,9 @@ class Match:
 
 class TemplateLibrary:
     def __init__(self, root: str | Path):
-        self.root = Path(root)
+        from farmbot import instances
+
+        self.root = instances.app_path(root)  # an instance shares COCFARM's pictures
         self._cache: dict[Path, tuple[float, np.ndarray]] = {}
 
     def _load(self, path: Path) -> np.ndarray:

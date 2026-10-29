@@ -12,7 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from farmbot import __version__, bluestacks, catalog, text
+from farmbot import __version__, bluestacks, catalog, instances, text
 from farmbot.accounts import load_active
 from farmbot.bot import Bot
 from farmbot.config import EMULATORS, Config, ensure_config
@@ -182,6 +182,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-c", "--config", default=None, help="TOML settings file")
     parser.add_argument("-s", "--serial", default=None, help="ADB serial, overrides the config")
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--instance", default="", help="an extra instance's name: its own settings and history, "
+                        "for playing on another emulator instance at the same time")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("gui", help="open the control window")
@@ -264,9 +266,20 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(message)s",
         datefmt="%H:%M:%S",
     )
+    try:
+        # In an instance's own folder from here; the window or a run holds it.
+        instances.enter(args.instance, window=args.func in (cmd_run, cmd_gui))
+    except instances.InstanceError as exc:
+        print(f"error: {exc}", file=sys.stderr, flush=True)
+        if args.func is cmd_gui:
+            from farmbot.gui import tell
+
+            tell("COCFARM", str(exc))
+        return 1
     if args.func in (cmd_run, cmd_gui):
         log_to_file(LOG_FILE)
-        logging.getLogger(__name__).info("COCFARM %s", __version__)  # first thing a bug report's log shows
+        logging.getLogger(__name__).info("COCFARM %s%s", __version__,  # first thing a bug report's log shows
+                                         f" (instance {instances.current})" if instances.current else "")
     try:
         return args.func(args)
     except (DeviceError, FileNotFoundError, ValueError) as exc:

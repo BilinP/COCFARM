@@ -37,13 +37,14 @@ with contextlib.redirect_stdout(io.StringIO()):
     import qfluentwidgets  # noqa: F401
 from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox, ElevatedCardWidget,
                             Action, FluentIcon as FIF, FluentWindow, InfoBadge, InfoBadgePosition, InfoBar, InfoBarIcon, InfoBarPosition, LineEdit, ListWidget, MessageBox,
+                            MessageBoxBase,
                             NavigationAvatarWidget, NavigationItemPosition, PlainTextEdit, PrimaryPushButton, ProgressBar, PushButton,
                             RoundMenu, SegmentedWidget,
                             SettingCard, SettingCardGroup, SimpleCardWidget, Slider, SmoothScrollArea,
                             StrongBodyLabel, SubtitleLabel, SwitchButton, Theme, TitleLabel, TogglePushButton,
                             isDarkTheme, qconfig, setCustomStyleSheet, setTheme, setThemeColor)
 
-from farmbot import __version__, accounts, catalog, icons, splash
+from farmbot import __version__, accounts, catalog, icons, instances, splash
 from farmbot.config import EMULATORS, Config, ensure_config, load_config
 from farmbot.form import BY_PATH, apply_form, form_values, parse_amount, validate
 from farmbot.friendly import Problem, Status, describe_status, explain
@@ -552,7 +553,8 @@ class FarmbotWindow(FluentWindow):
         self.update_busy = False
         self.update_bar: InfoBar | None = None
 
-        self.setWindowTitle(f"{APP_NAME} {__version__}")  # the version is in every bug report screenshot
+        # The version is in every bug report screenshot; an instance's window says which it is.
+        self.setWindowTitle(f"{APP_NAME} {__version__}" + (f"  ·  {instances.current}" if instances.current else ""))
         self.setWindowIcon(QIcon(str(LOGO)))
         self._sharp_title_icon()
         # Keep page names visible next to the icons (recognition over recall).
@@ -2138,6 +2140,11 @@ class FarmbotWindow(FluentWindow):
                                       self.update_progress, self.update_button)
         self.switch(updates, "bot.check_updates", FIF.SYNC, "Look for updates by itself",
                     "Checks GitHub when the window opens, and every hour while it's open.")
+        if instances.current:
+            self.update_card.setContent("Updates are installed from the main COCFARM window; they're for every "
+                                        "instance.")
+            self.update_button.setEnabled(False)
+        self._instances_group(tab)
 
         emulator = tab.add(SettingCardGroup("Emulator"))
         self.switch(emulator, "device.enable_adb", ICON_TOOLS, "Turn on ADB",
@@ -2217,6 +2224,96 @@ class FarmbotWindow(FluentWindow):
                                 "pictures of them. Pick one, show the screen it's on, and drag a box tightly around it."))
         return page
 
+    def _instances_group(self, tab) -> None:
+        """Several emulators at once: each instance is a window of its own,
+        with its own settings and history (see farmbot/instances.py)."""
+        group = tab.add(SettingCardGroup("Several emulators at once"))
+        here = PushButton(FIF.FOLDER, "Open its folder")
+        here.clicked.connect(lambda: self._open_folder(instances.folder(instances.current)))
+        if instances.current:
+            about = (f"Instance {instances.current}: its own settings, history and logs, in "
+                     f"instances\\{instances.current}. Account profiles and button pictures are shared.")
+        else:
+            about = "The main window: COCFARM's own settings and history."
+        self._card(group, None, FIF.APPLICATION, f"This window: {instances.label(instances.current)}", about, here)
+        self.windows_box = ComboBox()
+        self.windows_box.setFixedWidth(180)
+        self.windows_box.currentIndexChanged.connect(lambda _: self._show_instances())
+        self.instance_open = PushButton(FIF.PLAY, "Open")
+        self.instance_open.clicked.connect(self._open_instance)
+        add = PrimaryPushButton(FIF.ADD, "Add instance")
+        add.clicked.connect(self._add_instance)
+        self.instances_card = self._card(
+            group, None, FIF.TILES, "Instances",
+            "Play another emulator instance (another account) at the same time: each instance opens in a window "
+            "of its own. Give each one its own emulator instance on its Setup page.",
+            self.windows_box, self.instance_open, add)
+        self._fill_instances()
+        self.instance_timer = QTimer(self, interval=3000, timeout=self._show_instances)  # windows open and close
+        self.instance_timer.start()
+
+    def _fill_instances(self, pick: str = "") -> None:
+        names = [n for n in instances.names() if n != instances.current]
+        if instances.current:
+            names.insert(0, instances.MAIN)
+        self.windows_box.blockSignals(True)
+        self.windows_box.clear()
+        for name in names:
+            self.windows_box.addItem(instances.label(name), userData=name)
+        if pick in names:
+            self.windows_box.setCurrentIndex(names.index(pick))
+        self.windows_box.blockSignals(False)
+        self._show_instances()
+
+    def _picked_instance(self) -> str | None:
+        if self.windows_box.count() == 0 or self.windows_box.currentIndex() < 0:
+            return None
+        return self.windows_box.itemData(self.windows_box.currentIndex())
+
+    def _show_instances(self) -> None:
+        picked = self._picked_instance()
+        self.windows_box.setEnabled(picked is not None)
+        is_open = picked is not None and instances.is_open(picked)
+        self.instance_open.setEnabled(picked is not None and not is_open)
+        self.instance_open.setText("Open already" if is_open else "Open")
+        others = instances.others_open()
+        self.instances_card.setContent(
+            ("Open now: " + ", ".join(others) + ". " if others else "") +
+            "Play another emulator instance (another account) at the same time: each instance opens in a window "
+            "of its own. Give each one its own emulator instance on its Setup page.")
+
+    def _open_instance(self) -> None:
+        name = self._picked_instance()
+        if name is None:
+            return
+        try:
+            instances.launch(name)
+        except OSError as exc:
+            InfoBar.error("Couldn't open it", str(exc), duration=6000, position=InfoBarPosition.TOP_RIGHT, parent=self)
+            return
+        InfoBar.success(f"Opening {instances.label(name)}", "Its window opens in a moment.", duration=4000,
+                        position=InfoBarPosition.TOP_RIGHT, parent=self)
+        QTimer.singleShot(4000, self._show_instances)
+
+    def _add_instance(self) -> None:
+        box = NameDialog(self, "Add an instance", "Its window plays on an emulator instance of its own, with its "
+                         "own settings (starting as the main window's) and history. A name, e.g. the account's:")
+        if not box.exec():
+            return
+        try:
+            name = instances.create(box.name.text())
+        except (instances.InstanceError, OSError) as exc:
+            InfoBar.error("Couldn't add it", str(exc), duration=6000, position=InfoBarPosition.TOP_RIGHT, parent=self)
+            return
+        self._fill_instances(pick=name)
+        self._open_instance()
+
+    def _open_folder(self, folder: Path) -> None:
+        import os
+
+        folder.mkdir(parents=True, exist_ok=True)
+        os.startfile(str(folder))  # Windows: opens it in Explorer
+
     def _welcome(self) -> None:
         """First run: open Setup, where the steps say what to do."""
         self.show_page("Setup")
@@ -2226,6 +2323,8 @@ class FarmbotWindow(FluentWindow):
     def _check_for_update(self, force: bool = False) -> None:
         """Ask GitHub for a newer COCFARM in the background (see farmbot/update.py
         for how often it really asks)."""
+        if instances.current:  # updates are the main window's, for every instance
+            return
         repo = self.config.bot.update_repo
         if not repo or self.update_busy or not (force or self.config.bot.check_updates):
             return
@@ -2348,6 +2447,10 @@ class FarmbotWindow(FluentWindow):
             return
         from farmbot import update
 
+        others = instances.others_open()
+        if others:  # their windows hold COCFARM's files: the update couldn't replace them
+            self._update_failed(f"Close the other COCFARM windows first ({', '.join(others)}), then press Update now.")
+            return
         try:
             update.install(self.update_staged, version=self.update_release.version)
         except OSError as exc:
@@ -3080,6 +3183,34 @@ def create_app() -> QApplication:
     setTheme(Theme.DARK)
     setThemeColor(ACCENT)
     return app
+
+
+class NameDialog(MessageBoxBase):
+    """Ask for a name."""
+
+    def __init__(self, parent, title: str, text: str):
+        super().__init__(parent)
+        self.viewLayout.addWidget(SubtitleLabel(title))
+        label = BodyLabel(text)
+        label.setWordWrap(True)
+        self.viewLayout.addWidget(label)
+        self.name = LineEdit()
+        self.name.setPlaceholderText("e.g. Second account")
+        self.viewLayout.addWidget(self.name)
+        self.widget.setMinimumWidth(420)
+        self.yesButton.setText("Add")
+        self.yesButton.setEnabled(False)
+        self.name.textChanged.connect(lambda t: self.yesButton.setEnabled(bool(instances.safe_name(t))))
+
+
+def tell(title: str, text: str) -> None:
+    """A message box before (or without) the window: e.g. the instance is open already."""
+    app = create_app()
+    from PySide6.QtWidgets import QMessageBox
+
+    splash.close()
+    QMessageBox.information(None, title, text)
+    app.processEvents()
 
 
 def run_gui(config_path: str, serial: str | None = None) -> int:

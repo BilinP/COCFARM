@@ -277,6 +277,9 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
     until its window opens). In "manual" mode ``serial``
     is used as given.
     """
+    from farmbot import instances
+
+    instances.claim_device(cfg)  # one COCFARM window per emulator instance
     if cfg.mode == "ldplayer":
         from farmbot import ldplayer
 

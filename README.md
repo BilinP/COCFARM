@@ -90,6 +90,21 @@ COCFARM sets the emulator's screen (860 × 672), CPU cores and memory by itself;
   **What the bot sees** under **Advanced**.
 - **Keyboard shortcuts:** F5 starts, Esc pauses, and Ctrl+1 to Ctrl+7 switch pages.
 
+## Several accounts at once
+
+COCFARM can farm on more than one emulator instance at the same time, one window each:
+
+1. In your emulator's multi-instance manager, make a second instance and sign in to the other account in it.
+2. In COCFARM, open **Advanced → Settings → Several emulators at once** and press **Add instance**.
+   Its window opens with a copy of your settings.
+3. In the new window's **Setup**, pick the second emulator instance, then press **Start**.
+
+Each instance keeps its own settings, history and logs in `instances\<name>` in the COCFARM folder.
+The button pictures and account profiles are shared, so an account keeps its settings whichever
+window plays it. Two windows can't play on the same emulator instance. Install updates from the
+main window, with the other windows closed. Each emulator needs its own CPU cores and memory, so
+check your PC can run two.
+
 ## Something went wrong?
 
 The Dashboard tells you what happened in plain words, with a button to fix it.

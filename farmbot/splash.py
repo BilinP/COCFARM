@@ -164,6 +164,14 @@ def _centre(window, screen) -> None:
     window.setGeometry(shown)
 
 
+def close() -> None:
+    """Leave the loading screen without a window (COCFARM won't open one)."""
+    global _splash
+    splash, _splash = _splash, None
+    if splash is not None:
+        splash.close()
+
+
 def finish(window) -> None:
     """Show ``window`` and leave the loading screen: the card grows into
     the window, which is then shown under it, and fades away."""

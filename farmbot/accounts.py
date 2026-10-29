@@ -133,6 +133,10 @@ class Profiles:
 
     @classmethod
     def beside(cls, config_path: str | Path) -> Profiles:
+        from farmbot import instances
+
+        if instances.current:  # every instance shares the main folder's: an account's settings go where it plays
+            return cls(instances.profiles_folder())
         return cls(Path(config_path).resolve().parent / "profiles")
 
     def names(self) -> list[str]:
