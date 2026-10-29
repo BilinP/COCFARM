@@ -56,7 +56,7 @@ jobs:
       # accepted, Gradle fetches the platform and build tools the app needs.
       - name: Accept the Android SDK licences
         shell: bash
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+        run: (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
 
       - uses: gradle/actions/setup-gradle@v4
 
