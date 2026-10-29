@@ -8,12 +8,16 @@ name: windows-exe
 #    double-click COCFARM.exe.
 #  - Pushing a tag like v1.2.0, or running this workflow by hand with a
 #    version, publishes a release under that exact version instead.
+#  Its only download is COCFARM-windows.zip (GitHub adds the "Source code"
+#  archives to every release by itself; they can't be left out).
 
 on:
   push:
-    branches: ["**"]
+    # The android branch is the phone app: it has its own pipeline (android-apk).
+    branches-ignore: [android]
     tags: ["v*"]
   pull_request:
+    branches-ignore: [android]
   workflow_dispatch:
     inputs:
       version:

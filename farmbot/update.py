@@ -45,6 +45,9 @@ TIMEOUT = 15
 CHECK_EVERY = 3600  # seconds between calls to GitHub's API
 MIN_GAP = 60  # "Check now" asks GitHub at most once a minute
 ASSET = "COCFARM-windows.zip"
+# The Android app has releases of its own, beside Windows' (which GitHub
+# marks latest): its update check looks through this many recent releases.
+RELEASES_LOOKED_AT = 20
 STATE = Path("update.json")
 WORK = Path("_update")
 EXE = "COCFARM.exe"
@@ -123,6 +126,18 @@ def _release(data: dict, repo: str, asset: str = ASSET) -> Release:
     return release
 
 
+def _newest_with(data: list, repo: str, asset: str) -> Release | None:
+    """The newest published release in ``data`` (GitHub's list, newest
+    first) that has ``asset``; ``None`` if none does."""
+    for item in data:
+        if item.get("draft") or item.get("prerelease"):
+            continue
+        release = _release(item, repo, asset)
+        if release.download:
+            return release
+    return None
+
+
 def _header(headers: dict[str, str], name: str) -> str:
     return next((v for k, v in headers.items() if k.lower() == name.lower()), "")
 
@@ -164,7 +179,9 @@ def check(repo: str, current: str = __version__, *, force: bool = False, state_p
     elif t - state.get("checked", 0) < gap and "checked" in state:
         note = ""
     else:
-        url = f"https://api.github.com/repos/{repo}/releases/latest"
+        # Windows' zip is on the latest release; the Android app is on its own releases.
+        url = (f"https://api.github.com/repos/{repo}/releases/latest" if asset == ASSET
+               else f"https://api.github.com/repos/{repo}/releases?per_page={RELEASES_LOOKED_AT}")
         headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
         if state.get("etag") and state.get("latest"):
             headers["If-None-Match"] = state["etag"]
@@ -176,7 +193,15 @@ def check(repo: str, current: str = __version__, *, force: bool = False, state_p
             return _answer(state, current, "Couldn't reach GitHub. Check your internet connection.")
         if status == 200:
             try:
-                state["latest"] = asdict(_release(json.loads(body), repo, asset))
+                data = json.loads(body)
+                if isinstance(data, list):
+                    found = _newest_with(data, repo, asset)
+                    if found is None:
+                        state.pop("latest", None)
+                    else:
+                        state["latest"] = asdict(found)
+                else:
+                    state["latest"] = asdict(_release(data, repo, asset))
             except (ValueError, TypeError, AttributeError) as exc:
                 log.debug("Odd answer from GitHub: %s", exc)
             state["etag"] = _header(answer, "ETag")

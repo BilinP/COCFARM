@@ -1,14 +1,12 @@
 name: android-apk
 
-# Builds COCFARM for Android (android/) on every push to the android branch
-# and attaches the signed app, COCFARM-android.apk, to it as an artifact.
-#
-# Phones update from the latest GitHub release's COCFARM-android.apk, and
-# only to a newer version (farmbot/__init__.py) signed with the same key.
-# So when the latest release is for the same version as this build, the app
-# is attached to it too (replacing one already there). Releases for another
-# version are left alone: an older app on a newer release would be offered
-# to phones over and over.
+# Builds COCFARM for Android (android/) on every push to the android branch,
+# keeps the app as the run's artifact, and (when signed with the release
+# key) publishes it as a release of its own, tagged android-v<version>-<run>,
+# with COCFARM-android.apk as its only download. It's never marked latest:
+# that stays the Windows app's (main's windows-exe), which the README links
+# to. Phones find the newest release that has COCFARM-android.apk (see
+# farmbot/update.py), and only take one newer than theirs.
 #
 # Signing uses three repository secrets (Settings → Secrets and variables →
 # Actions):
@@ -17,7 +15,7 @@ name: android-apk
 #   COCFARM_KEY_PASSWORD     its password (the keystore's and the key's)
 # Without them (a fork, say) a debug build is made instead: fine for trying
 # out, but it can't update an installed release build, so it's never
-# attached to a release.
+# published.
 
 on:
   push:
@@ -125,23 +123,22 @@ jobs:
           path: ${{ env.APK }}
           retention-days: 30
 
-      - name: Attach to the latest release (same version only)
+      - name: Publish the release
         if: github.event_name == 'push' && steps.key.outputs.signed == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)
-          if [[ -z "$tag" ]]; then
-            echo "No release yet: the app is only kept as this run's artifact."
-            exit 0
-          fi
-          # v0.9.1-12 is version 0.9.1 (its first three numbers), as the update check reads it.
-          released=$(grep -oE '[0-9]+' <<<"$tag" | head -3 | paste -sd.)
-          if [[ "$released" != "$VERSION" ]]; then
-            echo "The latest release, $tag, is version $released, not $VERSION: not attaching the app to it."
-            exit 0
-          fi
-          gh release upload "$tag" "$APK" --clobber --repo "$GITHUB_REPOSITORY"
-          echo "Attached $APK to $tag."
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-v${{ steps.version.outputs.version }}-${{ github.run_number }}
+          name: COCFARM for Android ${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          make_latest: false
+          files: ${{ env.APK }}
+          body: |
+            ## Download
+
+            1. On your phone, download **COCFARM-android.apk** below and open it. Android asks to allow installing apps from your browser: allow it once.
+            2. Open COCFARM and follow its setup.
+
+            Already have COCFARM for Android? It offers this version on its home screen by itself.
+
+            > [!WARNING]
+            > Using this bot can get your Clash of Clans account banned. Only use it on an account you're willing to lose.
