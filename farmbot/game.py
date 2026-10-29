@@ -13,7 +13,7 @@ import numpy as np
 
 from farmbot.device import Device
 from farmbot.geometry import Rect
-from farmbot.vision import Match, Vision, match_template
+from farmbot.vision import Match, Vision, _resized, best_scale, match_template
 
 log = logging.getLogger(__name__)
 
@@ -107,6 +107,33 @@ class T:
     WALL_SUGGESTION = "buttons/wall_suggestion"  # "Wall x N" in that list
     UPGRADE = "buttons/upgrade"  # under a selected building (gold and elixir versions look alike)
     UPGRADE_CONFIRM = "buttons/upgrade_confirm"  # "Confirm" in the upgrade window
+    UPGRADE_MORE = "buttons/upgrade_more"  # under a selected wall: starts picking more of its level
+    # then: the words "Add Wall" under the +10 button (left) and the +1 one (only +1
+    # when fewer than ten walls of that level are left). The words, not the
+    # buttons' wall pictures: those look different at every wall level.
+    ADD_WALL = "buttons/add_wall"
+    # The Buildings & Heroes list's filter menu (the slider button left of its
+    # title). The buttons light up yellow when on; the resource and type
+    # ones aren't used yet (for upgrading other things later).
+    LIST_FILTER = "buttons/list_filter"
+    SORT_COST_MAX = "buttons/filter/cost_max"  # "Max" of Cost Max: dearest first
+    SORT_COST_MIN = "buttons/filter/cost_min"  # "Min" of Cost Min: cheapest first
+    FILTER_GOLD = "buttons/filter/gold"
+    FILTER_ELIXIR = "buttons/filter/elixir"
+    FILTER_DARK = "buttons/filter/dark"
+    FILTER_ARMY = "buttons/filter/army"
+    FILTER_DEFENSE = "buttons/filter/defense"
+    FILTER_HERO = "buttons/filter/hero"
+    FILTER_RESOURCE = "buttons/filter/resource"
+    FILTER_NEW = "buttons/filter/new"
+    FILTER_PERMANENT = "buttons/filter/permanent"
+    FILTER_TROOPS = "buttons/filter/troops"  # the Army Upgrades tab's types
+    FILTER_SPELLS = "buttons/filter/spells"
+    FILTER_SIEGE = "buttons/filter/siege"
+    # A list row's price icon (right of the number).
+    COST_GOLD = "buttons/cost/gold"
+    COST_ELIXIR = "buttons/cost/elixir"
+    COST_DARK = "buttons/cost/dark"
     # Builder base
     BB_HOME_BOAT = "builder/home_boat"  # home village, bottom left: sails to the builder base
     BB_BUILDER_BOAT = "builder/builder_boat"  # builder base, top right: sails back
@@ -126,6 +153,10 @@ class T:
     BB_CART_COLLECT = "builder/cart_collect"  # Collect in the Elixir Cart window
     BB_UPGRADE = "builder/upgrade"  # under a selected builder base building
     BB_UPGRADE_TITLE = "builder/upgrade_title"  # "Upgrade to level N?" window (price on a green button)
+    BB_FILTER_GOLD = "builder/filter/gold"  # the Build list's filter menu, builder base resources
+    BB_FILTER_ELIXIR = "builder/filter/elixir"
+    BB_COST_GOLD = "builder/cost/gold"  # right of a builder base row's price
+    BB_COST_ELIXIR = "builder/cost/elixir"
     LOOT_CART = "buttons/loot_cart"  # the "Collect" label over the loot cart
     LOOT_CART_COLLECT = "buttons/loot_cart_collect"  # the Collect button once it is selected
     # Full-collector bubbles (one tap empties every collector of that kind)
@@ -144,6 +175,7 @@ class T:
     DONATE = "buttons/donate"
     CONFIRM = "buttons/confirm"  # "Confirm" on notices such as "The Event has ended"
     GEM = "icons/gem"  # a gem: a Confirm window showing one is never pressed
+    STORAGE_MAX = "icons/storage_max"  # "Max:" in the box a tapped resource bar opens
     # "Defensive Layout obstructed" after asking for a battle, and its Attack button
     LAYOUT_OBSTRUCTED = "buttons/layout_obstructed"
     OBSTRUCTED_ATTACK = "buttons/obstructed_attack"
@@ -159,6 +191,14 @@ class T:
 # differently; Vision finds their buttons' sizes on its own.)
 ANCHORS = [T.BATTLE, T.NEXT, T.END_BATTLE]
 
+# The buttons under a selected building change size with the layout: with
+# the Buildings & Heroes list open they move into two rows, drawn about 1.3x
+# (the wall's Upgrade, Upgrade More, Add Wall). When one isn't found at the
+# usual sizes these are tried too, and the size that matched is tried first
+# from then on.
+ANY_SIZE = {T.UPGRADE, T.UPGRADE_MORE, T.ADD_WALL}
+ANY_SIZES = (1.3, 1.2, 1.1, 1.4, 0.85)
+
 # Zooming out: pinches at most, and the change (mean grey level, 0-255)
 # below which the view has stopped moving.
 ZOOM_PASSES = 3
@@ -169,10 +209,12 @@ VIEW_STILL = 3.0
 PAN_CENTER = (588, 420)
 PAN_DRAG = (420, 300)
 PAN_PATCH = (320, 230)  # width, height of the piece of map followed across a drag
+PAN_MARGIN = 20  # px kept between the followed piece, dragged, and the screen's edge
 PAN_SURE = 0.6
 PAN_STILL = 8
 PAN_TRIES = 3
 PAN_MS = 900  # slow, so the map doesn't keep sliding after the finger lifts
+PAN_LEAST = 80  # px: shorter drags count as taps in the game
 
 
 def view_change(before: np.ndarray, after: np.ndarray) -> float:
@@ -187,6 +229,37 @@ def view_change(before: np.ndarray, after: np.ndarray) -> float:
 
 class Stopped(Exception):
     """Raised inside long waits when the bot is asked to stop."""
+
+
+# Matching two pictures of the map by features (they only need to overlap
+# in part): how far the camera moved between them.
+VIEW_AREA = (150, 240, 1000, 760)  # x0, y0, x1, y1: the map, clear of the buttons, trophies and resource bars
+VIEW_FEATURES = 1500
+VIEW_RATIO = 0.75  # Lowe's ratio test
+VIEW_AGREE = 15  # matches that must agree on the shift (within VIEW_NEAR px)
+VIEW_NEAR = 6
+
+
+def view_shift(reference: np.ndarray, screen: np.ndarray) -> tuple[int, int] | None:
+    """How far the map has moved from ``reference`` to ``screen`` (what was
+    at p is now at p + shift), or ``None`` if they don't overlap enough."""
+    x0, y0, x1, y1 = VIEW_AREA
+    mask = np.zeros(reference.shape[:2], np.uint8)
+    mask[y0:y1, x0:x1] = 255
+    orb = cv2.ORB_create(VIEW_FEATURES)
+    k1, d1 = orb.detectAndCompute(cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY), mask)
+    k2, d2 = orb.detectAndCompute(cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY), mask)
+    if d1 is None or d2 is None or len(k1) < 2 or len(k2) < 2:
+        return None
+    pairs = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(d1, d2, k=2)
+    good = [p[0] for p in pairs if len(p) == 2 and p[0].distance < VIEW_RATIO * p[1].distance]
+    if len(good) < VIEW_AGREE:
+        return None
+    shifts = np.array([np.subtract(k2[m.trainIdx].pt, k1[m.queryIdx].pt) for m in good])
+    shift = np.median(shifts, axis=0)
+    if int(np.sum(np.all(np.abs(shifts - shift) <= VIEW_NEAR, axis=1))) < VIEW_AGREE:
+        return None
+    return round(shift[0]), round(shift[1])
 
 
 class Game:
@@ -219,9 +292,16 @@ class Game:
         vision.fixed_scales = set(self.picture_scales)
         self.raw: np.ndarray | None = None
         self.screen: np.ndarray | None = None
+        # Each village's view once centred (measured the first time in a run):
+        # later centring drags straight back to it.
+        self.centred_views: dict[str, np.ndarray] = {}
         # When each anchor last failed to give the UI scale. Measuring takes about a second, so while
         # the game loads it's tried again every CALIBRATE_RETRY seconds, not on every screenshot.
         self._calibration_tried: dict[str, float] = {}
+        self._any_sizes: dict[str, float] = {}  # ANY_SIZE picture -> the size it last matched at
+        # Finds on the screenshot in ``_seen_on``: (name, threshold, region) -> matches.
+        self._seen_on: np.ndarray | None = None
+        self._seen: dict[tuple, list[Match]] = {}
 
     # -- timing ---------------------------------------------------------
     def wait(self, seconds: float) -> None:
@@ -289,7 +369,45 @@ class Game:
         screen = self._current()
         if not self.ui_scale and name in ANCHORS and self._calibrate(name):
             screen = self.screen
-        return self.vision.find_all(screen, name, threshold, region)
+        # The same look at the same screenshot (the screen check, then the
+        # step that acts on it, say) is answered from the first one.
+        if self._seen_on is not screen:
+            self._seen_on, self._seen = screen, {}
+        key = (name, threshold, region)
+        if key not in self._seen:
+            found = self.vision.find_all(screen, name, threshold, region)
+            if not found and name in ANY_SIZE:
+                found = self._find_any_size(screen, name, threshold, region)
+            self._seen[key] = found
+        return list(self._seen[key])
+
+    def _find_any_size(self, screen: np.ndarray, name: str, threshold: float | None,
+                       region: Rect | None) -> list[Match]:
+        """``name`` at a size near one of ANY_SIZES (the one that last
+        matched is tried first, on its own: quick)."""
+        threshold = self.vision.default_threshold if threshold is None else threshold
+        for tname, image in self.vision.library.get(name):
+            last = self._any_sizes.get(tname)
+            if last:
+                found = match_template(screen, _resized(image, last), threshold, region, tname)
+                if found:
+                    return found
+            size, score = best_scale(screen, image, list(ANY_SIZES), region)
+            if score >= threshold:
+                log.debug("%s found at %.2fx its picture's size", tname, size)
+                self._any_sizes[tname] = size
+                return match_template(screen, _resized(image, size), threshold, region, tname)
+        return []
+
+    def likeness(self, name: str) -> float:
+        """How close ``name``'s best picture comes to matching the screen
+        (0..1): for logs, when a button that should be there isn't found."""
+        if not self.has(name):
+            return 0.0
+        screen = self._current()
+        return max(max(self.vision.likeness(screen, image),
+                       best_scale(screen, image, list(ANY_SIZES))[1] if name in ANY_SIZE else 0.0)
+                   for _, image in self.vision.library.get(name))
 
     def read_number(self, region: Rect, font: str) -> int | None:
         return self.vision.read_number(self._current(), region, font)
@@ -352,19 +470,30 @@ class Game:
             before = after
         return True
 
-    def center_view(self) -> bool:
+    def center_view(self, village: str = "home") -> bool:
         """Drag the map so the view sits in the middle of its range.
 
         The game keeps the camera where it was left, and a view dragged to
         one side (by a stray touch, or by zooming out around an off-centre
-        spot) hides part of the base. The map is dragged to one end and then
-        the other, measuring how far the picture moves, and then back to
-        halfway. False if the picture couldn't be followed (a popup, say)."""
+        spot) hides part of the base. The first time in a run, the map is
+        dragged to one end and then the other, measuring how far the
+        picture moves, and then back to halfway; that view is kept (per
+        ``village``), and after that the map is dragged straight back to it.
+        False if the picture couldn't be followed (a popup, say)."""
+        centred = self.centred_views.get(village)
+        if centred is not None:
+            if self._back_to(centred):
+                return True
+            log.info("Centring the view: can't find the centred view (another zoom?); measuring again")
+            del self.centred_views[village]
         prev = self.refresh().copy()
+        # Drags no longer than keeps the followed piece of the map on screen
+        # (a short screen, such as a phone's, has less room above and below it).
+        drag_y = min(PAN_DRAG[1], prev.shape[0] - PAN_PATCH[1] - 2 * PAN_MARGIN)
         pos, low, high = [0, 0], [0, 0], [0, 0]
         for sign in (1, -1):
             for _ in range(PAN_TRIES):
-                moved = self._drag_view(prev, sign * PAN_DRAG[0], sign * PAN_DRAG[1])
+                moved = self._drag_view(prev, sign * PAN_DRAG[0], sign * drag_y)
                 if moved is None:
                     return False
                 (dx, dy), prev = moved
@@ -375,8 +504,34 @@ class Game:
         move = [round((lo + hi) / 2 - p) for lo, hi, p in zip(low, high, pos)]
         log.info("Centring the view: range %dx%d px, moving it %s", high[0] - low[0], high[1] - low[1], tuple(move))
         if max(map(abs, move)) >= PAN_STILL:
-            self._drag_view(prev, *move)
+            self._pan(*move)
+        self.centred_views[village] = self.refresh().copy()
         return True
+
+    def _back_to(self, centred: np.ndarray) -> bool:
+        """Drag the map back to the ``centred`` view. False if it can't be
+        found in the screen (zoomed differently, or a window over it)."""
+        for _ in range(PAN_TRIES):
+            shift = view_shift(centred, self.refresh())
+            if shift is None:
+                return False
+            if max(map(abs, shift)) < PAN_STILL:
+                log.info("Centring the view: back where it was centred")
+                return True
+            self._pan(-shift[0], -shift[1])
+        return False
+
+    def _pan(self, dx: int, dy: int) -> None:
+        """Move the picture by (dx, dy) with drags none of which is short
+        enough to count as a tap (which selects, and a drag starting on a
+        selected building moves it): a small move goes out and back."""
+        moves = [(dx, dy)]
+        if np.hypot(dx, dy) < PAN_LEAST:
+            moves = [(dx + PAN_LEAST, dy), (-PAN_LEAST, 0)]
+        cx, cy = PAN_CENTER
+        for mx, my in moves:
+            self.swipe(cx - mx // 2, cy - my // 2, cx + mx // 2, cy + my // 2, PAN_MS)
+            self.wait(0.8)
 
     def _drag_view(self, before: np.ndarray, dx: int, dy: int):
         """Drag the map by (dx, dy) bot px. Returns how far the picture

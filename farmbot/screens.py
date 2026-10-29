@@ -101,9 +101,10 @@ def settle(game: Game, steps: int | None = None) -> Screen:
         elif screen is Screen.POPUP:
             village.clear_popups(game, rounds=1)
         elif _seen(game, T.FIND_MATCH) and game.back():
-            # The battle menu, left open (say, by a stop): it has no X to close it.
+            # The battle menu, left open (by a stop, or a round that failed): it has no X; Back closes it.
             log.info("Closing the battle menu")
-            game.wait(1)
+            game.screen = None
+            game.wait(1.5)
         else:
             game.wait(UNKNOWN_WAIT)
     raise StuckError(f"couldn't get back to a village (saw: {', '.join(s.value for s in seen[-4:])})")

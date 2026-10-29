@@ -24,6 +24,7 @@ from farmbot.units import SIEGE_MACHINES, SPELLS, TROOPS
 
 SETTINGS_FILE = "farmbot.toml"
 MONEY = {"gold": "Gold", "elixir": "Elixir", "both": "Either"}
+BUILDERS_FIRST = {"hero": "Heroes", "defense": "Defenses", "resource": "Resources", "army": "Army", "none": "Any"}
 
 # A phone's first farmbot.toml. Not the Windows one (made for an 860 x 672
 # emulator): every phone screen is different, so the bot measures the size
@@ -42,10 +43,6 @@ window_scale = 0.0
 own_gold = [-215, 25, 150, 32]  # wide enough for 9 digits
 own_elixir = [-215, 78, 150, 32]
 own_dark = [-215, 130, 150, 32]  # 360 000 needs the width too
-# Left (empty) end of each resource bar: only coloured when that storage is full.
-full_gold = [-284, 33, 24, 14]
-full_elixir = [-284, 83, 24, 14]
-full_dark = [-215, 133, 24, 14]
 loot_gold = [63, 92, 150, 34]
 loot_elixir = [63, 134, 150, 34]
 loot_dark = [63, 175, 150, 34]
@@ -71,6 +68,21 @@ def _item(path, kind, title, help_text="", **extra):
 
 def _depends(path, value=True):
     return {"path": path, "is": value}
+
+
+def _storages(village: str) -> dict:
+    """What the storages hold (the keep-shares above are of these): read
+    from the game, or typed in."""
+    prefix = "builder_" if village == "builder" else ""
+    read = f"storage.{prefix}read"
+    kinds = {"gold": "Gold", "elixir": "Elixir", **({"dark": "Dark elixir"} if village == "home" else {})}
+    return {"title": "Storages", "items": [
+        _item(read, "switch", "Read from the game", "Once a day, the first time it's in this village, it taps your "
+              "loot at the top right to see what your storages hold. Off: it keeps the amounts below."),
+        *(_item(f"storage.{prefix}{kind}", "amount", f"{name} storages hold", "Filled in from the game. Wrong? "
+                "Type the right amount and turn Read from the game off, so it's kept. Empty: not known yet.")
+          for kind, name in kinds.items()),
+    ]}
 
 
 PAGES = [
@@ -111,8 +123,8 @@ PAGES = [
             _item("search.min_dark", "amount", "Dark elixir", "Bases offering less dark elixir are skipped. 0 ignores it."),
             _item("search.match_any", "switch", "Any one is enough",
                   "On: attack when any one amount above is met. Off: all of them must be met."),
-            _item("search.min_own_gold", "amount", "Don't search while my gold is below",
-                  "Each Next costs gold. 0 always searches."),
+            _item("search.min_own_gold_share", "number", "Don't search while my gold is below",
+                  "A share of what your gold storages hold: each Next costs gold. 0% always searches.", suffix="%"),
             _item("search.sound_on_match", "switch", "Sound on match",
                   "Plays the notification sound when it finds a base worth attacking."),
             _item("search.max_searches", "number", "Give up searching after",
@@ -163,19 +175,42 @@ PAGES = [
                   depends=_depends("bot.collect_resources")),
             _item("bot.collect_dark", "switch", "Dark elixir", "From the dark elixir drills.",
                   depends=_depends("bot.collect_resources")),
+            _item("bot.collect_every", "number", "Every", "1 = every round. Always the first round after Start.",
+                  suffix="rounds", depends=_depends("bot.collect_resources")),
             _item("bot.collect_loot_cart", "switch", "Collect the loot cart",
                   "Empties the loot cart when it shows \"Collect\"."),
             _item("walls.enabled", "switch", "Upgrade walls with spare loot",
-                  "Between attacks it upgrades the cheapest suggested wall. Off by default: it spends loot."),
+                  "Between attacks it upgrades as many walls as the spare loot covers, in one go. Off by default: "
+                  "it spends loot."),
+            _item("walls.pick", "choice", "Which wall", "Cheapest: sorts the Build list Cost Min and takes the first "
+                  "wall. First: the first wall the list shows, without sorting it (quicker).",
+                  options={"cheapest": "Cheapest", "first": "First"}, depends=_depends("walls.enabled")),
             _item("walls.use", "choice", "Pay with", "Which resource may go on walls.", options=MONEY,
                   depends=_depends("walls.enabled")),
-            _item("walls.min_gold", "amount", "Keep at least this much gold", "Walls only get what's above it.",
+            _item("walls.keep_gold", "number", "Keep this much gold",
+                  "A share of what your gold storages hold; walls only get what's above it.", suffix="%",
                   depends=_depends("walls.enabled")),
-            _item("walls.min_elixir", "amount", "Keep at least this much elixir", "Walls only get what's above it.",
+            _item("walls.keep_elixir", "number", "Keep this much elixir",
+                  "A share of what your elixir storages hold; walls only get what's above it.", suffix="%",
                   depends=_depends("walls.enabled")),
-            _item("walls.max_per_round", "number", "Walls per round", "At most this many between two attacks.",
-                  depends=_depends("walls.enabled")),
+            _item("walls.only_when_full", "switch", "Only when storage is full",
+                  "Spends gold or elixir on walls only once its storages are full.", depends=_depends("walls.enabled")),
         ]},
+        {"title": "Upgrades", "items": [
+            _item("upgrade.enabled", "switch", "Upgrade when storage is full",
+                  "Spends a full storage's resource on the dearest upgrades it covers, while builders are free. "
+                  "Off by default: it spends loot. Runs before walls, keeping one builder for them."),
+            _item("upgrade.first", "choice", "Builders go to first", "That kind of building is upgraded first, then "
+                  "the others; Any: the dearest of anything.", options=BUILDERS_FIRST,
+                  depends=_depends("upgrade.enabled")),
+            _item("upgrade.buildings", "switch", "Buildings and heroes", "With the free builders.",
+                  depends=_depends("upgrade.enabled")),
+            _item("upgrade.lab", "switch", "Research", "In the laboratory, when it's free (elixir or dark elixir).",
+                  depends=_depends("upgrade.enabled")),
+            _item("upgrade.pets", "switch", "Pets", "Last, with the dark elixir left, when the pet house is free.",
+                  depends=_depends("upgrade.enabled")),
+        ]},
+        _storages("home"),
         {"title": "Clan", "items": [
             _item("clan.donate", "switch", "Donate to requests", "Fills every open request in clan chat. Each unit "
                   "costs the elixir or dark elixir shown; it never pays with gems."),
@@ -228,22 +263,36 @@ PAGES = [
         {"title": "Village", "items": [
             _item("builder.collect_resources", "switch", "Collect the gold mines, elixir collectors and gem mine",
                   "Before each builder battle."),
+            _item("builder.collect_every", "number", "Every", "1 = before each battle. Always the first battle after "
+                  "Start.", suffix="battles", depends=_depends("builder.collect_resources")),
             _item("builder.collect_cart", "switch", "Collect the elixir cart",
                   "The cart by the dock that holds your defense rewards."),
             _item("", "range", "Every", "A random number of battles in this range each time.",
                   low="builder.cart_every_min", high="builder.cart_every_max", suffix="battles",
                   depends=_depends("builder.collect_cart")),
             _item("builder.walls", "switch", "Upgrade builder base walls with spare loot",
-                  "Before each battle it upgrades the cheapest wall. Off by default: it spends loot."),
+                  "Before each battle it upgrades as many walls as the spare loot covers, in one go. Off by "
+                  "default: it spends loot."),
             _item("builder.walls_use", "choice", "Pay with", "Which resource may go on walls.", options=MONEY,
                   depends=_depends("builder.walls")),
-            _item("builder.walls_min_gold", "amount", "Keep at least this much gold", "Walls only get what's above "
-                  "it.", depends=_depends("builder.walls")),
-            _item("builder.walls_min_elixir", "amount", "Keep at least this much elixir", "Walls only get what's "
-                  "above it.", depends=_depends("builder.walls")),
-            _item("builder.walls_per_round", "number", "Walls per round", "At most this many between two battles.",
+            _item("builder.walls_keep_gold", "number", "Keep this much gold",
+                  "A share of what your builder gold storages hold; walls only get what's above it.", suffix="%",
+                  depends=_depends("builder.walls")),
+            _item("builder.walls_keep_elixir", "number", "Keep this much elixir",
+                  "A share of what your builder elixir storages hold; walls only get what's above it.", suffix="%",
                   depends=_depends("builder.walls")),
         ]},
+        {"title": "Upgrades", "items": [
+            _item("builder.upgrade", "switch", "Upgrade when storage is full",
+                  "Spends a full gold or elixir storage on the dearest upgrades it covers, while builders are free. "
+                  "Off by default: it spends loot. Runs before walls, keeping one builder for them."),
+            _item("builder.upgrade_first", "choice", "Builders go to first", "That kind of building is upgraded "
+                  "first, then the others; Any: the dearest of anything.", options=BUILDERS_FIRST,
+                  depends=_depends("builder.upgrade")),
+            _item("builder.upgrade_lab", "switch", "Research", "In the star laboratory, when it's free (elixir).",
+                  depends=_depends("builder.upgrade")),
+        ]},
+        _storages("builder"),
     ]},
     {"title": "When to play", "groups": [
         {"title": "Playing hours", "items": [

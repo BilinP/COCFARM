@@ -31,7 +31,7 @@ FIELDS = [
     Field("search.match_any", "bool"),
     Field("search.max_searches", "int", 1, 1000),
     Field("search.sound_on_match", "bool"),
-    Field("search.min_own_gold", "amount"),
+    Field("search.min_own_gold_share", "percent", 0, 100),
     Field("search.maintain_only", "bool"),
     # Attack
     Field("attack.sides", "sides"),
@@ -57,6 +57,7 @@ FIELDS = [
     Field("bot.collect_gold", "bool"),
     Field("bot.collect_elixir", "bool"),
     Field("bot.collect_dark", "bool"),
+    Field("bot.collect_every", "int", 1, 100),
     Field("bot.collect_loot_cart", "bool"),
     Field("bot.stop_when_full", "resources"),
     Field("bot.mode", "text"),
@@ -79,19 +80,36 @@ FIELDS = [
     Field("builder.return_home_after", "bool"),
     Field("builder.speed_up", "bool"),
     Field("builder.collect_resources", "bool"),
+    Field("builder.collect_every", "int", 1, 100),
     Field("builder.collect_cart", "bool"),
     Field("builder.cart_every_min", "int", 1, 100),
     Field("builder.cart_every_max", "int", 1, 100),
     Field("builder.walls", "bool"),
     Field("builder.walls_use", "text"),
-    Field("builder.walls_min_gold", "amount"),
-    Field("builder.walls_min_elixir", "amount"),
-    Field("builder.walls_per_round", "int", 1, 50),
+    Field("builder.walls_keep_gold", "percent", 0, 100),
+    Field("builder.walls_keep_elixir", "percent", 0, 100),
+    Field("builder.upgrade", "bool"),
+    Field("builder.upgrade_first", "text"),
+    Field("builder.upgrade_lab", "bool"),
     Field("walls.enabled", "bool"),
     Field("walls.use", "text"),
-    Field("walls.min_gold", "amount"),
-    Field("walls.min_elixir", "amount"),
-    Field("walls.max_per_round", "int", 1, 50),
+    Field("walls.pick", "text"),
+    Field("walls.keep_gold", "percent", 0, 100),
+    Field("walls.keep_elixir", "percent", 0, 100),
+    Field("walls.only_when_full", "bool"),
+    Field("upgrade.enabled", "bool"),
+    Field("upgrade.first", "text"),
+    Field("upgrade.buildings", "bool"),
+    Field("upgrade.lab", "bool"),
+    Field("upgrade.pets", "bool"),
+    # What the storages hold
+    Field("storage.gold", "amount"),
+    Field("storage.elixir", "amount"),
+    Field("storage.dark", "amount"),
+    Field("storage.read", "bool"),
+    Field("storage.builder_gold", "amount"),
+    Field("storage.builder_elixir", "amount"),
+    Field("storage.builder_read", "bool"),
     # Clan
     Field("clan.donate", "bool"),
     Field("clan.donate_main", "units"),
@@ -130,6 +148,7 @@ FIELDS = [
     Field("device.memory", "int", 2048, 8192),
     Field("device.ldplayer", "text"),
     Field("device.ldplayer_index", "int", 0, 99),
+    Field("device.mumu_index", "int", 0, 99),
     Field("device.serial", "text"),
     Field("device.adb_path", "text"),
 ]
@@ -166,6 +185,8 @@ def _set(config: Config, path: str, value: Any) -> None:
 
 def _display(field: Field, value: Any) -> Any:
     if field.kind == "amount":
+        if field.path.startswith("storage.") and not value:
+            return ""  # not known yet
         return f"{value:,}"
     if field.kind in ("sides", "resources", "hours", "units"):
         return list(value)

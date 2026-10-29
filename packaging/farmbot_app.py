@@ -22,6 +22,10 @@ def main() -> int:
     try:
         if args == ["--self-test"]:
             return self_test()
+        if not args or args[0] == "gui":
+            from farmbot import splash
+
+            splash.show()  # first thing: loading the rest takes a while
         from farmbot.cli import main as cli_main
 
         return cli_main(args or ["gui"])

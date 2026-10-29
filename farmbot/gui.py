@@ -15,9 +15,10 @@ Tab between controls, Enter presses the focused button.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import logging
 import queue
-import sys
 import threading
 import time
 from html import escape
@@ -26,20 +27,25 @@ from typing import Any, Callable
 
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
-from PySide6.QtWidgets import (QAbstractButton, QApplication, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QListWidgetItem,
-                               QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtGui import QColor, QCursor, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtWidgets import (QAbstractButton, QApplication, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+                               QListWidgetItem, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
+
+# Loading QFluentWidgets prints an ad for its Pro version, which the windowed
+# exe would write to farmbot.log: load it with printing switched off.
+with contextlib.redirect_stdout(io.StringIO()):
+    import qfluentwidgets  # noqa: F401
 from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox, ElevatedCardWidget,
-                            FluentIcon as FIF, FluentWindow, InfoBar, InfoBarIcon, InfoBarPosition, LineEdit, ListWidget,
-                            NavigationItemPosition, PlainTextEdit, PrimaryPushButton, ProgressBar, PushButton,
-                            SegmentedWidget,
+                            Action, FluentIcon as FIF, FluentWindow, InfoBadge, InfoBadgePosition, InfoBar, InfoBarIcon, InfoBarPosition, LineEdit, ListWidget, MessageBox,
+                            NavigationAvatarWidget, NavigationItemPosition, PlainTextEdit, PrimaryPushButton, ProgressBar, PushButton,
+                            RoundMenu, SegmentedWidget,
                             SettingCard, SettingCardGroup, SimpleCardWidget, Slider, SmoothScrollArea,
                             StrongBodyLabel, SubtitleLabel, SwitchButton, Theme, TitleLabel, TogglePushButton,
                             isDarkTheme, qconfig, setCustomStyleSheet, setTheme, setThemeColor)
 
-from farmbot import __version__, catalog, icons
-from farmbot.config import Config, ensure_config, load_config, save_config
-from farmbot.form import BY_PATH, apply_form, form_values, validate
+from farmbot import __version__, accounts, catalog, icons, splash
+from farmbot.config import EMULATORS, Config, ensure_config, load_config
+from farmbot.form import BY_PATH, apply_form, form_values, parse_amount, validate
 from farmbot.friendly import Problem, Status, describe_status, explain
 from farmbot.geometry import Rect
 from farmbot.vision import TemplateLibrary
@@ -51,7 +57,7 @@ ASSETS = Path(__file__).parent / "assets"
 LOGO = ASSETS / "cocfarm.png"
 ACCENT = "#4c9aff"
 ICON_TOOLS = getattr(FIF, "DEVELOPER_TOOLS", FIF.SETTING)
-MEMORY_CHOICES = (2048, 4096, 8192)  # MB; sizes both BlueStacks and LDPlayer accept
+MEMORY_CHOICES = (2048, 4096, 8192)  # MB; sizes BlueStacks, LDPlayer and MuMu all accept
 DPI_CHOICES = (160, 240, 320)
 TRAINED_DISPLAY = {"device.display_width": 860, "device.display_height": 672, "device.display_dpi": 240}
 TRAINED_NOTE = "COCFARM is trained on 860 x 672 at 240 DPI; other values may stop it reading the game."
@@ -523,7 +529,8 @@ class FarmbotWindow(FluentWindow):
         self.first_run = ensure_config(self.config_path)
         if self.first_run:
             log.info("First run: created %s with the settings for BlueStacks at 860 x 672", self.config_path)
-        self.config = load_config(self.config_path)
+        self.profiles = accounts.Profiles.beside(self.config_path)
+        self.config = accounts.load_active(self.config_path)  # with its profile's settings, if one is in use
         if serial:
             self.config.device.serial = serial
         self.events: queue.Queue = queue.Queue()
@@ -533,6 +540,8 @@ class FarmbotWindow(FluentWindow):
         self.bindings: dict[str, Binding] = {}
         self.cards: dict[str, Card] = {}
         self.dependents: list[tuple[str, list[Binding], Any]] = []
+        # Share sliders: (path, the storage size it's a share of, its label, the resource's name)
+        self.shares: list[tuple[str, str, QLabel, str]] = []
         self.has_errors = False
         self._loading = False
         self.session_start: float | None = None
@@ -559,6 +568,10 @@ class FarmbotWindow(FluentWindow):
         self.pages: dict[str, QWidget] = {}
         self.mirrors: dict[str, list[Binding]] = {}  # a setting shown on two pages
         self.mirror_cards: dict[str, list[Card]] = {}
+        # Red badges on the side bar's pages and the tabs holding a setting with a mistake.
+        self.error_badges: list[QWidget] = []
+        self.error_places: list[tuple[str, str | None]] = []  # (page, tab) of each, shown
+        self.first_error: Card | None = None
         self._syncing = False
         self.status_now = Status("ready", "")
         self.problem: Problem | None = None
@@ -575,6 +588,11 @@ class FarmbotWindow(FluentWindow):
         self._add_page(self._setup(), FIF.CHECKBOX if hasattr(FIF, "CHECKBOX") else FIF.ACCEPT, "Setup",
                        NavigationItemPosition.BOTTOM)
         self._add_page(self._advanced(), FIF.SETTING, "Advanced", NavigationItemPosition.BOTTOM)
+        # The account's profile: picked by the player name in the game, or by hand here.
+        self.profile_nav = NavigationAvatarWidget("")
+        self.navigationInterface.addWidget("profile", self.profile_nav, self._profile_menu,
+                                           NavigationItemPosition.BOTTOM, tooltip="Profile: settings for this account")
+        self._show_profiles()
         self._find_bluestacks()  # fills both Setup and Advanced
         self.navigationInterface.expand(useAni=False)
 
@@ -643,6 +661,7 @@ class FarmbotWindow(FluentWindow):
         self.status_label = CaptionLabel("")
         self.status_label.setMinimumWidth(320)
         self.save_label = CaptionLabel("")
+        self.save_label.mousePressEvent = lambda _e: self._go_to_error()  # "Fix 1 setting": show it
         self.start_button = PrimaryPushButton(FIF.PLAY, "Start")
         self.start_button.setToolTip("Start farming (F5)")
         self.start_button.clicked.connect(self.start)
@@ -731,12 +750,68 @@ class FarmbotWindow(FluentWindow):
         slider = Slider(Qt.Horizontal)
         slider.setRange(1, 9)
         slider.setFixedWidth(220)
-        value = StrongBodyLabel("")
+        value = StrongBodyLabel(str(slider.value()))  # setting it to 1 (its least) changes nothing, so no signal
         value.setFixedWidth(20)
         slider.valueChanged.connect(lambda v: value.setText(str(v)))
         slow, fast = _muted(CaptionLabel("Slow")), _muted(CaptionLabel("Fast"))
         self._bind(path, Binding(slider.value, lambda v: slider.setValue(int(v)), slider.valueChanged.connect, [slider]))
         return self._card(group, path, icon, title, help_text, slow, slider, fast, value)
+
+    def share(self, group, path: str, icon, title: str, help_text: str, storage: str, noun: str) -> Card:
+        """A 0-100% slider for a share of what a storage holds, with that
+        amount beside it (``storage``: the path of the storage's size)."""
+        slider = Slider(Qt.Horizontal)
+        slider.setRange(0, 100)
+        slider.setFixedWidth(160)
+        amount = StrongBodyLabel("")
+        amount.setFixedWidth(170)  # "70%  ·  14,700,000 elixir"
+        self._bind(path, Binding(lambda: str(slider.value()), lambda v: slider.setValue(round(float(v))),
+                                 slider.valueChanged.connect, [slider]))
+        self.shares.append((path, storage, amount, noun))
+        return self._card(group, path, icon, title, help_text, slider, amount)
+
+    def _show_shares(self, form: dict[str, Any]) -> None:
+        for path, storage, label, noun in self.shares:
+            share = int(form.get(path) or 0)
+            try:
+                most = parse_amount(form.get(storage, ""))
+            except ValueError:
+                most = 0
+            label.setText(f"{share}%  ·  {round(share / 100 * most):,} {noun}" if most else
+                          f"{share}%  ·  size not known yet")
+
+    def _storage_group(self, page: Page, village: str) -> None:
+        """What the storages hold: filled in by the bot, editable by hand
+        (editing one turns reading it from the game off, so it's kept)."""
+        prefix = "builder_" if village == "builder" else ""
+        read = f"storage.{prefix}read"
+        group = page.add(SettingCardGroup("Storages"))
+        self.switch(group, read, FIF.SYNC, "Read from the game",
+                    "Once a day, the first time it's in this village, it taps your loot at the top right to see "
+                    "what your storages hold. Off: it keeps the amounts below.")
+        kinds = {"gold": "Gold", "elixir": "Elixir"}
+        if village == "home":
+            kinds["dark"] = "Dark elixir"
+        paths = []
+        for kind, name in kinds.items():
+            path = f"storage.{prefix}{kind}"
+            paths.append(path)
+            self.amount(group, path, FIF.SAVE, f"{name} storages hold",
+                        "Filled in from the game. Wrong? Type the right amount: reading turns off so it's kept.")
+            edit = self.bindings[path].widgets[0]
+            edit.setPlaceholderText("not known yet")
+            edit.textEdited.connect(lambda _, r=read: self.bindings[r].set(False))  # typed by you, not the bot
+
+        def clear() -> None:
+            for path in paths:
+                self.bindings[path].set("")
+            self.bindings[read].set(True)
+
+        button = PushButton(FIF.DELETE, "Clear")
+        button.clicked.connect(clear)
+        self._card(group, None, FIF.DELETE, "Read them again",
+                   "Clears the amounts above; they're read in the game the next time the bot is in this village. "
+                   "Switching accounts? Clear them before pressing Start.", button)
 
     def segments(self, group, path: str, icon, title: str, help_text: str, keys: list[str] | dict[str, str],
                  width: int = 60) -> Card:
@@ -822,6 +897,97 @@ class FarmbotWindow(FluentWindow):
         layout.addWidget(self.gained_note)
         return card
 
+    def _show_profiles(self) -> None:
+        """The profile in use, at the bottom of the side bar."""
+        active = self.config.profiles.active
+        self.profile_nav.setName(active or "No profile yet")
+
+    def _profile_menu(self) -> None:
+        """Click on the profile: pick another one, or delete this one."""
+        menu = RoundMenu(parent=self)
+        names = self.profiles.names()
+        active = self.config.profiles.active
+        running = self._running()
+        if not names:
+            note = Action(FIF.PEOPLE, "Made when the bot first sees an account")
+            note.setEnabled(False)
+            menu.addAction(note)
+        for name in names:
+            action = Action(FIF.ACCEPT if name == active else FIF.PEOPLE, name)
+            action.setEnabled(not running)
+            action.triggered.connect(lambda _=False, n=name: self._use_profile(n) if n != active else None)
+            menu.addAction(action)
+        if running:
+            menu.addSeparator()
+            note = Action(FIF.INFO, "The bot picks the profile while it runs")
+            note.setEnabled(False)
+            menu.addAction(note)
+        elif active:
+            menu.addSeparator()
+            delete = Action(FIF.DELETE, f"Delete {active}")
+            delete.triggered.connect(self._delete_profile)
+            menu.addAction(delete)
+        menu.exec(QCursor.pos())
+
+    def _use_profile(self, name: str) -> None:
+        """Put profile ``name``'s settings ("": the main file's) in place:
+        the running bot holds the same Config, so it plays with them too."""
+        if self.save_timer.isActive():  # the last edits belong to the profile being left
+            self.save_timer.stop()
+            self._autosave()
+        main = load_config(self.config_path)
+        source = self.profiles.load(name, main) if name else main
+        accounts.take(source, self.config)
+        self.config.profiles.active = name
+        accounts.save_active(self.config, self.config_path)
+        self._load()
+        self._changed(save=False)
+        self._show_profiles()
+
+    def _delete_profile(self) -> None:
+        name = self.config.profiles.active
+        if not name:
+            return
+        box = MessageBox(f"Delete {name}?", "Its settings go. If the bot sees that account again, it makes a new "
+                         "profile from the settings in use.", self)
+        if not box.exec():
+            return
+        self._use_profile("")
+        self.profiles.delete(name)
+        self._show_profiles()
+
+    def _account_from_bot(self, mask: np.ndarray) -> str | None:
+        """Bot thread: the profile for the account with this name (switched
+        to on the window's thread, which owns the settings)."""
+        box: dict[str, str | None] = {}
+        done = threading.Event()
+        self.events.put(("account", (mask, box, done)))
+        while not done.wait(0.5):
+            if self.stop_event is None or self.stop_event.is_set():
+                return None
+        return box.get("name")
+
+    def _account_seen(self, mask: np.ndarray) -> str | None:
+        if self.save_timer.isActive():
+            self.save_timer.stop()
+            self._autosave()
+        try:
+            name, made = accounts.for_account(self.profiles, self.config, mask)
+        except (OSError, ValueError) as exc:
+            log.warning("Couldn't pick a profile: %s", exc)
+            return None
+        if name is None:
+            return None
+        if made:
+            InfoBar.success("New account", f"Made the profile {name} for it, from the settings in use. Click it "
+                            "at the bottom left to switch profiles.", duration=8000,
+                            position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
+        if name != self.config.profiles.active:
+            self._use_profile(name)
+        else:
+            self._show_profiles()
+        return name
+
     def _home(self) -> Page:
         page = Page("home", "Dashboard", "What COCFARM is doing right now, and what it has earned.")
         self.setup_banner = SimpleCardWidget()
@@ -894,7 +1060,7 @@ class FarmbotWindow(FluentWindow):
         session.setSpacing(16)
         self.stat_value: dict[str, QLabel] = {}
         self.stat_note: dict[str, QLabel] = {}
-        for key, name, col in (("bases", "Bases looked at", 0), ("attacks", "Attacks", 1), ("runtime", "Running for", 4)):
+        for key, name, col in (("bases", "Bases seen", 0), ("attacks", "Attacks", 1), ("runtime", "Running for", 4)):
             card, value, note = self._stat(name, big=False)
             self.stat_value[key], self.stat_note[key] = value, note
             session.addWidget(card, 0, col)
@@ -1031,14 +1197,20 @@ class FarmbotWindow(FluentWindow):
         from qfluentwidgets import TableWidget
 
         self.history_table = TableWidget()
-        headers = ["Time", "Offered gold", "Offered elixir", "Offered dark", "Gained gold", "Gained elixir",
-                   "Gained dark"]
+        headers = ["Time", "Offered\ngold", "Offered\nelixir", "Offered\ndark", "Gained\ngold", "Gained\nelixir",
+                   "Gained\ndark"]  # two lines: narrower columns, so the amounts fit at the window's smallest
         self.history_table.setColumnCount(len(headers))
         self.history_table.setHorizontalHeaderLabels(headers)
         self.history_table.verticalHeader().hide()
         self.history_table.setEditTriggers(TableWidget.NoEditTriggers)
         self.history_table.setMinimumHeight(360)
-        self.history_table.horizontalHeader().setStretchLastSection(True)
+        # Each column as wide as its amounts, the last one taking what's left: it all fits the page's
+        # width at the window's smallest (no sideways scrolling).
+        header = self.history_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True)
+        self.history_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.history_table.setWordWrap(False)
         page.add(self.history_table)
         self._show_history()
         return page
@@ -1065,7 +1237,9 @@ class FarmbotWindow(FluentWindow):
             return count, sum_
 
         def loot_text(loot: Loot) -> str:
-            return f"gold {_short(loot.gold)} · elixir {_short(loot.elixir)} · dark {_short(loot.dark)}"
+            # No-break spaces: a narrow tile wraps between the amounts, not inside one.
+            return " · ".join(f"{name} {_short(value)}" for name, value in
+                              (("gold", loot.gold), ("elixir", loot.elixir), ("dark", loot.dark)))
 
         for key, since in (("today", today), ("week", today - timedelta(days=6)), ("all", None)):
             count, loot = total(since)
@@ -1131,7 +1305,7 @@ class FarmbotWindow(FluentWindow):
         table.setRowCount(len(latest))
         for r, row in enumerate(latest):
             gained = row.gained
-            cells = [f"{row.time:%Y-%m-%d %H:%M}", f"{row.target.gold:,}", f"{row.target.elixir:,}",
+            cells = [f"{row.time:%b %d  %H:%M}", f"{row.target.gold:,}", f"{row.target.elixir:,}",
                      f"{row.target.dark:,}"] + ([f"{gained.gold:+,}", f"{gained.elixir:+,}", f"{gained.dark:+,}"]
                                                 if gained else ["?", "?", "?"])
             for c, text in enumerate(cells):
@@ -1139,7 +1313,6 @@ class FarmbotWindow(FluentWindow):
                 if c:
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 table.setItem(r, c, item)
-        table.resizeColumnsToContents()
 
     def _open_history_file(self) -> None:
         import os
@@ -1270,12 +1443,13 @@ class FarmbotWindow(FluentWindow):
         self.switch(loot, "search.match_any", FIF.FILTER, "Any one is enough",
                     "On: attack when any one amount above is met. Off: all of them must be met.")
         more = page.add(SettingCardGroup("While searching"))
-        self.amount(more, "search.min_own_gold", FIF.SHOPPING_CART, "Don't search while my gold is below",
-                    "Each Next costs gold. 0 always searches.")
+        self.share(more, "search.min_own_gold_share", FIF.SHOPPING_CART, "Don't search while my gold is below",
+                   "A share of what your gold storages hold: each Next costs gold. 0% always searches.",
+                   "storage.gold", "gold")
         self.switch(more, "search.sound_on_match", FIF.RINGER, "Sound on match",
                     "Beeps when it finds a base worth attacking.")
         self.depends("search.maintain_only", "search.min_gold", "search.min_elixir", "search.min_dark",
-                     "search.match_any", "search.min_own_gold",
+                     "search.match_any", "search.min_own_gold_share",
                      "search.sound_on_match", when=False)
 
     def _attacking_tab(self, page: Page) -> None:
@@ -1344,20 +1518,47 @@ class FarmbotWindow(FluentWindow):
         self.switch(village, "bot.collect_gold", FIF.MARKET, "Gold", "From the gold mines.")
         self.switch(village, "bot.collect_elixir", FIF.MARKET, "Elixir", "From the elixir collectors.")
         self.switch(village, "bot.collect_dark", FIF.MARKET, "Dark elixir", "From the dark elixir drills.")
-        self.depends("bot.collect_resources", "bot.collect_gold", "bot.collect_elixir", "bot.collect_dark")
+        self.number(village, "bot.collect_every", FIF.SYNC, "Every",
+                    "1 = every round. Always the first round after Start.", "rounds")
+        self.depends("bot.collect_resources", "bot.collect_gold", "bot.collect_elixir", "bot.collect_dark",
+                     "bot.collect_every")
         self.switch(village, "bot.collect_loot_cart", FIF.SHOPPING_CART, "Collect the loot cart",
                     "Empties the loot cart when it shows \"Collect\".")
+        self._storage_group(page, "home")
         walls = page.add(SettingCardGroup("Walls"))
         self.switch(walls, "walls.enabled", FIF.UP, "Upgrade walls with spare loot",
-                    "Between attacks it upgrades the cheapest suggested wall. Off by default: it spends loot.")
+                    "Between attacks it upgrades as many walls as the spare loot covers, all at once. Off by "
+                    "default: it spends loot.")
+        self.segments(walls, "walls.pick", FIF.SCROLL, "Which wall",
+                      "Cheapest: sorts the Build list Cost Min and takes the first wall. First: the first wall the "
+                      "list shows, without sorting it (quicker).", {"cheapest": "Cheapest", "first": "First"}, width=90)
         self.segments(walls, "walls.use", FIF.MARKET, "Pay with", "Which resource may go on walls.",
                       {"gold": "Gold", "elixir": "Elixir", "both": "Either"}, width=90)
-        self.amount(walls, "walls.min_gold", FIF.SAVE, "Keep at least this much gold", "Walls only get what's above it.")
-        self.amount(walls, "walls.min_elixir", FIF.SAVE, "Keep at least this much elixir",
-                    "Walls only get what's above it.")
-        self.number(walls, "walls.max_per_round", FIF.TILES, "Walls per round", "At most this many between two attacks.")
-        self.depends("walls.enabled", "walls.use", "walls.min_gold", "walls.min_elixir", "walls.max_per_round")
-        self._note(page, self._template_note("Collecting resources", "Collecting the loot cart", "Upgrading walls"))
+        self.share(walls, "walls.keep_gold", FIF.SAVE, "Keep this much gold",
+                   "A share of what your gold storages hold; walls only get what's above it.", "storage.gold", "gold")
+        self.share(walls, "walls.keep_elixir", FIF.SAVE, "Keep this much elixir",
+                   "A share of what your elixir storages hold; walls only get what's above it.", "storage.elixir",
+                   "elixir")
+        self.switch(walls, "walls.only_when_full", FIF.CHECKBOX, "Only when storage is full",
+                    "Spends gold or elixir on walls only once its storages are full.")
+        self.depends("walls.enabled", "walls.pick", "walls.use", "walls.keep_gold", "walls.keep_elixir",
+                     "walls.only_when_full")
+        ups = page.add(SettingCardGroup("Upgrades"))
+        self.switch(ups, "upgrade.enabled", FIF.UP, "Upgrade when storage is full",
+                    "Spends a full storage's resource on the dearest upgrades it covers, while builders are "
+                    "free. Off by default: it spends loot. Runs before walls, keeping one builder for them.")
+        self.segments(ups, "upgrade.first", FIF.PEOPLE, "Builders go to first",
+                      "That kind of building is upgraded first, then the others; Any: the dearest of anything.",
+                      {"hero": "Heroes", "defense": "Defenses", "resource": "Resources", "army": "Army",
+                       "none": "Any"}, width=90)
+        self.switch(ups, "upgrade.buildings", FIF.HOME, "Buildings and heroes", "With the free builders.")
+        self.switch(ups, "upgrade.lab", FIF.EDUCATION, "Research", "In the laboratory, when it's free (elixir or "
+                    "dark elixir).")
+        self.switch(ups, "upgrade.pets", FIF.HEART, "Pets", "Last, with the dark elixir left, when the pet house "
+                    "is free.")
+        self.depends("upgrade.enabled", "upgrade.first", "upgrade.buildings", "upgrade.lab", "upgrade.pets")
+        self._note(page, self._template_note("Collecting resources", "Collecting the loot cart", "Upgrading walls",
+                                             "Upgrades"))
 
     def _clan_tab(self, page: Page) -> None:
         from farmbot.units import SIEGE_MACHINES, SPELLS, TROOPS
@@ -1452,7 +1653,11 @@ class FarmbotWindow(FluentWindow):
     def _builder_village_tab(self, page: Page) -> None:
         loot = page.add(SettingCardGroup("Collecting"))
         self.switch(loot, "builder.collect_resources", FIF.BASKETBALL,
-                    "Collect the gold mines, elixir collectors and gem mine", "Before each builder battle.")
+                    "Collect the gold mines, elixir collectors and gem mine",
+                    "Looks over both bases, so it takes a trip to the second base and back.")
+        self.number(loot, "builder.collect_every", FIF.SYNC, "Every",
+                    "1 = before each battle. Always the first battle after Start.", "battles")
+        self.depends("builder.collect_resources", "builder.collect_every")
         self.switch(loot, "builder.collect_cart", FIF.SHOPPING_CART, "Collect the elixir cart",
                     "The cart by the dock that holds your defense rewards.")
         self.number_range(loot, "builder.cart_every_min", "builder.cart_every_max", FIF.SYNC, "Every",
@@ -1460,19 +1665,33 @@ class FarmbotWindow(FluentWindow):
                           "battles")
         self.depends("builder.collect_cart", "builder.cart_every_min", "builder.cart_every_max")
 
+        self._storage_group(page, "builder")
         walls = page.add(SettingCardGroup("Walls"))
         self.switch(walls, "builder.walls", FIF.UP, "Upgrade builder base walls with spare loot",
-                    "Before each battle it upgrades the cheapest wall. Off by default: it spends loot.")
+                    "Before each battle it upgrades as many of the cheapest walls as the spare loot covers, all at "
+                    "once. Off by default: it spends loot.")
         self.segments(walls, "builder.walls_use", FIF.MARKET, "Pay with", "Which resource may go on walls.",
                       {"gold": "Gold", "elixir": "Elixir", "both": "Either"}, width=90)
-        self.amount(walls, "builder.walls_min_gold", FIF.SAVE, "Keep at least this much gold",
-                    "Walls only get what's above it.")
-        self.amount(walls, "builder.walls_min_elixir", FIF.SAVE, "Keep at least this much elixir",
-                    "Walls only get what's above it.")
-        self.number(walls, "builder.walls_per_round", FIF.TILES, "Walls per round",
-                    "At most this many between two battles.")
-        self.depends("builder.walls", "builder.walls_use", "builder.walls_min_gold", "builder.walls_min_elixir",
-                     "builder.walls_per_round")
+        self.share(walls, "builder.walls_keep_gold", FIF.SAVE, "Keep this much gold",
+                   "A share of what your builder gold storages hold; walls only get what's above it.",
+                   "storage.builder_gold", "gold")
+        self.share(walls, "builder.walls_keep_elixir", FIF.SAVE, "Keep this much elixir",
+                   "A share of what your builder elixir storages hold; walls only get what's above it.",
+                   "storage.builder_elixir", "elixir")
+        self.depends("builder.walls", "builder.walls_use", "builder.walls_keep_gold", "builder.walls_keep_elixir")
+
+        ups = page.add(SettingCardGroup("Upgrades"))
+        self.switch(ups, "builder.upgrade", FIF.UP, "Upgrade when storage is full",
+                    "Spends a full gold or elixir storage on the dearest upgrades it covers, while builders are "
+                    "free. Off by default: it spends loot. Runs before walls, keeping one builder for them.")
+        self.segments(ups, "builder.upgrade_first", FIF.PEOPLE, "Builders go to first",
+                      "That kind of building is upgraded first, then the others; Any: the dearest of anything.",
+                      {"hero": "Heroes", "defense": "Defenses", "resource": "Resources", "army": "Army",
+                       "none": "Any"}, width=90)
+        self.switch(ups, "builder.upgrade_lab", FIF.EDUCATION, "Research",
+                    "In the star laboratory, when it's free (elixir).")
+        self.depends("builder.upgrade", "builder.upgrade_first", "builder.upgrade_lab")
+        self._note(page, self._template_note("Builder base upgrades", "Upgrades"))
 
     def _when_to_play(self) -> Page:
         page = Page("when_to_play", "When to play", "The hours it may play, its breaks, and when it stops by itself.")
@@ -1487,7 +1706,8 @@ class FarmbotWindow(FluentWindow):
         hour_buttons = {}
         for h in range(24):
             b = TogglePushButton(f"{h:02d}")
-            b.setFixedWidth(64)
+            b.setMinimumWidth(36)  # twelve share the card's width: fixed widths overlapped at the window's smallest
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.setToolTip(f"{h:02d}:00 to {h:02d}:59")
             grid.addWidget(b, h // 12, h % 12)
             hour_buttons[h] = b
@@ -1506,7 +1726,6 @@ class FarmbotWindow(FluentWindow):
         self.hours_error = CaptionLabel("")
         tint(self.hours_error, BAD)
         grid.addWidget(self.hours_error, 3, 0, 1, 12)
-        grid.setColumnStretch(12, 1)
         hours_group.addSettingCard(grid_card)
         self.depends("schedule.enabled", "schedule.active_hours")
 
@@ -1748,13 +1967,14 @@ class FarmbotWindow(FluentWindow):
         step = self._step(page, 0)
         self.segments(step, "device.mode", FIF.CONNECT if hasattr(FIF, "CONNECT") else FIF.WIFI, "Emulator",
                       "The Android emulator Clash of Clans runs in on this PC. Other: any device by its address "
-                      "(Advanced).", {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "manual": "Other"}, width=100)
+                      "(Advanced).", {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "mumu": "MuMu",
+                                     "manual": "Other"}, width=90)
         self.bluestacks_info = BodyLabel("")
         self.bluestacks_info.setWordWrap(True)
         self.bluestacks_info.setMinimumWidth(240)
         self.bluestacks_info.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         refresh = PushButton(FIF.SYNC, "Look again")
-        refresh.setToolTip("Look for BlueStacks and LDPlayer again, e.g. after installing one")
+        refresh.setToolTip("Look for BlueStacks, LDPlayer and MuMu again, e.g. after installing one")
         refresh.clicked.connect(self._find_bluestacks)
         self.found_card = self._card(step, None, FIF.INFO, "On this PC", "", self.bluestacks_info, refresh)
         self.instance_box = EditableComboBox()
@@ -1864,7 +2084,7 @@ class FarmbotWindow(FluentWindow):
     def _steps_done(self) -> list[bool]:
         mode = self.bindings["device.mode"].get()
         found = (mode == "manual" or (mode == "bluestacks" and self._found.get("bluestacks"))
-                 or (mode == "ldplayer" and self._found.get("ldplayer")))
+                 or (mode in ("ldplayer", "mumu") and self._found.get(mode)))
         form = self.collect()
         loot = any(str(form.get(p, "0")).strip() not in ("", "0") for p in
                    ("search.min_gold", "search.min_elixir", "search.min_dark"))
@@ -1943,8 +2163,8 @@ class FarmbotWindow(FluentWindow):
         self._bind("device.memory", bind_choice(memory, {str(mb): f"{mb} MB" for mb in MEMORY_CHOICES}))
         self._card(emulator, "device.memory", ICON_TOOLS, "Memory", "2048 MB is enough for the game.", memory)
         self.depends("device.set_resources", "device.cpus", "device.memory")
-        self.depends("device.mode", "device.enable_adb", "device.set_display", "device.set_resources",
-                     when=("bluestacks", "ldplayer"))
+        self.depends("device.mode", "device.set_display", "device.set_resources", when=EMULATORS)
+        self.depends("device.mode", "device.enable_adb", when=("bluestacks", "ldplayer"))  # always on in MuMu
         self.ldplayer_box = EditableComboBox()
         self.ldplayer_box.setFixedWidth(240)
         self.ldplayer_box.setPlaceholderText("Newest installed")
@@ -1954,6 +2174,9 @@ class FarmbotWindow(FluentWindow):
         self.number(emulator, "device.ldplayer_index", FIF.TILES, "LDPlayer instance number",
                     "0 is the first instance in LDMultiPlayer.")
         self.depends("device.mode", "device.ldplayer", "device.ldplayer_index", when="ldplayer")
+        self.number(emulator, "device.mumu_index", FIF.TILES, "MuMu instance number",
+                    "0 is the first instance in MuMu Multi-instance.")
+        self.depends("device.mode", "device.mumu_index", when="mumu")
         self.text(emulator, "device.serial", FIF.CONNECT if hasattr(FIF, "CONNECT") else FIF.WIFI, "Device address",
                   "For Emulator = Other: the ADB address of any emulator or phone, e.g. 127.0.0.1:5555.", width=200)
         self.depends("device.mode", "device.serial", when="manual")
@@ -2198,8 +2421,8 @@ class FarmbotWindow(FluentWindow):
         self.seen_view.show()
 
     def _find_bluestacks(self) -> None:
-        """Fill in what's installed: BlueStacks and every LDPlayer."""
-        from farmbot import bluestacks, ldplayer
+        """Fill in what's installed: BlueStacks, every LDPlayer, and MuMu."""
+        from farmbot import bluestacks, ldplayer, mumu
 
         lines = []
         install = bluestacks.find_install()
@@ -2218,11 +2441,14 @@ class FarmbotWindow(FluentWindow):
         self.ldplayer_box.setText(current)
         lines.append(("✓ " + ", ".join(i.name for i in installs) + ": installed") if installs
                      else "✗ LDPlayer: not installed")
-        if install is None and not installs:
-            lines.append("Install BlueStacks 5 (bluestacks.com) or LDPlayer 9 (ldplayer.net), then press Look again.")
-        self._found = {"bluestacks": install is not None, "ldplayer": bool(installs)}
+        mumu_install = mumu.find_install()
+        lines.append("✓ MuMu Player: installed" if mumu_install else "✗ MuMu Player: not installed")
+        self._found = {"bluestacks": install is not None, "ldplayer": bool(installs), "mumu": mumu_install is not None}
+        if not any(self._found.values()):
+            lines.append("Install BlueStacks 5 (bluestacks.com), LDPlayer 9 (ldplayer.net) or MuMu Player "
+                         "(mumuplayer.com), then press Look again.")
         self.bluestacks_info.setText(chr(10).join(lines))
-        tint(self.bluestacks_info, WARN if install is None and not installs else None)
+        tint(self.bluestacks_info, WARN if not any(self._found.values()) else None)
         self._show_steps()
 
     # ------------------------------------------------------------ form state
@@ -2243,6 +2469,7 @@ class FarmbotWindow(FluentWindow):
         form = self.collect()
         _, errors = validate(form)
         self.has_errors = bool(errors)
+        self._show_shares(form)
         for path, card in self.cards.items():
             card.show_error(errors.get(path))
         for path, cards in self.mirror_cards.items():
@@ -2274,8 +2501,14 @@ class FarmbotWindow(FluentWindow):
         self._show_big_buttons()
         if form.get("bot.theme") in THEMES and form.get("bot.theme") != self._theme:
             self._apply_theme(form.get("bot.theme"))
+        self._show_error_places(errors)
+        if not errors:
+            self.save_label.setToolTip("")
+            self.save_label.unsetCursor()
         if errors:
             self.save_label.setText(f"⚠ Fix {len(errors)} setting{'s' if len(errors) > 1 else ''}")
+            self.save_label.setToolTip("Show me")
+            self.save_label.setCursor(Qt.PointingHandCursor)
             tint(self.save_label, BAD)
             self.save_timer.stop()
         elif save:
@@ -2283,13 +2516,60 @@ class FarmbotWindow(FluentWindow):
             tint(self.save_label, MUTED)
             self.save_timer.start()
 
+    def _place_of(self, card: QWidget) -> tuple[str, str | None] | None:
+        """The page (and tab) a card is on."""
+        for key, page in self.pages.items():
+            if isinstance(page, TabbedPage):
+                for tab, body in page.tab_pages.items():
+                    if body.isAncestorOf(card):
+                        return key, tab
+            elif page.isAncestorOf(card):
+                return key, None
+        return None
+
+    def _show_error_places(self, errors: dict[str, str]) -> None:
+        """A red badge on each page and tab with a mistake in it (on the side
+        bar, and on the tab), so the setting can be found."""
+        cards = [c for path in errors for c in [self.cards.get(path), *self.mirror_cards.get(path, [])] if c]
+        places = list(dict.fromkeys(p for p in map(self._place_of, cards) if p))
+        self.first_error = cards[0] if cards else None
+        if places == self.error_places:
+            return
+        self.error_places = places
+        for badge in self.error_badges:
+            badge.hide()
+            badge.deleteLater()
+        self.error_badges = []
+        for page_key in dict.fromkeys(page for page, _ in places):
+            item = self.navigationInterface.widget(self.pages[page_key].objectName())
+            if item is not None:
+                self.error_badges.append(InfoBadge.error("!", self.navigationInterface, item,
+                                                         InfoBadgePosition.NAVIGATION_ITEM))
+        for page_key, tab in places:
+            page = self.pages[page_key]
+            if tab is not None and tab in page.tabs.items:
+                item = page.tabs.items[tab]
+                self.error_badges.append(InfoBadge.error("!", item.parentWidget(), item, InfoBadgePosition.TOP_RIGHT))
+
+    def _go_to_error(self) -> None:
+        """Open the page and tab of the first setting with a mistake, scrolled to it."""
+        card = self.first_error
+        place = self._place_of(card) if card is not None else None
+        if place is None:
+            return
+        page_key, tab = place
+        self.show_page(page_key, tab)
+        page = self.pages[page_key]
+        body = page.tab_pages[tab] if tab is not None else page
+        QTimer.singleShot(50, lambda: body.ensureWidgetVisible(card, 0, 80))
+
     def _autosave(self) -> bool:
         try:
             apply_form(self.config, self.collect())
         except ValueError:
             self._changed(save=False)
             return False
-        save_config(self.config, self.config_path)
+        accounts.save_active(self.config, self.config_path)
         self.save_label.setText("✓ Saved")
         tint(self.save_label, MUTED)
         return True
@@ -2332,6 +2612,7 @@ class FarmbotWindow(FluentWindow):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self._changed(save=False)
+        self._show_profiles()  # picked by the bot while it runs
         self.show_page("Dashboard")
 
     def stop(self) -> None:
@@ -2398,9 +2679,11 @@ class FarmbotWindow(FluentWindow):
                       on_resources=lambda loot: self.events.put(("resources", loot)),
                       on_attack=lambda record: self.events.put(("attack", record)),
                       on_builder=lambda battle: self.events.put(("builder", battle)),
+                      on_storage_max=lambda village, maxes: self.events.put(("storage_max", (village, maxes))),
+                      on_account=self._account_from_bot,
                       pause_event=self.pause_event,
                       reopen_device=(lambda: restart_emulator(self.config.device))
-                      if self.config.device.mode in ("bluestacks", "ldplayer") else None)
+                      if self.config.device.mode in EMULATORS else None)
             bot.run()
         except Exception as exc:  # shown in the window instead of a silent thread death
             log.error("Bot stopped: %s", exc)
@@ -2446,7 +2729,8 @@ class FarmbotWindow(FluentWindow):
         threading.Thread(target=work, daemon=True).start()
 
     def _emulator_name(self) -> str:
-        return {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer"}.get(self.config.device.mode, "the emulator")
+        return {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "mumu": "MuMu Player"}.get(
+            self.config.device.mode, "the emulator")
 
     def _show_device(self, ok: bool, message: str) -> None:
         if ok:
@@ -2626,6 +2910,13 @@ class FarmbotWindow(FluentWindow):
                 elif kind == "resources":
                     self.resources_label.setText(
                         f"You have  gold {data.gold:,}  ·  elixir {data.elixir:,}  ·  dark {data.dark:,}")
+                elif kind == "storage_max":  # read in the game: shown (and saved) like a typed amount
+                    village, maxes = data
+                    for resource, most in maxes.items():
+                        path = f"storage.{'builder_' if village == 'builder' else ''}{resource}"
+                        if path in self.bindings:
+                            self.bindings[path].set(f"{most:,}")
+                    self.save_timer.start()  # the day they were read too, even if the amounts didn't change
                 elif kind == "builder":
                     self._bb_show(data)
                     self._bb_stage("Done")
@@ -2657,6 +2948,12 @@ class FarmbotWindow(FluentWindow):
                     tint(self.notify_result, GOOD if data else BAD)
                 elif kind == "device":
                     self._show_device(*data)
+                elif kind == "account":  # the bot waits for the answer
+                    mask, box, done = data
+                    try:
+                        box["name"] = self._account_seen(mask)
+                    finally:
+                        done.set()
                 elif kind == "error":
                     self._show_problem(explain(data, self._emulator_name()))
                 elif kind == "finished":
@@ -2667,6 +2964,7 @@ class FarmbotWindow(FluentWindow):
                     self._show_pause_button()
                     self._changed(save=False)
                     self._show_big_buttons()
+                    self._show_profiles()
         except queue.Empty:
             pass
 
@@ -2776,15 +3074,7 @@ def _short(value: int) -> str:
 
 
 def create_app() -> QApplication:
-    if sys.platform == "win32":
-        # Own taskbar entry and icon, rather than grouping under python.exe.
-        import ctypes
-
-        try:
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("COCFARM.App")
-        except (AttributeError, OSError):
-            pass
-    app = QApplication.instance() or QApplication(sys.argv[:1])
+    app = splash.application()
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(QIcon(str(LOGO)))
     setTheme(Theme.DARK)
@@ -2794,8 +3084,9 @@ def create_app() -> QApplication:
 
 def run_gui(config_path: str, serial: str | None = None) -> int:
     app = create_app()
+    splash.message("Building the window…")
     window = FarmbotWindow(config_path, serial)
-    window.show()
+    splash.finish(window)  # shows the window
     return app.exec()
 
 

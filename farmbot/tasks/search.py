@@ -8,6 +8,8 @@ from typing import Callable
 
 from farmbot.config import RegionsConfig, SearchConfig
 from farmbot.game import Game, T
+from farmbot.geometry import Rect
+from farmbot.text import TextStyle
 
 log = logging.getLogger(__name__)
 
@@ -74,51 +76,97 @@ def read_settled_loot(game: Game, regions: RegionsConfig, interval: float = 0.3)
     return None
 
 
-def own_gold(game: Game, regions: RegionsConfig) -> int | None:
-    """Your gold, read from the home village's resource bar."""
-    return game.read_number(game.region(regions.rect("own_gold")), T.LOOT_FONT)
+def _own(game: Game, regions: RegionsConfig, name: str, shift: int = 0) -> int | None:
+    r = game.region(regions.rect(name))
+    return game.read_number(Rect(r.x - shift, r.y, r.w, r.h), T.LOOT_FONT)
 
 
-def own_resources(game: Game, regions: RegionsConfig) -> Loot | None:
+def own_gold(game: Game, regions: RegionsConfig, shift: int = 0) -> int | None:
+    """Your gold, read from the home village's resource bar (``shift``
+    pixels further left: a window open on the right pushes the bar over)."""
+    return _own(game, regions, "own_gold", shift)
+
+
+def own_resources(game: Game, regions: RegionsConfig, shift: int = 0) -> Loot | None:
     """Your gold, elixir and dark elixir from the home village's resource bar."""
-    gold = own_gold(game, regions)
-    elixir = game.read_number(game.region(regions.rect("own_elixir")), T.LOOT_FONT)
+    gold = own_gold(game, regions, shift)
+    elixir = _own(game, regions, "own_elixir", shift)
     if gold is None or elixir is None:
         return None
-    dark = game.read_number(game.region(regions.rect("own_dark")), T.LOOT_FONT) or 0
+    dark = _own(game, regions, "own_dark", shift) or 0
     return Loot(gold, elixir, dark)
 
 
-# OpenCV HSV ranges of each full bar, (low, high). The empty part of a bar
-# is see-through, so over grass it can have gold's hue, but it's never this
-# bright and saturated.
-FULL_COLOURS = {
-    "gold": ((18, 120, 180), (32, 255, 255)),
-    "elixir": ((140, 90, 160), (160, 255, 255)),
-    # Two-toned when full: a lighter purple top and a deep, dark purple bottom.
-    "dark": ((130, 35, 35), (150, 255, 175)),
-}
-FULL_SHARE = 0.8  # of the probe in the resource's colour
+# Tapping a resource bar opens a box under it, "Max: 21 000 000" first; tapping
+# it again closes it (in the builder base too). The "Max:" label is
+# smaller than the number, so pieces shorter than the digits are left out.
+MAX_STYLE = TextStyle(min_height_ratio=0.85)
+MAX_ROW = (33, 30)  # top and height of the "Max:" row, below the bar's middle
+MAX_SPAN = (190, 40)  # the row reaches this far left of the bar's number and right of it
+LEAST_STORAGE = 1000  # no storage holds less (a town hall 1's gold storage holds 1 500)
 
 
-def full_storages(game: Game, regions: RegionsConfig) -> set[str]:
-    """Which of your storages are full, from the home village's resource
-    bars. Bars fill from the right, so the patch at their left (empty) end
-    only turns the resource's colour once the storage is full."""
-    import cv2
-    import numpy as np
+def _max_region(game: Game, regions: RegionsConfig, kind: str) -> Rect:
+    r = game.region(regions.rect(f"own_{kind}"))
+    middle = r.y + r.h // 2
+    return Rect(r.x + r.w - MAX_SPAN[0], middle + MAX_ROW[0], MAX_SPAN[0] + MAX_SPAN[1], MAX_ROW[1])
 
-    screen = game._current()
-    full = set()
-    for kind, (lo, hi) in FULL_COLOURS.items():
-        r = game.region(regions.rect(f"full_{kind}"))
-        patch = screen[max(r.y, 0):r.y + r.h, max(r.x, 0):r.x + r.w]
-        if patch.size == 0:
-            continue
-        coloured = cv2.inRange(cv2.cvtColor(patch, cv2.COLOR_BGR2HSV), lo, hi)
-        if float(np.count_nonzero(coloured)) / coloured.size >= FULL_SHARE:
-            full.add(kind)
-    return full
+
+def storage_max(game: Game, regions: RegionsConfig, kind: str) -> int | None:
+    """How much the ``kind`` storages hold, from the box tapping its bar
+    opens (closed again after). ``None`` without the "Max:" picture."""
+    if not game.has(T.STORAGE_MAX):
+        return None
+    r = game.region(regions.rect(f"own_{kind}"))
+    bar = (r.x + r.w // 2, r.y + r.h // 2)
+    where = _max_region(game, regions, kind)
+
+    def is_open() -> bool:
+        game.refresh()
+        return game.find(T.STORAGE_MAX, region=where) is not None
+
+    most = None
+    for _ in range(2):  # a second tap if the game missed the first
+        game.tap(*bar)
+        game.wait(0.8)
+        if is_open():
+            most = game.vision.read_number(game._current(), where, T.LOOT_FONT, MAX_STYLE)
+            break
+    for _ in range(2):  # close it
+        if not is_open():
+            break
+        game.tap(*bar)
+        game.wait(0.6)
+    return most
+
+
+def storage_maxes(game: Game, regions: RegionsConfig, kinds: tuple[str, ...] = ("gold", "elixir", "dark")
+                  ) -> dict[str, int]:
+    """What each storage holds (no dark elixir on low town halls). The
+    builder base has only ``("gold", "elixir")``: its third bar is gems."""
+    game.refresh()
+    maxes = {}
+    for kind in kinds:
+        held = _own(game, regions, f"own_{kind}")
+        if held is None:
+            continue  # no such bar
+        most = storage_max(game, regions, kind)
+        # A misread size (say, numbers read at the wrong place before the
+        # UI's scale is known) would make that storage look full, or keep
+        # nothing of it: only a size that can hold what's in it is kept.
+        if most and most >= max(held, LEAST_STORAGE):
+            maxes[kind] = most
+        elif most:
+            log.info("Storage size read as %s for %s holding %s: not believed", f"{most:,}", kind, f"{held:,}")
+    return maxes
+
+
+FULL_AMOUNT = 0.99  # of what a storage holds: a little short of it is full enough
+
+
+def full_by_amount(loot: Loot, maxes: dict[str, int]) -> set[str]:
+    """Which storages are full, from what's in them and what they hold."""
+    return {k for k, most in maxes.items() if getattr(loot, k) >= most * FULL_AMOUNT}
 
 
 def start_search(game: Game) -> None:

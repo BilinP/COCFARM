@@ -38,7 +38,7 @@ match_any = false
 max_searches = 150
 next_delay = 2.5
 sound_on_match = false
-min_own_gold = 50000
+min_own_gold_share = 0.01  # of what your gold storages hold
 maintain_only = false
 
 [attack]

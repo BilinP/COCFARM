@@ -115,6 +115,7 @@ def main() -> int:
         "--icon", str(ROOT / "packaging" / "cocfarm.ico"),
         "--add-data", f"{ROOT / 'farmbot' / 'assets'}{os.pathsep}farmbot/assets",
         "--add-data", f"{ROOT / 'farmbot' / 'profiles'}{os.pathsep}farmbot/profiles",
+        "--add-data", f"{ROOT / 'farmbot' / 'ocr.ps1'}{os.pathsep}farmbot",  # Windows' OCR: reads player names
         "--collect-all", "qfluentwidgets",
         "--collect-all", "qframelesswindow",
         "--collect-submodules", "farmbot",

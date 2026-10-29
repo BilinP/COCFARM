@@ -95,7 +95,8 @@ val botSources = layout.buildDirectory.dir("botsrc")
 val copyBot by tasks.registering(Sync::class) {
     from(rootProject.file("../farmbot")) {
         into("farmbot")
-        exclude("**/__pycache__/**", "gui.py", "window.py", "bluestacks.py", "ldplayer.py", "cli.py", "__main__.py")
+        exclude("**/__pycache__/**", "gui.py", "splash.py", "window.py", "bluestacks.py", "ldplayer.py", "mumu.py",
+                "ocr.ps1", "cli.py", "__main__.py")
     }
     into(botSources)
 }

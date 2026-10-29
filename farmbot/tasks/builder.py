@@ -27,7 +27,7 @@ import numpy as np
 
 from farmbot.config import BuilderConfig
 from farmbot.tasks.search import Loot
-from farmbot.game import Game, T
+from farmbot.game import VIEW_AREA, VIEW_NEAR, VIEW_STILL, Game, T, view_change, view_shift
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ MAX_STAGES = 3  # two in practice; one more in case of a surprise
 # its tag looks just like an elixir collector's bubble.
 CART_AREA = (690, 90, 830, 200)  # x0, y0, x1, y1
 BUBBLE_THRESHOLD = 0.8
+BUBBLE_STAYED = 12  # px: a bubble this close to the one just tapped is the same one
 CARD_DETAIL = 25.0  # grey-level spread of a card's picture (cards ~50, empty slots under 10)
 PLACE_STEPS = 6  # how often a refused drop point is moved towards the base
 PLACE_STEP = 0.15  # share of the way to the base each move covers
@@ -63,6 +64,13 @@ BOAT_SIZES = (0.9, 1.0, 1.1, 1.2, 1.3)  # the village isn't always zoomed all th
 BOAT_THRESHOLD = 0.85
 BOAT_DRAG = (500, 250, 400, 600, 600)  # x1, y1, x2, y2, ms: pulls the builder base's dock down into view
 HOME_BOAT_DRAG = (500, 560, 640, 220, 600)  # pulls the home village's dock (bottom left) up into view
+# The map holds two bases; the second lies up and left of the first (whose
+# dock the boat home is at). Upgrading something on the second leaves the
+# camera there: drag the map up and left (the view goes down and right)
+# until it stops moving, at the first base, then pull the dock into view.
+# Drags stay clear of the buttons a selected building shows at the bottom.
+FIRST_BASE_DRAG = (725, 580, 425, 280, 700)
+FIRST_BASE_DRAGS = 8
 
 
 def _find_scaled(game: Game, name: str) -> tuple[int, int] | None:
@@ -103,6 +111,24 @@ def go_to_builder_base(game: Game) -> bool:
     return True
 
 
+def _boat_at_first_base(game: Game) -> tuple[int, int] | None:
+    """Drag the view to the first base (see FIRST_BASE_DRAG), looking for
+    the boat home on the way, then pull its dock into view."""
+    before = game.refresh().copy()
+    for _ in range(FIRST_BASE_DRAGS):
+        game.swipe(*FIRST_BASE_DRAG)
+        game.wait(1)
+        boat = _find_scaled(game, T.BB_BUILDER_BOAT)
+        if boat is not None:
+            return boat
+        if view_change(before, game.screen) < VIEW_STILL:
+            break  # at the map's edge: the first base
+        before = game.screen.copy()
+    game.swipe(*BOAT_DRAG)
+    game.wait(1)
+    return _find_scaled(game, T.BB_BUILDER_BOAT)
+
+
 def go_to_home_village(game: Game) -> bool:
     """Sail back from the builder base. True if it did."""
     if not in_builder_base(game):
@@ -116,6 +142,9 @@ def go_to_home_village(game: Game) -> bool:
         game.wait(1)
         boat = _find_scaled(game, T.BB_BUILDER_BOAT)
     if boat is None:
+        log.info("Boat home not in view: looking for it at the first base")
+        boat = _boat_at_first_base(game)
+    if boat is None:
         log.info("Boat to the home village not visible")
         return False
     game.tap(*boat)
@@ -126,32 +155,167 @@ def go_to_home_village(game: Game) -> bool:
     return True
 
 
+# Putting the camera back where a picture of the view was taken (upgrading
+# moves it onto what was upgraded, and the elixir cart is looked for at a
+# fixed spot). The builder base's map holds two bases, so there's no
+# middle to centre on as at home: the two pictures are matched instead,
+# by features (they only need to overlap in part).
+VIEW_STEP = 350  # px per drag at most
+# Shorter drags read as taps in the game: they select (and a drag starting on
+# a selected building moves it). A smaller move goes out and back.
+VIEW_LEAST_DRAG = 80
+VIEW_MS = 900
+VIEW_TRIES = 9
+# No overlap: drag the map one way and look again, then back past where it
+# started the other way (where it was 0, -300, 0, +300, 0, ... drags away).
+VIEW_SEARCH = [(-300, -300), (300, 300), (300, 300), (-300, -300)]
+
+
+def restore_view(game: Game, reference: np.ndarray) -> bool:
+    """Drag the map back to where it was in ``reference`` (a zoomed-out
+    screen). True once it's there. When the views don't overlap (the
+    camera went to the second base, say), it goes to the first base, which
+    the builder base opens on, and looks again from there."""
+    if _restore_view(game, reference):
+        return True
+    log.info("Builder base view: looking for it again from the first base")
+    _to_first_base(game)
+    if _restore_view(game, reference):
+        return True
+    log.info("Couldn't put the builder base view back")
+    return False
+
+
+def _to_first_base(game: Game) -> None:
+    """Drag the view down and right until it stops: the first base."""
+    before = game.refresh().copy()
+    for _ in range(FIRST_BASE_DRAGS):
+        game.swipe(*FIRST_BASE_DRAG)
+        game.wait(1)
+        if view_change(before, game.refresh()) < VIEW_STILL:
+            break
+        before = game.screen.copy()
+
+
+def _restore_view(game: Game, reference: np.ndarray) -> bool:
+    cx, cy = (VIEW_AREA[0] + VIEW_AREA[2]) // 2, (VIEW_AREA[1] + VIEW_AREA[3]) // 2
+    searched = 0
+    for _ in range(VIEW_TRIES):
+        shift = view_shift(reference, game.refresh())
+        log.debug("Builder base view: %s from where it was", shift)
+        if shift is None:
+            dx, dy = VIEW_SEARCH[searched % len(VIEW_SEARCH)]
+            searched += 1
+        else:
+            if max(map(abs, shift)) <= VIEW_NEAR:
+                return True
+            dx, dy = (int(np.clip(-v, -VIEW_STEP, VIEW_STEP)) for v in shift)
+        _drag(game, cx, cy, dx, dy)
+    return False
+
+
+def _drag(game: Game, cx: int, cy: int, dx: int, dy: int) -> None:
+    """Move the map by (dx, dy) with drags around (cx, cy), none short
+    enough to count as a tap."""
+    moves = [(dx, dy)]
+    if np.hypot(dx, dy) < VIEW_LEAST_DRAG:
+        moves = [(dx + VIEW_LEAST_DRAG, dy), (-VIEW_LEAST_DRAG, 0)]
+    for mx, my in moves:
+        game.swipe(cx - mx // 2, cy - my // 2, cx + mx // 2, cy + my // 2, VIEW_MS)
+        game.wait(0.8)
+
+
 # ------------------------------------------------------------------ collecting
+# A full collector (or the full elixir cart) wears a red tag with its
+# resource's icon on it, gold coin or elixir drop, rather than the usual
+# bubble: found by its colours, as gold collectors' coins vary.
+TAG_RED = ((3, 150, 120), (12, 255, 230))  # HSV
+TAG_SIZE = (18, 48)  # px, either side
+TAG_FILL = (0.25, 0.8)  # share of the tag's box that's red (the icon fills the rest)
+TAG_ICON = {"gold": ((18, 120, 150), (35, 255, 255)), "elixir": ((125, 100, 100), (155, 255, 255))}
+TAG_ICON_SHARE = 0.3  # of the middle of the tag
+
+
+def full_tags(screen: np.ndarray) -> list[tuple[str, int, int]]:
+    """``(kind, x, y)`` of each red "full" tag on the builder base, its
+    icon's resource as ``kind``."""
+    hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
+    red = cv2.inRange(hsv, *TAG_RED)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(red)
+    tags = []
+    for i in range(1, count):
+        x, y, w, h, area = (int(v) for v in stats[i])
+        if not (TAG_SIZE[0] <= w <= TAG_SIZE[1] and TAG_SIZE[0] <= h <= TAG_SIZE[1] and 0.7 <= w / h <= 1.5):
+            continue
+        if not TAG_FILL[0] <= area / (w * h) <= TAG_FILL[1]:
+            continue
+        middle = hsv[y + h // 4:y + 3 * h // 4, x + w // 4:x + 3 * w // 4]
+        for kind, (low, high) in TAG_ICON.items():
+            if np.count_nonzero(cv2.inRange(middle, low, high)) >= TAG_ICON_SHARE * middle.shape[0] * middle.shape[1]:
+                tags.append((kind, x + w // 2, y + h // 2))
+                break
+    return tags
+
+
 def _in_cart_area(x: int, y: int) -> bool:
     x0, y0, x1, y1 = CART_AREA
     return x0 <= x <= x1 and y0 <= y <= y1
 
 
-def collect_resources(game: Game, tries: int = 4) -> list[str]:
+def collect_resources(game: Game, tries: int = 4, second_base: bool = True,
+                      kinds: tuple[str, ...] = ("gold", "elixir", "gems")) -> list[str]:
     """Empty the builder base's full gold mines, elixir collectors and gem
-    mine by tapping their bubbles (never the elixir cart's tag). Returns what
-    was collected."""
-    collected = []
+    mine (of ``kinds``: leave out a full storage's, whose collectors can't
+    be emptied) by tapping their bubbles (never the elixir cart's tag), on
+    the first base and then, with ``second_base``, the second one, after
+    which the view is put back. Returns what was collected."""
     game.zoom_out()
+    view = game.refresh().copy()
+    collected = _collect_in_view(game, tries, kinds)
+    if second_base and {"gold", "elixir"} & set(kinds):  # the gem mine is on the first base
+        _to_second_base(game)
+        collected += [k for k in _collect_in_view(game, tries, kinds) if k not in collected]
+        restore_view(game, view)
+    if collected:
+        log.info("Collected builder base %s", ", ".join(collected))
+    return collected
+
+
+def _to_second_base(game: Game) -> None:
+    """Drag the view up and left until it stops: the second base."""
+    x1, y1, x2, y2, ms = FIRST_BASE_DRAG
+    before = game.refresh().copy()
+    for _ in range(FIRST_BASE_DRAGS):
+        game.swipe(x2, y2, x1, y1, ms)
+        game.wait(1)
+        if view_change(before, game.refresh()) < VIEW_STILL:
+            break
+        before = game.screen.copy()
+
+
+def _collect_in_view(game: Game, tries: int, kinds: tuple[str, ...] = ("gold", "elixir", "gems")) -> list[str]:
+    collected = []
     for kind, name in (("gold", T.BB_COLLECT_GOLD), ("elixir", T.BB_COLLECT_ELIXIR), ("gems", T.BB_COLLECT_GEMS)):
-        if not game.has(name):
+        if kind not in kinds or not game.has(name):
             continue
+        tapped: tuple[int, int] | None = None
         for _ in range(tries):
             game.refresh()
-            bubbles = [m for m in game.find_all(name, threshold=BUBBLE_THRESHOLD) if not _in_cart_area(m.x, m.y)]
-            if not bubbles:
+            spots = [m.point for m in game.find_all(name, threshold=BUBBLE_THRESHOLD)]
+            spots += [(x, y) for tag, x, y in full_tags(game.screen) if tag == kind]  # full: a red tag
+            spots = [p for p in spots if not _in_cart_area(*p)]
+            if not spots:
                 break
-            game.tap_match(bubbles[0])
+            if tapped and min(np.hypot(x - tapped[0], y - tapped[1]) for x, y in spots) <= BUBBLE_STAYED:
+                # Still there after a tap: its storage is full (or it isn't a bubble). Tapping
+                # again only selects the building, and a drag starting on it would move it.
+                log.info("Builder base %s: the bubble stayed (storage full?)", kind)
+                break
+            tapped = spots[0]
+            game.tap(*tapped, jitter=3)
             game.wait(1.0)
             if kind not in collected:
                 collected.append(kind)
-    if collected:
-        log.info("Collected builder base %s", ", ".join(collected))
     return collected
 
 
@@ -162,11 +326,13 @@ def collect_elixir_cart(game: Game) -> bool:
         return False
     game.zoom_out()
     game.refresh()
-    tags = [m for m in game.find_all(T.BB_COLLECT_ELIXIR, threshold=0.75) if _in_cart_area(m.x, m.y)]
+    # Its tag: an elixir drop (as on a collector's bubble), or, once it's full, the drop on red.
+    tags = [m.point for m in game.find_all(T.BB_COLLECT_ELIXIR, threshold=0.75) if _in_cart_area(m.x, m.y)]
+    tags += [(x, y) for kind, x, y in full_tags(game.screen) if kind == "elixir" and _in_cart_area(x, y)]
     if not tags:
         log.info("Elixir cart: nothing to collect")
         return False
-    game.tap_match(tags[0])
+    game.tap(*tags[0], jitter=3)
     button = game.wait_for(T.BB_CART_COLLECT, timeout=4)
     collected = False
     if button is not None and _is_green(game.screen, button):
@@ -203,75 +369,135 @@ def _green_button(screen: np.ndarray, region: tuple[int, int, int, int]) -> tupl
     return round(x0 + cx), round(y0 + cy)
 
 
-def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], Loot | None]) -> int:
-    """Spend spare builder gold or elixir on builder base walls: Build →
-    scroll to the cheapest "Wall x N" → Upgrade → the green price button.
-    Returns how many walls were upgraded."""
-    from farmbot.config import WallsConfig
-    from farmbot.tasks.village import _cost_kind, _wall_budget, find_wall_entry
+def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], Loot | None],
+                  keep: dict[str, int]) -> int:
+    """Spend spare builder gold and elixir on builder base walls, all in one
+    go as at home: Build → scroll to the cheapest "Wall x N" → Upgrade More
+    until as many are selected as the spare covers at the row's price →
+    Upgrade → Okay (one wall: the upgrade window's green price button);
+    then again in the other resource, if it has some to spare too.
+    ``keep``: how much of each resource stays. Returns how many walls were
+    upgraded."""
+    from farmbot.tasks.village import _wall_budget
 
     needed = (T.BUILD, T.WALL_SUGGESTION, T.BB_UPGRADE, T.BB_UPGRADE_TITLE, T.CLOSE)
     if not cfg.walls or not all(game.has(n) for n in needed):
         return 0
-    budget_cfg = WallsConfig(enabled=True, use=cfg.walls_use, min_gold=cfg.walls_min_gold,
-                             min_elixir=cfg.walls_min_elixir)
-    done = 0
-    while done < cfg.walls_per_round:
+    game.zoom_out()
+    loot = read_resources()
+    budget = _wall_budget(cfg.walls_use, loot, keep) if loot else []
+    if not budget:
+        log.info("Builder walls: %s", "nothing to spare above what's kept" if keep else
+                 "how much the storages hold isn't known yet")
+        return 0
+    view = game.refresh().copy()  # selecting a wall moves the camera onto it
+    try:
+        done = 0
+        for i, kind in enumerate(budget):
+            if i:  # the last pass spent some: read again with the list closed
+                _close_all(game)
+                game.zoom_out()
+                loot = read_resources()
+                if loot is None or getattr(loot, kind) <= keep[kind]:
+                    continue
+            done += _upgrade_walls(game, read_resources, loot, [kind], keep)
+        return done
+    finally:
+        _close_all(game)
+        # The map holds two bases: put the camera back, or the boat home
+        # (and the elixir cart) can be out of sight.
         game.zoom_out()
-        loot = read_resources()
-        budget = _wall_budget(budget_cfg, loot) if loot else []
-        if not budget:
-            break
-        game.refresh()
-        if not game.click(T.BUILD) or not game.wait_for(T.CLOSE, timeout=4):
-            log.info("Builder walls: the Build list didn't open")
-            break
-        game.wait(1.2)
-        game.refresh()
-        entry = find_wall_entry(game)
-        if entry is None:
-            log.info("No builder base wall to upgrade in the list")
-            break
-        game.tap_match(entry)
-        if not game.wait_for(T.BB_UPGRADE, timeout=4):
-            log.info("Builder walls: no Upgrade button under the wall")
-            break
-        game.wait(0.6)  # the buttons fade in
-        game.refresh()
-        buttons = {_cost_kind(game.screen, m.x, m.y, BB_ICON_OFFSET): m for m in game.find_all(T.BB_UPGRADE)}
-        kind = next((k for k in budget if k in buttons), None)
-        if kind is None:
-            log.info("Builder walls: no upgrade payable with %s (buttons cost %s)", budget, list(buttons))
-            break
-        game.tap_match(buttons[kind])
-        title = game.wait_for(T.BB_UPGRADE_TITLE, timeout=4)
-        if title is None:
-            log.info("Builder walls: the upgrade window didn't open")
-            break
-        button = _green_button(game.screen, (title.x - 360, title.y + 450, title.x + 600, title.y + 720))
-        if button is None:
-            log.info("Builder walls: no price button in the upgrade window")
-            break
-        game.tap(*button)
-        game.wait(1.5)
-        for _ in range(2):  # the upgrade window and Buildings & Heroes
-            game.refresh()
-            if not game.click(T.CLOSE):
-                break
-            game.wait(0.8)
-        game.zoom_out()
-        after = read_resources()
-        if loot and after and getattr(after, kind) >= getattr(loot, kind):
-            log.info("Builder wall upgrade didn't go through (not enough loot, or no free builder?)")
-            break
-        done += 1
-        log.info("Upgraded a builder base wall with %s", kind)
-    for _ in range(2):  # leave nothing open
+        restore_view(game, view)
+
+
+def _close_all(game: Game) -> None:
+    """Leave nothing open, and no wall selected (see ``village.deselect``)."""
+    from farmbot.tasks.village import deselect
+
+    for _ in range(2):
         game.refresh()
         if not game.click(T.CLOSE):
             break
         game.wait(0.8)
+    deselect(game)
+
+
+def _upgrade_walls(game: Game, read_resources: Callable[[], Loot | None], loot: Loot, budget: list[str],
+                   keep: dict[str, int]) -> int:
+    from farmbot.tasks.village import MAX_WALLS, _cost_kind, _select_more, _wall_price, find_wall_entry
+
+    if not game.click(T.BUILD) or not game.wait_for(T.CLOSE, timeout=4):
+        log.info("Builder walls: the Build list didn't open")
+        return 0
+    game.wait(1.2)
+    entry = find_wall_entry(game)
+    if entry is None:
+        log.info("No builder base wall to upgrade in the list")
+        return 0
+    price = _wall_price(game, entry)
+    game.tap_match(entry)
+    if not game.wait_for(T.BB_UPGRADE, timeout=4):
+        log.info("Builder walls: no Upgrade button under the wall")
+        return 0
+    game.wait(0.6)  # the buttons fade in
+    game.refresh()
+    buttons = {_cost_kind(game.screen, m.x, m.y, BB_ICON_OFFSET): m for m in game.find_all(T.BB_UPGRADE)}
+    kind = next((k for k in budget if k in buttons), None)
+    if kind is None:
+        log.info("Builder walls: no upgrade payable with %s (buttons cost %s)", budget, list(buttons))
+        return 0
+    spare = getattr(loot, kind) - keep[kind]
+    count = min(MAX_WALLS, spare // price) if price else 1
+    if count < 1:
+        log.info("Builder walls: %s %s spare, a wall costs %s", f"{spare:,}", kind, f"{price:,}")
+        return 0
+    if count > 1 and game.has(T.UPGRADE_MORE) and game.has(T.ADD_WALL):
+        count = _select_more(game, count)
+    elif count > 1:
+        count = 1
+    game.refresh()
+    buttons = {_cost_kind(game.screen, m.x, m.y, BB_ICON_OFFSET): m for m in game.find_all(T.BB_UPGRADE)}
+    if kind not in buttons:
+        log.info("Builder walls: the %s Upgrade button went away", kind)
+        return 0
+    game.tap_match(buttons[kind])
+    if not _confirm_walls(game):
+        log.info("Builder walls: the upgrade window didn't open")
+        return 0
+    game.wait(1.5)
+    _close_all(game)  # the upgrade window and Buildings & Heroes, and the walls' selection
+    game.zoom_out()
+    after = read_resources()
+    if after is None:
+        log.info("Upgraded builder base walls with %s (couldn't read how many)", kind)
+        return count
+    spent = getattr(loot, kind) - getattr(after, kind)
+    if spent <= 0:
+        log.info("Builder wall upgrade didn't go through (not enough loot, or no free builder?)")
+        return 0
+    done = round(spent / price) if price else 1
+    log.info("Upgraded %d builder base wall%s with %s (%s)", done, "" if done == 1 else "s", kind, f"{spent:,}")
     return done
+
+
+def _confirm_walls(game: Game, timeout: float = 4) -> bool:
+    """Accept the window Upgrade opened: after Upgrade More, an "Upgrade
+    Walls" question with Okay; for one wall, the upgrade window's green
+    price button."""
+    deadline = game.clock() + timeout
+    while True:
+        game.refresh()
+        if game.has(T.OKAY) and game.click(T.OKAY):
+            return True
+        title = game.find(T.BB_UPGRADE_TITLE)
+        if title is not None:
+            button = _green_button(game.screen, (title.x - 360, title.y + 450, title.x + 600, title.y + 720))
+            if button is not None:
+                game.tap(*button)
+                return True
+        if game.clock() >= deadline:
+            return False
+        game.wait(0.5)
 
 
 def _is_green(screen: np.ndarray, match) -> bool:

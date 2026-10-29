@@ -20,6 +20,10 @@ _update/
 tests/
 docs/
 samples/
+farmbot.log
+
+# Settings per account, with a picture of each player name: kept locally
+/profiles/
 
 # Signing keys and their settings: never in the repository (see android/release.ps1)
 *.jks

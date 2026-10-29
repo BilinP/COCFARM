@@ -13,8 +13,9 @@ import cv2
 import numpy as np
 
 from farmbot import __version__, bluestacks, catalog, text
+from farmbot.accounts import load_active
 from farmbot.bot import Bot
-from farmbot.config import Config, ensure_config, load_config
+from farmbot.config import EMULATORS, Config, ensure_config
 from farmbot.device import AdbDevice, DeviceError
 from farmbot.game import Game, T, normalize_screen
 from farmbot.geometry import Rect
@@ -26,8 +27,8 @@ def _config(args: argparse.Namespace) -> Config:
     # the starting profile on first run.
     if args.config is None:
         ensure_config("farmbot.toml")
-        return load_config("farmbot.toml")
-    return load_config(args.config)
+        return load_active("farmbot.toml")
+    return load_active(args.config)
 
 
 def _device(args: argparse.Namespace, cfg: Config) -> AdbDevice:
@@ -160,7 +161,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     device = _device(args, cfg)
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    reopen = (lambda: bluestacks.restart_emulator(cfg.device)) if cfg.device.mode in ("bluestacks", "ldplayer") else None
+    reopen = (lambda: bluestacks.restart_emulator(cfg.device)) if cfg.device.mode in EMULATORS else None
     Bot(Game(device, _vision(cfg), stop_event=stop, ui_scale=cfg.device.ui_scale,
              window_scale=cfg.device.window_scale,
              picture_scales=cfg.device.picture_scales), cfg, reopen_device=reopen).run()
@@ -168,7 +169,10 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_gui(args: argparse.Namespace) -> int:
-    from farmbot.gui import run_gui  # Qt is only needed here
+    from farmbot import splash  # Qt is only needed here
+
+    splash.show()  # while the rest loads
+    from farmbot.gui import run_gui
 
     return run_gui(args.config or "farmbot.toml", args.serial)
 
