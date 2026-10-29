@@ -52,7 +52,11 @@ jobs:
         with:
           python-version: "3.10"
 
-      - uses: android-actions/setup-android@v3
+      # The runner has the Android SDK (ANDROID_HOME); with its licences
+      # accepted, Gradle fetches the platform and build tools the app needs.
+      - name: Accept the Android SDK licences
+        shell: bash
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
 
       - uses: gradle/actions/setup-gradle@v4
 
