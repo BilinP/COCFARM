@@ -377,7 +377,9 @@ class BuilderConfig:
     troop_delay: float = 3.0  # seconds between the hero landing and the troops
     troop_speed: int = 5  # 1 (slow) - 9 (fast): pause between the troops going down
     hero_ability: bool = True
-    hero_ability_after: float = 15.0  # seconds after the hero lands (fully charged)
+    # Fired whenever its three charge bars are full; where the bars
+    # can't be seen, once, this many seconds after the hero lands.
+    hero_ability_after: float = 15.0
     troop_abilities: bool = True
     ability_batch: int = 2  # troop abilities fired together
     ability_delay: float = 5.0  # seconds between batches
@@ -392,6 +394,9 @@ class BuilderConfig:
     collect_cart: bool = True
     cart_every_min: int = 5
     cart_every_max: int = 5
+    # Use the Clock Tower's free boost whenever its clock shows (never the
+    # magic-item Boost beside it).
+    clock_tower: bool = True
     # Spend spare builder gold or elixir on builder base walls between battles.
     walls: bool = False
     walls_use: str = "both"  # "gold", "elixir" or "both"

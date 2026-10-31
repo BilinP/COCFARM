@@ -151,6 +151,10 @@ class T:
     BB_COLLECT_ELIXIR = "builder/collect_elixir"  # (the elixir cart's tag looks the same)
     BB_COLLECT_GEMS = "builder/collect_gems"  # the green gem over a full gem mine
     BB_CART_COLLECT = "builder/cart_collect"  # Collect in the Elixir Cart window
+    BB_CLOCK_READY = "builder/clock_ready"  # the clock over the Clock Tower while its free boost is ready
+    BB_CLOCK_FREE_BOOST = "builder/clock_free_boost"  # "Free Boost!" under the selected Clock Tower
+    BB_FREE_BOOST_WINDOW = "builder/free_boost_window"  # title of the window it opens
+    BB_FREE_BOOST_CONFIRM = "builder/free_boost_confirm"  # its green Boost (no price: free)
     BB_UPGRADE = "builder/upgrade"  # under a selected builder base building
     BB_UPGRADE_TITLE = "builder/upgrade_title"  # "Upgrade to level N?" window (price on a green button)
     BB_FILTER_GOLD = "builder/filter/gold"  # the Build list's filter menu, builder base resources

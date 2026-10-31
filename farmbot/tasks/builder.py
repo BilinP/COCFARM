@@ -9,8 +9,11 @@ to a second one, with a few more troops. Each stage is played the same way:
    troop with no pause (the game moves on to the next card by itself).
 3. Troop abilities fire in batches (``ability_batch`` cards at a time,
    ``ability_delay`` seconds apart).
-4. The hero's ability fires ``hero_ability_after`` seconds after it landed,
-   once it has charged (firing early only shows a "wait" message).
+4. The hero's ability fires once all three charge bars over its card are
+   full, again each time they fill back up (firing with less only shows a
+   "wait" message; a hero about to die uses it by itself). Where the bars
+   can't be seen, it fires once, ``hero_ability_after`` seconds after the
+   hero landed.
 
 The band across the top of each card says what is going on: purple = ready
 to deploy, green = on the field, grey = dead.
@@ -19,7 +22,7 @@ to deploy, green = on the field, grey = dead.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import cv2
@@ -342,6 +345,49 @@ def collect_elixir_cart(game: Game) -> bool:
     return collected
 
 
+CLOCK_SIZES = (0.9, 1.0, 1.1)
+CLOCK_THRESHOLD = 0.8
+
+
+def boost_clock_tower(game: Game) -> bool:
+    """Use the Clock Tower's free boost if its clock bubble shows: tap the
+    bubble (selects the tower), its "Free Boost!" button, then Boost in the
+    "Free Boost!" window, which only ever opens for the free one. The blue
+    Boost beside it (a magic item) is never touched. True if boosted."""
+    from farmbot.vision import best_scale, match_template, _resized
+
+    if not (game.has(T.BB_CLOCK_READY) and game.has(T.BB_CLOCK_FREE_BOOST) and game.has(T.BB_FREE_BOOST_WINDOW)):
+        return False
+    game.refresh()
+    bubble = None
+    for _, image in game.vision.library.get(T.BB_CLOCK_READY):
+        scale, score = best_scale(game.screen, image, list(CLOCK_SIZES))
+        if score >= CLOCK_THRESHOLD:
+            found = match_template(game.screen, _resized(image, scale), CLOCK_THRESHOLD)
+            if found:
+                bubble = found[0]
+                break
+    if bubble is None:
+        return False
+    game.tap(bubble.x, bubble.y, jitter=2)
+    boosted = False
+    button = game.wait_for(T.BB_CLOCK_FREE_BOOST, timeout=4)
+    if button is not None:
+        game.tap_match(button)
+        if game.wait_for(T.BB_FREE_BOOST_WINDOW, timeout=4) is not None:
+            confirm = game.find(T.BB_FREE_BOOST_CONFIRM)
+            if confirm is not None:
+                game.tap_match(confirm)
+                game.wait(2.0)
+                boosted = True
+                log.info("Clock Tower: free boost on")
+    if not boosted:
+        log.info("Clock Tower: the free boost didn't go through")
+    _close_windows(game)
+    game.deselect(always=True)
+    return boosted
+
+
 # ------------------------------------------------------------------ walls
 BB_ICON_OFFSET = (39, -65)  # cost icon relative to the builder Upgrade button's text
 
@@ -363,20 +409,23 @@ def _green_button(screen: np.ndarray, region: tuple[int, int, int, int]) -> tupl
 
 
 def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], Loot | None],
-                  keep: dict[str, int], known: dict | None = None) -> int:
+                  keep: dict[str, int], known: dict | None = None, last: bool = False) -> int:
     """Spend spare builder gold and elixir on builder base walls, all in one
     go as at home: Build → scroll to the cheapest "Wall x N" → Upgrade More
     until as many are selected as the spare covers at the row's price →
     Upgrade → Okay (one wall: the upgrade window's green price button);
     then again in the other resource, if it has some to spare too.
-    ``keep``: how much of each resource stays. ``known``: kept between
-    calls, the wall's price (see ``village.upgrade_walls``). Returns how
-    many walls were upgraded."""
-    from farmbot.tasks.village import _payable, _wall_budget
+    ``keep``: how much of each resource stays. ``known``:
+    kept between calls, the wall's price (see ``village.upgrade_walls``).
+    ``last``: a battle comes next, which zooms out by itself, so the walls
+    are left as they are (selected, zoomed in on); otherwise they're
+    dropped and the camera put back. Returns how many walls were upgraded."""
+    from farmbot.tasks.village import _payable, _wall_budget, _walls_done
 
     needed = (T.BUILD, T.WALL_SUGGESTION, T.BB_UPGRADE, T.BB_UPGRADE_TITLE, T.CLOSE)
     if not cfg.walls or not all(game.has(n) for n in needed):
         return 0
+    game.deselect()  # a pinch finger on a wall left selected would move it
     game.zoom_out()
     loot = read_resources()
     budget = _wall_budget(cfg.walls_use, loot, keep) if loot else []
@@ -388,99 +437,103 @@ def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], L
     if not _payable(loot, budget, keep, known, "Builder walls"):
         return 0
     view = game.refresh().copy()  # selecting a wall moves the camera onto it
+    start, upgraded = loot, {}
     try:
-        done = 0
         for i, kind in enumerate(budget):
-            if i:  # the last pass spent some: read again with the list closed
-                _close_all(game)
-                game.zoom_out()
-                loot = read_resources()
-                if not _payable(loot, [kind], keep, known, "Builder walls"):
-                    continue
-            done += _upgrade_walls(game, read_resources, loot, [kind], keep, known)
-        return done
+            if i and not _payable(loot, [kind], keep, known, "Builder walls"):
+                continue
+            count, price, loot = _upgrade_walls(game, loot, [kind], keep, known)
+            if count:
+                upgraded[kind] = (count, price)
     finally:
-        _close_all(game)
-        # The map holds two bases: put the camera back, or the boat home
-        # (and the elixir cart) can be out of sight.
-        game.zoom_out()
-        restore_view(game, view)
+        _close_windows(game)
+        if not last:
+            # The map holds two bases: put the camera back, or the boat home
+            # (and the elixir cart) can be out of sight.
+            _drop_and_restore(game, view)
+    if not upgraded:
+        return 0
+    game.wait(1.5)  # the resource counters run down to what's left
+    return _walls_done(start, read_resources(), upgraded, "builder base wall")
 
 
-def _close_all(game: Game) -> None:
-    """Leave nothing open, and no wall selected (see ``village.deselect``)."""
+def _drop_and_restore(game: Game, view: np.ndarray) -> None:
+    """Drop what's selected (see ``village.deselect``), zoom out and put the
+    camera back to ``view``."""
     from farmbot.tasks.village import deselect
 
-    for _ in range(2):
-        game.refresh()
-        if not game.click(T.CLOSE):
-            break
-        game.wait(0.8)
     deselect(game)
+    game.zoom_out()
+    restore_view(game, view)
 
 
-def _upgrade_walls(game: Game, read_resources: Callable[[], Loot | None], loot: Loot, budget: list[str],
-                   keep: dict[str, int], known: dict) -> int:
+def _close_windows(game: Game) -> None:
+    from farmbot.tasks.village import _close_windows as close
+
+    close(game)
+
+
+def _upgrade_walls(game: Game, loot: Loot, budget: list[str], keep: dict[str, int],
+                   known: dict) -> tuple[int, int | None, Loot]:
+    """One resource's walls (see ``village._upgrade_walls``). Returns how
+    many walls were selected and paid for, at what price, and the
+    resources left after (as paid)."""
     from farmbot.tasks.village import MAX_WALLS, _cost_kind, _select_more, _wall_price, find_wall_entry
 
+    # The list doesn't stay open after an upgrade, as it does at home.
+    _close_windows(game)
+    game.refresh()
     if not game.click(T.BUILD) or not game.wait_for(T.CLOSE, timeout=4):
         log.info("Builder walls: the Build list didn't open")
-        return 0
+        return 0, None, loot
     game.wait(1.2)
     entry = find_wall_entry(game)
     if entry is None:
         log.info("No builder base wall to upgrade in the list")
-        return 0
+        return 0, None, loot
     price = _wall_price(game, entry)
     if price:
         known["price"] = price
     game.tap_match(entry)
     if not game.wait_for(T.BB_UPGRADE, timeout=4):
         log.info("Builder walls: no Upgrade button under the wall")
-        return 0
+        return 0, None, loot
     game.wait(0.6)  # the buttons fade in
     game.refresh()
     buttons = {_cost_kind(game.screen, m.x, m.y, BB_ICON_OFFSET): m for m in game.find_all(T.BB_UPGRADE)}
     kind = next((k for k in budget if k in buttons), None)
     if kind is None:
         log.info("Builder walls: no upgrade payable with %s (buttons cost %s)", budget, list(buttons))
-        return 0
+        return 0, None, loot
     spare = getattr(loot, kind) - keep[kind]
-    price = price or known.get("price")  # unread: the price last seen
-    if not price:  # never tap Upgrade without knowing it's paid for (else gems are offered)
-        log.info("Builder walls: couldn't read the price; trying again next round")
-        return 0
+    if not price:
+        # Unread: the price last seen. Never tap Upgrade without knowing it's
+        # paid for (short of loot, the game offers to make it up in gems).
+        price = known.get("price")
+        if not price:
+            log.info("Builder walls: couldn't read the price; trying again next round")
+            return 0, None, loot
+        log.info("Builder walls: couldn't read the price; it was %s", f"{price:,}")
     count = min(MAX_WALLS, spare // price)
     if count < 1:
         log.info("Builder walls: %s %s spare, a wall costs %s", f"{spare:,}", kind, f"{price:,}")
-        return 0
-    if count > 1 and game.has(T.UPGRADE_MORE) and game.has(T.ADD_WALL):
-        count = _select_more(game, count)
-    elif count > 1:
+        return 0, None, loot
+    if count > 1 and not (game.has(T.UPGRADE_MORE) and game.has(T.ADD_WALL)):
         count = 1
+    if count > 1:
+        count = _select_more(game, count)
     game.refresh()
     buttons = {_cost_kind(game.screen, m.x, m.y, BB_ICON_OFFSET): m for m in game.find_all(T.BB_UPGRADE)}
     if kind not in buttons:
         log.info("Builder walls: the %s Upgrade button went away", kind)
-        return 0
+        return 0, None, loot
     game.tap_match(buttons[kind])
     if not _confirm_walls(game):
         log.info("Builder walls: the upgrade window didn't open")
-        return 0
+        return 0, None, loot
     game.wait(1.5)
-    _close_all(game)  # the upgrade window and Buildings & Heroes, and the walls' selection
-    game.zoom_out()
-    after = read_resources()
-    if after is None:
-        log.info("Upgraded builder base walls with %s (couldn't read how many)", kind)
-        return count
-    spent = getattr(loot, kind) - getattr(after, kind)
-    if spent <= 0:
-        log.info("Builder wall upgrade didn't go through (not enough loot, or no free builder?)")
-        return 0
-    done = round(spent / price) if price else 1
-    log.info("Upgraded %d builder base wall%s with %s (%s)", done, "" if done == 1 else "s", kind, f"{spent:,}")
-    return done
+    left = getattr(loot, kind) - count * price
+    return count, price, replace(loot, **{kind: left})
 
 
 def _confirm_walls(game: Game, timeout: float = 4) -> bool:
@@ -592,6 +645,32 @@ def hero_health(screen: np.ndarray, cfg: BuilderConfig) -> float | None:
     if best < 4:
         return None
     return min(best / BAR_LENGTH, 1.0)
+
+
+# The hero's ability charge: three bars over its card while it's on the
+# field (left to right, each taller), filling one after the other: purple
+# once full, blue while it fills. Bot coordinates, relative to (hero_x, card_y).
+CHARGE_ROW = -69  # a row across all three
+CHARGE_BARS = ((-34, -18), (-10, 4), (12, 33))  # x spans, inside each bar's border
+CHARGES_TO_FIRE = 3  # full bars: the ability is ready once all three are
+CHARGE_FULL = 0.6  # share of a bar's row that's purple when it's full
+
+
+def hero_charges(screen: np.ndarray, cfg: BuilderConfig) -> int:
+    """How many of the hero's three ability bars are full (0: none, or
+    the bars aren't showing). A full third bar flashes, so it reads as
+    full only now and then: often enough, as it's read twice a second."""
+    x, y = cfg.hero_x, cfg.card_y + CHARGE_ROW
+    full = 0
+    for x0, x1 in CHARGE_BARS:
+        patch = screen[y - 2:y + 3, x + x0:x + x1]
+        if patch.size == 0:
+            break
+        h, s, v = cv2.split(cv2.cvtColor(patch, cv2.COLOR_BGR2HSV))
+        if float(((h >= 135) & (h <= 165) & (s > 120) & (v > 150)).mean()) < CHARGE_FULL:
+            break  # they fill in order
+        full += 1
+    return full
 
 
 def _picker_right_edge(screen: np.ndarray, tx: int, ty: int) -> int:
@@ -865,6 +944,7 @@ def _fire_abilities(game: Game, batch: list[Slot], cfg: BuilderConfig) -> int:
     return fired
 
 
+HERO_ABILITY_GAP = 2.0  # s after firing the hero's ability before the bars are read again (they drop)
 BANNER_THRESHOLD = 0.8  # "Battle starts in" scores 0.87+ on it, under 0.75 on "Battle ends in"
 
 
@@ -902,7 +982,9 @@ def attack(game: Game, cfg: BuilderConfig, on_stage: Callable[[int], None] | Non
         stages += 1
         batches = [troops[i:i + cfg.ability_batch] for i in range(0, len(troops), max(cfg.ability_batch, 1))]
         next_batch = game.clock() + cfg.ability_delay
-        hero_fired = not (cfg.use_hero and cfg.hero_ability)
+        ability = cfg.use_hero and cfg.hero_ability
+        charges_seen = False  # the charge bars showed: fire by them, not the timer
+        hero_next, hero_uses = landed, 0
         new_stage = False
         while game.clock() - started < cfg.battle_timeout:
             now = game.clock()
@@ -911,11 +993,16 @@ def attack(game: Game, cfg: BuilderConfig, on_stage: Callable[[int], None] | Non
                 log.debug("Troop abilities: cards %s", [s.index for s in batch])
                 _fire_abilities(game, batch, cfg)
                 next_batch = now + cfg.ability_delay
-            if not hero_fired and now - landed >= cfg.hero_ability_after:
-                game.tap(cfg.hero_x, cfg.card_y)
-                hero_fired = True
-                log.info("Hero ability")
             screen = game.refresh()
+            if ability and now >= hero_next:
+                charges = hero_charges(screen, cfg)
+                charges_seen = charges_seen or charges > 0
+                timer = not charges_seen and not hero_uses and now - landed >= cfg.hero_ability_after
+                if charges >= CHARGES_TO_FIRE or timer:
+                    game.tap(cfg.hero_x, cfg.card_y)
+                    hero_uses += 1
+                    hero_next = now + HERO_ABILITY_GAP
+                    log.info("Hero ability (%s)", f"{charges} bars charged" if charges_seen else "after the time set")
             if cfg.speed_up and game.has(T.BB_SPEED) and game.click(T.BB_SPEED):
                 log.info("Battle speed: 4x")
             if game.find(T.BB_RETURN_HOME):

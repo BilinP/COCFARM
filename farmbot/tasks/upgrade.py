@@ -80,9 +80,12 @@ def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], las
     return done
 
 
-def upgrade_builder_base(game: Game, bcfg: BuilderConfig, read_resources: Reader, full: set[str]) -> int:
+def upgrade_builder_base(game: Game, bcfg: BuilderConfig, read_resources: Reader, full: set[str],
+                         last: bool = False) -> int:
     """The same in the builder base, for its ``full`` gold or elixir
-    storages. Returns how many upgrades were started."""
+    storages. Unless ``last`` (a battle comes next, which zooms out by
+    itself), what was upgraded is dropped and the camera put back. Returns
+    how many upgrades were started."""
     full = {k for k in full if k in BUILDER.resources}
     if not bcfg.upgrade or not full or not all(game.has(n) for n in BUILDER_NEEDED):
         return 0
@@ -102,7 +105,9 @@ def upgrade_builder_base(game: Game, bcfg: BuilderConfig, read_resources: Reader
         if bcfg.upgrade_lab:
             done += _research(game, budget, read_resources, BUILDER)
     finally:
-        _leave(game, view)
+        _close_windows(game)
+        if not last:
+            _leave(game, view)
     return done
 
 
@@ -137,7 +142,6 @@ def _leave(game: Game, view: np.ndarray) -> None:
     """Upgrading moved the camera to what was upgraded and zoomed in: zoom
     out again, and drag it back to ``view``, a picture of the builder
     base's (it holds two bases)."""
-    _close_windows(game)
     deselect(game)  # a pinch on what's still selected would move it
     game.zoom_out()
     restore_view(game, view)

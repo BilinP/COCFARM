@@ -421,7 +421,8 @@ def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Lo
     return _walls_done(start, read_resources(), upgraded)
 
 
-def _walls_done(before: Loot, after: Loot | None, upgraded: dict[str, tuple[int, int | None]]) -> int:
+def _walls_done(before: Loot, after: Loot | None, upgraded: dict[str, tuple[int, int | None]],
+                what: str = "wall") -> int:
     """Log the walls upgraded with each resource (``upgraded``: how many
     were selected, at what price), from what the storages lost once the
     list was closed; if that can't be read, or doesn't add up, as many as
@@ -432,14 +433,15 @@ def _walls_done(before: Loot, after: Loot | None, upgraded: dict[str, tuple[int,
     done = 0
     for kind, (count, price) in upgraded.items():
         if not believable:
-            log.info("Upgraded %d wall%s with %s (couldn't read what was spent)", count, "" if count == 1 else "s",
-                     kind)
+            log.info("Upgraded %d %s%s with %s (couldn't read what was spent)", count, what,
+                     "" if count == 1 else "s", kind)
         elif spent[kind] == 0:
-            log.info("Wall upgrade with %s didn't go through (no free builder?)", kind)
+            log.info("%s upgrade with %s didn't go through (no free builder?)", what.capitalize(), kind)
             count = 0
         else:
             count = round(spent[kind] / price) if price else count
-            log.info("Upgraded %d wall%s with %s (%s)", count, "" if count == 1 else "s", kind, f"{spent[kind]:,}")
+            log.info("Upgraded %d %s%s with %s (%s)", count, what, "" if count == 1 else "s", kind,
+                     f"{spent[kind]:,}")
         done += count
     return done
 

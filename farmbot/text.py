@@ -18,6 +18,7 @@ import numpy as np
 from farmbot.geometry import Rect
 
 GLYPH_BOX = (12, 18)  # width, height every glyph is compared at
+BASELINE_SHARE = 0.25  # of the tallest piece: how far off the digits' line a piece may end
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,12 @@ def pieces(screen: np.ndarray, region: Rect, style: TextStyle = TextStyle()) -> 
         return []
     tallest = max(stats[i, cv2.CC_STAT_HEIGHT] for i in parts)
     parts = [i for i in parts if stats[i, cv2.CC_STAT_HEIGHT] >= style.min_height_ratio * tallest]
+    # Digits stand on one line: a bright piece off it is something behind
+    # the text (the builder base's resource bars are see-through, and the
+    # edge of their fill shows as a thin bright line).
+    bottoms = [stats[i, cv2.CC_STAT_TOP] + stats[i, cv2.CC_STAT_HEIGHT] for i in parts]
+    line = float(np.median(bottoms))
+    parts = [i for i, b in zip(parts, bottoms) if abs(b - line) <= BASELINE_SHARE * tallest]
     chars = []
     for i in sorted(parts, key=lambda i: stats[i, cv2.CC_STAT_LEFT]):
         x, y, w, h = (int(v) for v in stats[i, :4])

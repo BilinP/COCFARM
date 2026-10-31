@@ -41,7 +41,7 @@ from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox,
                             RoundMenu, SegmentedWidget,
                             SettingCard, SettingCardGroup, SimpleCardWidget, Slider, SmoothScrollArea,
                             StrongBodyLabel, SubtitleLabel, SwitchButton, Theme, TitleLabel, TogglePushButton,
-                            TransparentPushButton, TransparentToolButton,
+                            TransparentPushButton, TransparentToolButton, themeColor,
                             isDarkTheme, qconfig, setCustomStyleSheet, setTheme, setThemeColor)
 
 from farmbot import __version__, accounts, catalog, icons, splash
@@ -525,6 +525,27 @@ def _muted(label: QLabel) -> QLabel:
 
 STAR_ON, STAR_OFF = "\u2605", "\u2606"  # the starred profile: new accounts start from its settings
 STAR = Tone("#f5c542", "#8a6100")
+AVATARS = ("#2f6fdf", "#0f8a5f", "#b5530f", "#8b3fbf", "#c42b6a", "#00838f", "#5b5fc7")  # white text reads on each
+
+
+def pill(text: str, tone: Tone, background: str) -> QLabel:
+    """A small rounded label: what an account is (in use, the default)."""
+    label = QLabel(text)
+    tint(label, tone, f"background: {background}; border-radius: 9px; padding: 1px 8px; font-size: 12px; "
+                      "font-weight: 600;")
+    return label
+
+
+def avatar(name: str, size: int = 40) -> QLabel:
+    """A coloured circle with the name's first letter; the same name always
+    gets the same colour."""
+    label = QLabel(name[:1].upper() or "?")
+    label.setFixedSize(size, size)
+    label.setAlignment(Qt.AlignCenter)
+    colour = AVATARS[sum(map(ord, name)) % len(AVATARS)]
+    label.setStyleSheet(f"background: {colour}; color: white; border-radius: {size // 2}px; "
+                        f"font-size: {size * 2 // 5}px; font-weight: 600;")
+    return label
 
 
 class NameDialog(MessageBoxBase):
@@ -549,22 +570,53 @@ class AccountsDialog(MessageBoxBase):
     def __init__(self, window: FarmbotWindow):
         super().__init__(window)
         self.main = window  # (not self.window: QWidget.window() is taken)
-        self.viewLayout.addWidget(SubtitleLabel("Accounts"))
-        note = CaptionLabel("Each Clash of Clans account has a profile with its own settings, picked by the player "
-                            "name in the game. New accounts start from the starred profile's settings.")
+        header = QHBoxLayout()
+        header.addWidget(SubtitleLabel("Accounts"))
+        header.addStretch(1)
+        close = TransparentToolButton(FIF.CLOSE)
+        close.setToolTip("Close")
+        close.clicked.connect(self.reject)
+        header.addWidget(close)
+        self.viewLayout.addLayout(header)
+        note = CaptionLabel("Each Clash of Clans account gets its own profile of settings. The bot picks it by the "
+                            "player name it sees in the game.")
         note.setWordWrap(True)
         tint(note, MUTED)
         self.viewLayout.addWidget(note)
         self.list = QWidget()
         self.rows = QVBoxLayout(self.list)
-        self.rows.setContentsMargins(0, 6, 0, 0)
-        self.rows.setSpacing(6)
+        self.rows.setContentsMargins(0, 8, 0, 0)
+        self.rows.setSpacing(8)
         self.viewLayout.addWidget(self.list)
-        self.yesButton.setText("Close")
-        self.cancelButton.hide()
-        self.setClosableOnMaskClicked(True)  # a click outside it closes it too
-        self.widget.setMinimumWidth(560)
+        self.footer = CaptionLabel()
+        self.footer.setWordWrap(True)
+        tint(self.footer, MUTED)
+        self.viewLayout.addWidget(self.footer)
+        self.buttonGroup.hide()  # the close button is at the top; a click outside closes it too
+        self.setClosableOnMaskClicked(True)
+        self.widget.setMinimumWidth(600)
         self.refresh()
+
+    def eventFilter(self, obj, e: QEvent) -> bool:
+        # The dimmed mask covers the window's title bar too: a click on its
+        # close, maximise or minimise button closes this and then does that,
+        # rather than taking two clicks.
+        if obj is self.windowMask and e.type() == QEvent.MouseButtonRelease and e.button() == Qt.LeftButton:
+            button = self._title_button(self.windowMask.mapTo(self.main, e.position().toPoint()))
+            if button is not None:
+                self.finished.connect(lambda _: button.click())
+                self.reject()
+                return True
+        return super().eventFilter(obj, e)
+
+    def _title_button(self, point: QPoint) -> QAbstractButton | None:
+        """The title bar's close, maximise or minimise button at ``point``
+        (in the main window), if any."""
+        bar = self.main.titleBar
+        for button in (bar.closeBtn, bar.maxBtn, bar.minBtn):
+            if button.isVisible() and button.rect().contains(button.mapFrom(self.main, point)):
+                return button
+        return None
 
     def refresh(self) -> None:
         while self.rows.count():
@@ -579,12 +631,10 @@ class AccountsDialog(MessageBoxBase):
             self.rows.addWidget(empty)
         for name in names:
             self.rows.addWidget(self._row(name, names))
+        footer = f"{STAR_ON} Star a profile and new accounts start from its settings."
         if self.main._running():
-            busy = CaptionLabel("The bot is running: it picks the profile itself. Stop it to switch, or to change "
-                                "the profile in use.")
-            busy.setWordWrap(True)
-            tint(busy, MUTED)
-            self.rows.addWidget(busy)
+            footer = "The bot is running and picks the profile itself: stop it to switch. " + footer
+        self.footer.setText(footer)
 
     def _row(self, name: str, names: list[str]) -> QWidget:
         config = self.main.config
@@ -592,23 +642,51 @@ class AccountsDialog(MessageBoxBase):
         running = self.main._running()
         card = SimpleCardWidget()
         row = QHBoxLayout(card)
-        row.setContentsMargins(12, 8, 8, 8)
+        row.setContentsMargins(0, 10, 8, 10)
+        card.setMinimumHeight(66)  # the same with or without a Switch button
+        row.setSpacing(12)
+        bar = QWidget()  # the account in use: an accent bar down its left edge
+        bar.setFixedWidth(4)
+        bar.setStyleSheet(f"background: {themeColor().name() if active else 'transparent'}; border-radius: 2px;")
+        row.addWidget(bar)
+        row.addWidget(avatar(name))
+        about = QVBoxLayout()
+        about.setSpacing(4)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        title = StrongBodyLabel(name)
+        title.setStyleSheet("font-size: 15px;")
+        top.addWidget(title)
+        if active:
+            top.addWidget(pill("In use", GOOD, "rgba(16,124,16,0.16)"))
+        if starred:
+            top.addWidget(pill(f"{STAR_ON} Default", STAR, "rgba(245,197,66,0.18)"))
+        top.addStretch(1)
+        about.addLayout(top)
+        seen = QHBoxLayout()
+        seen.setSpacing(6)
+        picture = self._name_picture(name)
+        if picture is None:
+            seen.addWidget(tint(CaptionLabel("Not seen in the game yet"), MUTED))
+        else:
+            seen.addWidget(tint(CaptionLabel("In game:"), MUTED))
+            seen.addWidget(picture)
+        seen.addStretch(1)
+        about.addLayout(seen)
+        row.addLayout(about, 1)
         star = TransparentPushButton(STAR_ON if starred else STAR_OFF)
-        star.setFixedWidth(36)
-        tint(star, STAR if starred else MUTED, "font-size: 18px; background: transparent; border: none;")
-        star.setToolTip("New accounts start from this profile's settings" if starred
+        star.setFixedSize(36, 36)
+        tint(star, STAR if starred else MUTED, "font-size: 20px; background: transparent; border: none;")
+        star.setToolTip("New accounts start from this profile's settings (click to unstar)" if starred
                         else "Star: new accounts start from this profile's settings")
         star.clicked.connect(lambda _=False: self._star("" if starred else name))
         row.addWidget(star)
-        picture = self._name_picture(name)
-        if picture is not None:
-            row.addWidget(picture)
-        row.addWidget(StrongBodyLabel(name))
-        row.addStretch(1)
-        use = PushButton(FIF.ACCEPT if active else FIF.PEOPLE, "In use" if active else "Use")
-        use.setEnabled(not active and not running)
-        use.clicked.connect(lambda _=False: self._use(name))
-        row.addWidget(use)
+        if not active:
+            use = PrimaryPushButton(FIF.SYNC, "Switch")
+            use.setEnabled(not running)
+            use.setToolTip("Use this profile's settings" if not running else "Stop the bot to switch")
+            use.clicked.connect(lambda _=False: self._use(name))
+            row.addWidget(use)
         more = TransparentToolButton(FIF.MORE)
         more.setToolTip("Copy, rename, delete")
         more.clicked.connect(lambda _=False, b=more: self._more(name, names, b))
@@ -627,7 +705,7 @@ class AccountsDialog(MessageBoxBase):
         rgba[..., 3] = mask
         image = QImage(rgba.data, mask.shape[1], mask.shape[0], mask.shape[1] * 4, QImage.Format_RGBA8888).copy()
         picture = QLabel()
-        picture.setPixmap(QPixmap.fromImage(image).scaledToHeight(20, Qt.SmoothTransformation))
+        picture.setPixmap(QPixmap.fromImage(image).scaledToHeight(16, Qt.SmoothTransformation))
         picture.setToolTip("The name the bot looks for in the game")
         return picture
 
@@ -1814,9 +1892,10 @@ class FarmbotWindow(FluentWindow):
 
         abilities = page.add(SettingCardGroup("Abilities"))
         self.switch(abilities, "builder.hero_ability", FIF.CALORIES, "Hero ability",
-                    "Fired once, when it has charged (firing early does nothing).")
-        self.number(abilities, "builder.hero_ability_after", FIF.STOP_WATCH, "Fire it after",
-                    "Seconds after the hero lands: how long its ability takes to charge.", "s")
+                    "Fired each time all three charge bars over the hero's card are full, as often as it "
+                    "recharges. (The game fires it by itself when the hero is about to die.)")
+        self.number(abilities, "builder.hero_ability_after", FIF.STOP_WATCH, "If the bars can't be seen",
+                    "Fires it once this many seconds after the hero lands instead.", "s")
         self.depends("builder.hero_ability", "builder.hero_ability_after")
         self.switch(abilities, "builder.troop_abilities", FIF.CALORIES, "Troop abilities",
                     "Taps the cards of troops still on the field, a few at a time.")
@@ -1843,6 +1922,8 @@ class FarmbotWindow(FluentWindow):
                           "A random number of battles in this range each time. The same number twice = always that many.",
                           "battles")
         self.depends("builder.collect_cart", "builder.cart_every_min", "builder.cart_every_max")
+        self.switch(loot, "builder.clock_tower", FIF.STOP_WATCH, "Use the Clock Tower's free boost",
+                    "Whenever its clock shows (once a day). Never the Boost that uses a magic item.")
 
         self._storage_group(page, "builder")
         walls = page.add(SettingCardGroup("Walls"))

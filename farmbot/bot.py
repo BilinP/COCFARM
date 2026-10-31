@@ -82,6 +82,7 @@ class Bot:
         self._since_collect: int | None = None  # builder battles since the collectors were emptied
         self._since_home_collect: int | None = None  # home village rounds since the collectors were emptied
         self._cart_due: int | None = None  # battles between cart visits, picked at random
+        self._clock_off = False  # set if a Clock Tower boost ever cost gems
         # Watchdog: restarting the game is tried first; if the errors carry on
         # (or ADB itself fails), the emulator is closed and opened again.
         self._reopen_device = reopen_device
@@ -479,6 +480,9 @@ class Bot:
         if self.check_account():
             return self.cycle()
         village.clear_popups(self.game)
+        if self._left_selected:  # the last round's upgrades, if its battle didn't happen
+            village.deselect(self.game)
+            self._left_selected = False
         bcfg = self.config.builder
         self.read_storage_max("builder")
         self.checkpoint()
@@ -495,27 +499,16 @@ class Bot:
                 self._since_collect = 0
             else:
                 log.info("Builder collectors: next in %d battle(s)", bcfg.collect_every - self._since_collect)
-        if bcfg.upgrade:
-            # Before walls (one builder is kept for them), and before mode
-            # "auto" moves on: spending a full storage keeps this village going.
-            full = self.full_storages("builder")
-            if full & {"gold", "elixir"}:
-                self.status("Upgrading (builder base)")
-                upgrade.upgrade_builder_base(self.game, bcfg, self.read_resources, full)
-        if self.config.bot.mode == "auto":
-            # The builder base has gold and elixir storages (no dark elixir).
-            wanted = [k for k in self.config.bot.stop_when_full if k in ("gold", "elixir")]
-            if wanted and set(wanted) <= self.full_storages("builder"):
-                self._village_full("builder")
-                return False
-        walls = 0
-        if bcfg.walls:
-            self.status("Upgrading builder base walls")
-            keep = self.config.storage.keep("builder", {"gold": bcfg.walls_keep_gold,
-                                                         "elixir": bcfg.walls_keep_elixir})
-            walls = builder.upgrade_walls(self.game, bcfg, self.read_resources, keep, self._builder_walls_known)
+        if bcfg.clock_tower and not self._clock_off:
+            gems = self.read_resources()
+            if builder.boost_clock_tower(self.game):
+                after = self.read_resources()
+                if gems is not None and after is not None and after.dark < gems.dark:
+                    log.error("Clock Tower boost: gems went from %d to %d; not boosting again this session",
+                              gems.dark, after.dark)
+                    self._clock_off = True
         cart = False
-        if bcfg.collect_cart:
+        if bcfg.collect_cart:  # (looked for at a fixed spot: before upgrades move the camera)
             if self._cart_due is None:
                 self._cart_due = self.game.rng.randint(bcfg.cart_every_min, bcfg.cart_every_max)
             if self._since_cart >= self._cart_due:
@@ -523,13 +516,41 @@ class Bot:
                 self._since_cart = 0
                 self._cart_due = self.game.rng.randint(bcfg.cart_every_min, bcfg.cart_every_max)
         self.checkpoint()
-        self.game.zoom_out()
+        # Upgrades last, just before the battle: they leave the camera zoomed
+        # in on what they upgraded, and the battle zooms out by itself, so
+        # it isn't put back. Unless mode "auto" may sail home first.
+        wanted = [k for k in self.config.bot.stop_when_full if k in ("gold", "elixir")]  # (no dark elixir here)
+        may_leave = self.config.bot.mode == "auto" and bool(wanted)
+        if bcfg.upgrade:
+            # Before walls (one builder is kept for them), and before mode
+            # "auto" moves on: spending a full storage keeps this village going.
+            full = self.full_storages("builder")
+            if full & {"gold", "elixir"}:
+                self.status("Upgrading (builder base)")
+                last = not bcfg.walls and not may_leave
+                upgrade.upgrade_builder_base(self.game, bcfg, self.read_resources, full, last=last)
+                self._left_selected = last
+        if may_leave and set(wanted) <= self.full_storages("builder"):
+            self._village_full("builder")
+            return False
+        walls = 0
+        if bcfg.walls:
+            self.status("Upgrading builder base walls")
+            keep = self.config.storage.keep("builder", {"gold": bcfg.walls_keep_gold,
+                                                         "elixir": bcfg.walls_keep_elixir})
+            walls = builder.upgrade_walls(self.game, bcfg, self.read_resources, keep, self._builder_walls_known,
+                                          last=True)
+            self._left_selected = True
+        self.checkpoint()
+        if not self._left_selected:  # (a pinch finger on what's selected would move it)
+            self.game.zoom_out()
         before = self.read_resources()
         started = self.game.clock()
         self.status("Attacking (builder base)")
         result = builder.attack(self.game, bcfg,
                                 on_stage=lambda n: self.status(f"Attacking (builder base): base {n}"))
         seconds = self.game.clock() - started
+        self._left_selected = False  # the battle dropped it
         self._since_cart += 1
         if self._since_collect is not None:
             self._since_collect += 1
