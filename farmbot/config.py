@@ -466,6 +466,7 @@ class ProfilesConfig:
     seen for the first time gets one, named after it."""
 
     active: str = ""  # the profile in use; "" = this file's own settings (before any account was seen)
+    default: str = ""  # starred: new accounts' profiles start from its settings ("": from the ones in use)
 
 
 @dataclass

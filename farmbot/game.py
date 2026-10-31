@@ -199,32 +199,25 @@ ANCHORS = [T.BATTLE, T.NEXT, T.END_BATTLE]
 ANY_SIZE = {T.UPGRADE, T.UPGRADE_MORE, T.ADD_WALL}
 ANY_SIZES = (1.3, 1.2, 1.1, 1.4, 0.85)
 
-# Zooming out: pinches at most, and the change (mean grey level, 0-255)
-# below which the view has stopped moving.
+# Zooming out: pinches at most, and the share of the middle of the screen
+# whose grey level changes by more than VIEW_GREY (0-255) below which the
+# view has stopped moving. The village's animations (water, flags, troops
+# walking) change 2-4% of it; a zoom or a drag, over half.
 ZOOM_PASSES = 3
-VIEW_STILL = 3.0
-# Centring the view (bot px): where drags start, how far one drag goes,
-# the piece of the map followed between screens (y0, y1, x0, x1), how sure
-# a match must be, and the move below which the view counts as still.
-PAN_CENTER = (588, 420)
-PAN_DRAG = (420, 300)
-PAN_PATCH = (330, 560, 430, 750)  # its height; it's placed in the middle of the screen's
-PAN_MARGIN = 20  # px kept between the followed piece, dragged, and the screen's edge
-PAN_SURE = 0.6
-PAN_STILL = 8
-PAN_TRIES = 3
-PAN_MS = 900  # slow, so the map doesn't keep sliding after the finger lifts
-PAN_LEAST = 80  # px: shorter drags count as taps in the game
+ZOOM_TRIES = 2  # zoom-outs, when one leaves a building selected
+VIEW_GREY = 40
+VIEW_STILL = 0.12
+SELECTED_TOP = 0.6  # a selected building's buttons show below this share of the screen's height
 
 
 def view_change(before: np.ndarray, after: np.ndarray) -> float:
-    """How much the map moved between two screens (mean grey difference
-    over the middle of the screen)."""
+    """How much the map moved between two screens: the share (0-1) of the
+    middle of the screen that changed."""
     if before.shape != after.shape:
-        return 255.0
+        return 1.0
     h, w = before.shape[:2]
     a, b = (cv2.cvtColor(s[h // 6:h * 5 // 6, w // 6:w * 5 // 6], cv2.COLOR_BGR2GRAY) for s in (before, after))
-    return float(cv2.absdiff(a, b).mean())
+    return float((cv2.absdiff(a, b) > VIEW_GREY).mean())
 
 
 class Stopped(Exception):
@@ -292,13 +285,11 @@ class Game:
         vision.fixed_scales = set(self.picture_scales)
         self.raw: np.ndarray | None = None
         self.screen: np.ndarray | None = None
-        # Each village's view once centred (measured the first time in a run):
-        # later centring drags straight back to it.
-        self.centred_views: dict[str, np.ndarray] = {}
         # When each anchor last failed to give the UI scale. Measuring takes about a second, so while
         # the game loads it's tried again every CALIBRATE_RETRY seconds, not on every screenshot.
         self._calibration_tried: dict[str, float] = {}
         self._any_sizes: dict[str, float] = {}  # ANY_SIZE picture -> the size it last matched at
+        self._selected_sizes: dict[str, float] = {}  # the same, under a selected building (no list open)
         # Finds on the screenshot in ``_seen_on``: (name, threshold, region) -> matches.
         self._seen_on: np.ndarray | None = None
         self._seen: dict[tuple, list[Match]] = {}
@@ -448,104 +439,75 @@ class Game:
     def zoom_out(self) -> bool:
         """Pinch the view all the way out, on devices that can. The game
         keeps its zoom between battles, and a zoomed-in view hides the
-        map's edges where troops go."""
+        map's edges where troops go. A pinch close in on a wall just
+        upgraded can select it (and a pinch finger on a selected building
+        moves it, so whoever left one selected drops it first): one that
+        did is dropped, and the view pinched again."""
         pinch = getattr(self.device, "zoom_out", None)
         if pinch is None:
             return False
-        # Pinch again while the view keeps changing: a pinch the game misses
-        # (it happens on LDPlayer) must not leave a battle zoomed in.
-        before = self.screen
-        for _ in range(ZOOM_PASSES):
-            if not pinch():
-                return False
-            self.wait(0.5)
-            after = self.refresh()
-            if before is not None and view_change(before, after) < VIEW_STILL:
-                break
-            before = after
-        return True
-
-    def center_view(self, village: str = "home") -> bool:
-        """Drag the map so the view sits in the middle of its range.
-
-        The game keeps the camera where it was left, and a view dragged to
-        one side (by a stray touch, or by zooming out around an off-centre
-        spot) hides part of the base. The first time in a run, the map is
-        dragged to one end and then the other, measuring how far the
-        picture moves, and then back to halfway; that view is kept (per
-        ``village``), and after that the map is dragged straight back to it.
-        False if the picture couldn't be followed (a popup, say)."""
-        centred = self.centred_views.get(village)
-        if centred is not None:
-            if self._back_to(centred):
-                return True
-            log.info("Centring the view: can't find the centred view (another zoom?); measuring again")
-            del self.centred_views[village]
-        prev = self.refresh().copy()
-        # Drags no longer than keeps the followed piece of the map on screen
-        # (a short screen, such as a phone's, has less room above and below it).
-        drag_y = min(PAN_DRAG[1], (prev.shape[0] - (PAN_PATCH[1] - PAN_PATCH[0])) // 2 - PAN_MARGIN)
-        pos, low, high = [0, 0], [0, 0], [0, 0]
-        for sign in (1, -1):
-            for _ in range(PAN_TRIES):
-                moved = self._drag_view(prev, sign * PAN_DRAG[0], sign * drag_y)
-                if moved is None:
+        for _ in range(ZOOM_TRIES):
+            # Pinch again while the view keeps changing: a pinch the game misses
+            # (it happens on LDPlayer) must not leave a battle zoomed in.
+            before = self.refresh()
+            for _ in range(ZOOM_PASSES):
+                if not pinch():
                     return False
-                (dx, dy), prev = moved
-                pos = [pos[0] + dx, pos[1] + dy]
-                low, high = [min(l, p) for l, p in zip(low, pos)], [max(h, p) for h, p in zip(high, pos)]
-                if abs(dx) < PAN_STILL and abs(dy) < PAN_STILL:
-                    break  # at the end of the range
-        move = [round((lo + hi) / 2 - p) for lo, hi, p in zip(low, high, pos)]
-        log.info("Centring the view: range %dx%d px, moving it %s", high[0] - low[0], high[1] - low[1], tuple(move))
-        if max(map(abs, move)) >= PAN_STILL:
-            self._pan(*move)
-        self.centred_views[village] = self.refresh().copy()
+                self.wait(0.5)
+                after = self.refresh()
+                if view_change(before, after) < VIEW_STILL:
+                    break
+                before = after
+            if not self.deselect():
+                return True
+            log.info("Zooming out selected a building: dropped it, zooming again")
         return True
 
-    def _back_to(self, centred: np.ndarray) -> bool:
-        """Drag the map back to the ``centred`` view. False if it can't be
-        found in the screen (zoomed differently, or a window over it)."""
-        for _ in range(PAN_TRIES):
-            shift = view_shift(centred, self.refresh())
-            if shift is None:
-                return False
-            if max(map(abs, shift)) < PAN_STILL:
-                log.info("Centring the view: back where it was centred")
+    def selected(self) -> bool:
+        """A building is selected in a village (its Upgrade button shows
+        under it). The button's size is looked for once (about a second),
+        then only that size is (quick)."""
+        buttons = [n for n in (T.UPGRADE, T.BB_UPGRADE) if self.has(n)]
+        if not buttons or not self.has(T.BUILD):
+            return False
+        self.refresh()
+        if self.find(T.BUILD) is None:
+            return False
+        w, h = self.size
+        below = Rect(0, round(h * SELECTED_TOP), w, h - round(h * SELECTED_TOP))  # where the buttons show
+        for name in buttons:
+            if self.vision.find_all(self.screen, name, None, below):
                 return True
-            self._pan(-shift[0], -shift[1])
+            if name not in ANY_SIZE:
+                continue
+            for tname, image in self.vision.library.get(name):
+                size = self._selected_sizes.get(tname)
+                if size is None:
+                    size, score = best_scale(self.screen, image, list(ANY_SIZES), below)
+                    if score < self.vision.default_threshold:
+                        continue
+                    self._selected_sizes[tname] = size
+                if match_template(self.screen, _resized(image, size), self.vision.default_threshold, below, tname):
+                    return True
         return False
 
-    def _pan(self, dx: int, dy: int) -> None:
-        """Move the picture by (dx, dy) with drags none of which is short
-        enough to count as a tap (which selects, and a drag starting on a
-        selected building moves it): a small move goes out and back."""
-        moves = [(dx, dy)]
-        if np.hypot(dx, dy) < PAN_LEAST:
-            moves = [(dx + PAN_LEAST, dy), (-PAN_LEAST, 0)]
-        cx, cy = PAN_CENTER
-        for mx, my in moves:
-            self.swipe(cx - mx // 2, cy - my // 2, cx + mx // 2, cy + my // 2, PAN_MS)
-            self.wait(0.8)
-
-    def _drag_view(self, before: np.ndarray, dx: int, dy: int):
-        """Drag the map by (dx, dy) bot px. Returns how far the picture
-        actually moved and the new screen, or None if it can't be told."""
-        cx, cy = PAN_CENTER
-        self.swipe(cx - dx // 2, cy - dy // 2, cx + dx // 2, cy + dy // 2, PAN_MS)
-        self.wait(0.8)
-        after = self.refresh().copy()
-        y0, y1, x0, x1 = PAN_PATCH
-        y0 = (after.shape[0] - (y1 - y0)) // 2  # in the middle of the screen's height, whatever it is
-        y1 = y0 + PAN_PATCH[1] - PAN_PATCH[0]
-        if before.shape != after.shape or y0 < 0 or after.shape[1] < x1:
-            return None
-        found = cv2.matchTemplate(after, before[y0:y1, x0:x1], cv2.TM_CCOEFF_NORMED)
-        _, score, _, (x, y) = cv2.minMaxLoc(found)
-        if not score >= PAN_SURE:
-            log.info("Can't follow the view while centring it (likeness %.2f)", score)
-            return None
-        return (x - x0, y - y0), after
+    def deselect(self, always: bool = False) -> bool:
+        """Leave nothing selected: a building stays selected once the windows
+        over it are closed. Opening the Build list and closing it again drops
+        it (Back would ask to quit the game). ``always``: even when no
+        Upgrade button shows (a building being upgraded has none). True if
+        the list was opened for it."""
+        if not (always or self.selected()):
+            return False
+        self.refresh()
+        if self.click(T.BUILD) and self.wait_for(T.CLOSE, timeout=4):
+            self.wait(0.5)
+            for _ in range(2):
+                self.refresh()
+                if not self.click(T.CLOSE):
+                    break
+                self.wait(0.8)
+        return True
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 500) -> None:
         s = self.scale

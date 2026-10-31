@@ -36,11 +36,12 @@ from PySide6.QtWidgets import (QAbstractButton, QApplication, QFileDialog, QGrid
 with contextlib.redirect_stdout(io.StringIO()):
     import qfluentwidgets  # noqa: F401
 from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox, ElevatedCardWidget,
-                            Action, FluentIcon as FIF, FluentWindow, InfoBadge, InfoBadgePosition, InfoBar, InfoBarIcon, InfoBarPosition, LineEdit, ListWidget, MessageBox,
+                            Action, FluentIcon as FIF, FluentWindow, InfoBadge, InfoBadgePosition, InfoBar, InfoBarIcon, InfoBarPosition, LineEdit, ListWidget, MessageBox, MessageBoxBase,
                             NavigationAvatarWidget, NavigationItemPosition, PlainTextEdit, PrimaryPushButton, ProgressBar, PushButton,
                             RoundMenu, SegmentedWidget,
                             SettingCard, SettingCardGroup, SimpleCardWidget, Slider, SmoothScrollArea,
                             StrongBodyLabel, SubtitleLabel, SwitchButton, Theme, TitleLabel, TogglePushButton,
+                            TransparentPushButton, TransparentToolButton,
                             isDarkTheme, qconfig, setCustomStyleSheet, setTheme, setThemeColor)
 
 from farmbot import __version__, accounts, catalog, icons, splash
@@ -522,6 +523,212 @@ def _muted(label: QLabel) -> QLabel:
     return label
 
 
+STAR_ON, STAR_OFF = "\u2605", "\u2606"  # the starred profile: new accounts start from its settings
+STAR = Tone("#f5c542", "#8a6100")
+
+
+class NameDialog(MessageBoxBase):
+    """Ask for a profile's new name."""
+
+    def __init__(self, title: str, name: str, parent: QWidget):
+        super().__init__(parent)
+        self.viewLayout.addWidget(SubtitleLabel(title))
+        self.edit = LineEdit()
+        self.edit.setText(name)
+        self.edit.selectAll()
+        self.viewLayout.addWidget(self.edit)
+        self.yesButton.setText("Rename")
+        self.widget.setMinimumWidth(360)
+
+
+class AccountsDialog(MessageBoxBase):
+    """The account manager: every profile, the one in use and the starred
+    one (new accounts start from its settings); switch to one, copy one's
+    settings to another, rename or delete one."""
+
+    def __init__(self, window: FarmbotWindow):
+        super().__init__(window)
+        self.main = window  # (not self.window: QWidget.window() is taken)
+        self.viewLayout.addWidget(SubtitleLabel("Accounts"))
+        note = CaptionLabel("Each Clash of Clans account has a profile with its own settings, picked by the player "
+                            "name in the game. New accounts start from the starred profile's settings.")
+        note.setWordWrap(True)
+        tint(note, MUTED)
+        self.viewLayout.addWidget(note)
+        self.list = QWidget()
+        self.rows = QVBoxLayout(self.list)
+        self.rows.setContentsMargins(0, 6, 0, 0)
+        self.rows.setSpacing(6)
+        self.viewLayout.addWidget(self.list)
+        self.yesButton.setText("Close")
+        self.cancelButton.hide()
+        self.setClosableOnMaskClicked(True)  # a click outside it closes it too
+        self.widget.setMinimumWidth(560)
+        self.refresh()
+
+    def refresh(self) -> None:
+        while self.rows.count():
+            widget = self.rows.takeAt(0).widget()
+            if widget is not None:
+                widget.deleteLater()
+        active = self.main.config.profiles.active
+        names = sorted(self.main.profiles.names(), key=lambda n: n != active)  # the one in use first
+        if not names:
+            empty = BodyLabel("No profiles yet: one is made for each account the bot sees in the game.")
+            empty.setWordWrap(True)
+            self.rows.addWidget(empty)
+        for name in names:
+            self.rows.addWidget(self._row(name, names))
+        if self.main._running():
+            busy = CaptionLabel("The bot is running: it picks the profile itself. Stop it to switch, or to change "
+                                "the profile in use.")
+            busy.setWordWrap(True)
+            tint(busy, MUTED)
+            self.rows.addWidget(busy)
+
+    def _row(self, name: str, names: list[str]) -> QWidget:
+        config = self.main.config
+        active, starred = name == config.profiles.active, name == config.profiles.default
+        running = self.main._running()
+        card = SimpleCardWidget()
+        row = QHBoxLayout(card)
+        row.setContentsMargins(12, 8, 8, 8)
+        star = TransparentPushButton(STAR_ON if starred else STAR_OFF)
+        star.setFixedWidth(36)
+        tint(star, STAR if starred else MUTED, "font-size: 18px; background: transparent; border: none;")
+        star.setToolTip("New accounts start from this profile's settings" if starred
+                        else "Star: new accounts start from this profile's settings")
+        star.clicked.connect(lambda _=False: self._star("" if starred else name))
+        row.addWidget(star)
+        picture = self._name_picture(name)
+        if picture is not None:
+            row.addWidget(picture)
+        row.addWidget(StrongBodyLabel(name))
+        row.addStretch(1)
+        use = PushButton(FIF.ACCEPT if active else FIF.PEOPLE, "In use" if active else "Use")
+        use.setEnabled(not active and not running)
+        use.clicked.connect(lambda _=False: self._use(name))
+        row.addWidget(use)
+        more = TransparentToolButton(FIF.MORE)
+        more.setToolTip("Copy, rename, delete")
+        more.clicked.connect(lambda _=False, b=more: self._more(name, names, b))
+        row.addWidget(more)
+        return card
+
+    def _name_picture(self, name: str) -> QLabel | None:
+        """The player name as the game shows it (the picture the bot matches),
+        in the theme's text colour."""
+        mask = self.main.profiles.mask(name)
+        if mask is None:
+            return None
+        colour = QColor(str(TEXT))
+        rgba = np.zeros((*mask.shape, 4), np.uint8)
+        rgba[..., 0], rgba[..., 1], rgba[..., 2] = colour.red(), colour.green(), colour.blue()
+        rgba[..., 3] = mask
+        image = QImage(rgba.data, mask.shape[1], mask.shape[0], mask.shape[1] * 4, QImage.Format_RGBA8888).copy()
+        picture = QLabel()
+        picture.setPixmap(QPixmap.fromImage(image).scaledToHeight(20, Qt.SmoothTransformation))
+        picture.setToolTip("The name the bot looks for in the game")
+        return picture
+
+    def _more(self, name: str, names: list[str], button: QWidget) -> None:
+        active = name == self.main.config.profiles.active
+        running = self.main._running()
+        menu = RoundMenu(parent=self)
+        copy_to = RoundMenu(f"Copy {name}'s settings to", self)
+        copy_to.setIcon(FIF.COPY)
+        others = [n for n in names if n != name]
+        for other in others:
+            action = Action(FIF.PEOPLE, other)
+            action.setEnabled(not (running and other == self.main.config.profiles.active))
+            action.triggered.connect(lambda _=False, o=other: self._copy(name, o))
+            copy_to.addAction(action)
+        if others:
+            menu.addMenu(copy_to)
+        else:
+            none = Action(FIF.COPY, "Copy settings to… (no other profile yet)")
+            none.setEnabled(False)
+            menu.addAction(none)
+        rename = Action(FIF.EDIT, "Rename")
+        rename.setEnabled(not (running and active))
+        rename.triggered.connect(lambda _=False: self._rename(name))
+        menu.addAction(rename)
+        menu.addSeparator()
+        delete = Action(FIF.DELETE, "Delete")
+        delete.setEnabled(not (running and active))
+        delete.triggered.connect(lambda _=False: self._delete(name))
+        menu.addAction(delete)
+        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def _use(self, name: str) -> None:
+        self.main._use_profile(name)
+        self.refresh()
+
+    def _star(self, name: str) -> None:
+        self.main._flush_save()
+        self.main.config.profiles.default = name
+        accounts.save_active(self.main.config, self.main.config_path)
+        self.refresh()
+
+    def _copy(self, source: str, target: str) -> None:
+        box = MessageBox(f"Copy {source}'s settings to {target}?",
+                         f"{target}'s settings are replaced with {source}'s. What the bot read of {target}'s "
+                         "account (its storage sizes) stays.", self)
+        box.yesButton.setText("Copy")
+        if not box.exec():
+            return
+        main = self.main
+        main._flush_save()
+        try:
+            main.profiles.copy(source, target, load_config(main.config_path))
+        except (OSError, ValueError) as exc:
+            InfoBar.error("Couldn't copy", str(exc), duration=6000, position=InfoBarPosition.BOTTOM_RIGHT,
+                          parent=main)
+            return
+        if target == main.config.profiles.active:
+            main._use_profile(target)  # show its new settings
+        InfoBar.success("Copied", f"{target} now has {source}'s settings.", duration=4000,
+                        position=InfoBarPosition.BOTTOM_RIGHT, parent=main)
+        self.refresh()
+
+    def _rename(self, name: str) -> None:
+        box = NameDialog(f"Rename {name}", name, self)
+        if not box.exec() or box.edit.text().strip() == name:
+            return
+        main = self.main
+        main._flush_save()
+        try:
+            new = main.profiles.rename(name, box.edit.text())
+        except (OSError, ValueError) as exc:
+            InfoBar.error("Couldn't rename", str(exc), duration=6000, position=InfoBarPosition.BOTTOM_RIGHT,
+                          parent=main)
+            return
+        profiles = main.config.profiles
+        if profiles.active == name:
+            profiles.active = new
+        if profiles.default == name:
+            profiles.default = new
+        accounts.save_active(main.config, main.config_path)
+        main._show_profiles()
+        self.refresh()
+
+    def _delete(self, name: str) -> None:
+        box = MessageBox(f"Delete {name}?", "Its settings go. If the bot sees that account again, it makes a new "
+                         "profile for it from the starred profile's settings.", self)
+        box.yesButton.setText("Delete")
+        if not box.exec():
+            return
+        main = self.main
+        if name == main.config.profiles.active:
+            main._use_profile("")
+        if main.config.profiles.default == name:
+            main.config.profiles.default = ""
+            accounts.save_active(main.config, main.config_path)
+        main.profiles.delete(name)
+        main._show_profiles()
+        self.refresh()
+
+
 class FarmbotWindow(FluentWindow):
     def __init__(self, config_path: str, serial: str | None = None):
         super().__init__()
@@ -590,8 +797,8 @@ class FarmbotWindow(FluentWindow):
         self._add_page(self._advanced(), FIF.SETTING, "Advanced", NavigationItemPosition.BOTTOM)
         # The account's profile: picked by the player name in the game, or by hand here.
         self.profile_nav = NavigationAvatarWidget("")
-        self.navigationInterface.addWidget("profile", self.profile_nav, self._profile_menu,
-                                           NavigationItemPosition.BOTTOM, tooltip="Profile: settings for this account")
+        self.navigationInterface.addWidget("profile", self.profile_nav, self._show_accounts,
+                                           NavigationItemPosition.BOTTOM, tooltip="Accounts: each one's settings")
         self._show_profiles()
         self._find_bluestacks()  # fills both Setup and Advanced
         self.navigationInterface.expand(useAni=False)
@@ -902,39 +1109,20 @@ class FarmbotWindow(FluentWindow):
         active = self.config.profiles.active
         self.profile_nav.setName(active or "No profile yet")
 
-    def _profile_menu(self) -> None:
-        """Click on the profile: pick another one, or delete this one."""
-        menu = RoundMenu(parent=self)
-        names = self.profiles.names()
-        active = self.config.profiles.active
-        running = self._running()
-        if not names:
-            note = Action(FIF.PEOPLE, "Made when the bot first sees an account")
-            note.setEnabled(False)
-            menu.addAction(note)
-        for name in names:
-            action = Action(FIF.ACCEPT if name == active else FIF.PEOPLE, name)
-            action.setEnabled(not running)
-            action.triggered.connect(lambda _=False, n=name: self._use_profile(n) if n != active else None)
-            menu.addAction(action)
-        if running:
-            menu.addSeparator()
-            note = Action(FIF.INFO, "The bot picks the profile while it runs")
-            note.setEnabled(False)
-            menu.addAction(note)
-        elif active:
-            menu.addSeparator()
-            delete = Action(FIF.DELETE, f"Delete {active}")
-            delete.triggered.connect(self._delete_profile)
-            menu.addAction(delete)
-        menu.exec(QCursor.pos())
+    def _show_accounts(self) -> None:
+        """Click on the profile: the account manager."""
+        AccountsDialog(self).exec()
+
+    def _flush_save(self) -> None:
+        """Save edits still waiting to be (they belong to the profile in use)."""
+        if self.save_timer.isActive():
+            self.save_timer.stop()
+            self._autosave()
 
     def _use_profile(self, name: str) -> None:
         """Put profile ``name``'s settings ("": the main file's) in place:
         the running bot holds the same Config, so it plays with them too."""
-        if self.save_timer.isActive():  # the last edits belong to the profile being left
-            self.save_timer.stop()
-            self._autosave()
+        self._flush_save()  # the last edits belong to the profile being left
         main = load_config(self.config_path)
         source = self.profiles.load(name, main) if name else main
         accounts.take(source, self.config)
@@ -942,18 +1130,6 @@ class FarmbotWindow(FluentWindow):
         accounts.save_active(self.config, self.config_path)
         self._load()
         self._changed(save=False)
-        self._show_profiles()
-
-    def _delete_profile(self) -> None:
-        name = self.config.profiles.active
-        if not name:
-            return
-        box = MessageBox(f"Delete {name}?", "Its settings go. If the bot sees that account again, it makes a new "
-                         "profile from the settings in use.", self)
-        if not box.exec():
-            return
-        self._use_profile("")
-        self.profiles.delete(name)
         self._show_profiles()
 
     def _account_from_bot(self, mask: np.ndarray) -> str | None:
@@ -979,8 +1155,11 @@ class FarmbotWindow(FluentWindow):
         if name is None:
             return None
         if made:
-            InfoBar.success("New account", f"Made the profile {name} for it, from the settings in use. Click it "
-                            "at the bottom left to switch profiles.", duration=8000,
+            starred = self.config.profiles.default
+            known = starred and self.profiles.path(starred).is_file()
+            source = f"{starred}'s settings" if known else "the settings in use"
+            InfoBar.success("New account", f"Made the profile {name} for it, from {source}. Click it at the bottom "
+                            "left to manage accounts.", duration=8000,
                             position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
         if name != self.config.profiles.active:
             self._use_profile(name)

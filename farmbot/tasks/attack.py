@@ -431,10 +431,16 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
     than fits on the screen, it's deployed a screenful at a time, in that
     order, scrolling on until its end."""
     acfg = cfg.attack
-    # The battle's view starts where the village's camera is (centred once a
-    # run, see Bot.maintain_village), so a zoom-out is all it needs.
+    # The game centres a battle's view by itself, at the village's zoom: a
+    # zoom-out is all it needs.
     game.zoom_out()
     edges, center = deploy_edges(game, cfg)
+    if center is None and (cfg.redline.enabled or cfg.zone.enabled):
+        # Neither found the base: most likely still zoomed in (a pinch the
+        # game missed, from a village left zoomed in on an upgrade).
+        log.info("Deploy points: the base wasn't found; zooming out again")
+        game.zoom_out()
+        edges, center = deploy_edges(game, cfg)
     edge_points = cycle_points(edges, acfg.sides)
     fixed_points = cycle_points(fixed_lines(game.size[0], cfg), acfg.sides)
     over_base = spell_points(edges, center, acfg.spell_reach)

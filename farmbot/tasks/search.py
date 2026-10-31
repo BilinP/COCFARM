@@ -192,20 +192,32 @@ def start_search(game: Game) -> None:
 MAX_UNREADABLE = 3  # bases in a row whose loot can't be read before giving up
 
 
-def search(game: Game, criteria: SearchConfig, regions: RegionsConfig, on_base: BaseCallback | None = None) -> Loot:
+def search(game: Game, criteria: SearchConfig, regions: RegionsConfig, on_base: BaseCallback | None = None,
+           zoom_out: bool = False) -> Loot:
     """Press Next until a base meets ``criteria``; returns its loot.
+    ``zoom_out``: the village was left zoomed in (on an upgrade), and the
+    battle opens at its zoom: zoom out on the first base.
 
     Must be called after :func:`start_search`. Raises :class:`SearchError`
     if the search gets stuck or exceeds ``criteria.max_searches``.
     """
     last: Loot | None = None
     repeats = unreadable = 0
+    zoomed = zoom_out
     for count in range(1, criteria.max_searches + 1):
         if not game.wait_for(T.NEXT, timeout=20):
             raise SearchError("next button never appeared; search screen not loaded")
         game.wait(0.5)  # let the loot counters finish animating
+        if count == 1 and zoom_out:
+            game.zoom_out()
         game.refresh()
         loot = read_settled_loot(game, regions)
+        if loot is None and not zoomed:
+            # The battle opens at the village's zoom: left zoomed in on an
+            # upgrade, the base's health bars can sit over the numbers.
+            zoomed = True
+            game.zoom_out()
+            loot = read_settled_loot(game, regions)
         if loot is None:
             unreadable += 1
             if unreadable >= MAX_UNREADABLE:

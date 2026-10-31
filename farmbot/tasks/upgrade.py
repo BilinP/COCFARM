@@ -50,9 +50,11 @@ def priority(first: str) -> list[str | None]:
     return [first, *(k for k in ORDER if k != first), None]
 
 
-def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str]) -> int:
+def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], last: bool = False) -> int:
     """Spend the home village's ``full`` storages' resources on upgrades.
-    Returns how many were started."""
+    What was upgraded is left zoomed in on (the walls, or the battle,
+    next zoom out), and dropped unless ``last`` (a battle comes next, which
+    drops it). Returns how many were started."""
     ucfg = cfg.upgrade
     full = {k for k in full if k in HOME.resources}
     if not ucfg.enabled or not full or not all(game.has(n) for n in NEEDED):
@@ -72,7 +74,9 @@ def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str]) -> 
         if ucfg.pets and "dark" in budget:
             done += _pets(game, budget, read_resources)
     finally:
-        _leave(game)
+        _close_windows(game)
+        if not last:
+            deselect(game)  # a pinch on what's still selected would move it
     return done
 
 
@@ -129,17 +133,14 @@ def _open_list(game: Game) -> bool:
     return True
 
 
-def _leave(game: Game, view: np.ndarray | None = None) -> None:
-    """Upgrading moved the camera to what was upgraded: the next battle's
-    view starts from the village's, so put it back (to ``view``, a picture
-    of it, if given; else to the middle)."""
+def _leave(game: Game, view: np.ndarray) -> None:
+    """Upgrading moved the camera to what was upgraded and zoomed in: zoom
+    out again, and drag it back to ``view``, a picture of the builder
+    base's (it holds two bases)."""
     _close_windows(game)
     deselect(game)  # a pinch on what's still selected would move it
     game.zoom_out()
-    if view is None:
-        game.center_view()
-    else:
-        restore_view(game, view)
+    restore_view(game, view)
 
 
 def _spend(game: Game, row: Row, budget: dict[str, int], read_resources: Reader, what: str,

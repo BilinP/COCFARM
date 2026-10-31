@@ -363,15 +363,16 @@ def _green_button(screen: np.ndarray, region: tuple[int, int, int, int]) -> tupl
 
 
 def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], Loot | None],
-                  keep: dict[str, int]) -> int:
+                  keep: dict[str, int], known: dict | None = None) -> int:
     """Spend spare builder gold and elixir on builder base walls, all in one
     go as at home: Build → scroll to the cheapest "Wall x N" → Upgrade More
     until as many are selected as the spare covers at the row's price →
     Upgrade → Okay (one wall: the upgrade window's green price button);
     then again in the other resource, if it has some to spare too.
-    ``keep``: how much of each resource stays. Returns how many walls were
-    upgraded."""
-    from farmbot.tasks.village import _wall_budget
+    ``keep``: how much of each resource stays. ``known``: kept between
+    calls, the wall's price (see ``village.upgrade_walls``). Returns how
+    many walls were upgraded."""
+    from farmbot.tasks.village import _payable, _wall_budget
 
     needed = (T.BUILD, T.WALL_SUGGESTION, T.BB_UPGRADE, T.BB_UPGRADE_TITLE, T.CLOSE)
     if not cfg.walls or not all(game.has(n) for n in needed):
@@ -383,6 +384,9 @@ def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], L
         log.info("Builder walls: %s", "nothing to spare above what's kept" if keep else
                  "how much the storages hold isn't known yet")
         return 0
+    known = {} if known is None else known
+    if not _payable(loot, budget, keep, known, "Builder walls"):
+        return 0
     view = game.refresh().copy()  # selecting a wall moves the camera onto it
     try:
         done = 0
@@ -391,9 +395,9 @@ def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], L
                 _close_all(game)
                 game.zoom_out()
                 loot = read_resources()
-                if loot is None or getattr(loot, kind) <= keep[kind]:
+                if not _payable(loot, [kind], keep, known, "Builder walls"):
                     continue
-            done += _upgrade_walls(game, read_resources, loot, [kind], keep)
+            done += _upgrade_walls(game, read_resources, loot, [kind], keep, known)
         return done
     finally:
         _close_all(game)
@@ -416,7 +420,7 @@ def _close_all(game: Game) -> None:
 
 
 def _upgrade_walls(game: Game, read_resources: Callable[[], Loot | None], loot: Loot, budget: list[str],
-                   keep: dict[str, int]) -> int:
+                   keep: dict[str, int], known: dict) -> int:
     from farmbot.tasks.village import MAX_WALLS, _cost_kind, _select_more, _wall_price, find_wall_entry
 
     if not game.click(T.BUILD) or not game.wait_for(T.CLOSE, timeout=4):
@@ -428,6 +432,8 @@ def _upgrade_walls(game: Game, read_resources: Callable[[], Loot | None], loot: 
         log.info("No builder base wall to upgrade in the list")
         return 0
     price = _wall_price(game, entry)
+    if price:
+        known["price"] = price
     game.tap_match(entry)
     if not game.wait_for(T.BB_UPGRADE, timeout=4):
         log.info("Builder walls: no Upgrade button under the wall")
@@ -440,7 +446,11 @@ def _upgrade_walls(game: Game, read_resources: Callable[[], Loot | None], loot: 
         log.info("Builder walls: no upgrade payable with %s (buttons cost %s)", budget, list(buttons))
         return 0
     spare = getattr(loot, kind) - keep[kind]
-    count = min(MAX_WALLS, spare // price) if price else 1
+    price = price or known.get("price")  # unread: the price last seen
+    if not price:  # never tap Upgrade without knowing it's paid for (else gems are offered)
+        log.info("Builder walls: couldn't read the price; trying again next round")
+        return 0
+    count = min(MAX_WALLS, spare // price)
     if count < 1:
         log.info("Builder walls: %s %s spare, a wall costs %s", f"{spare:,}", kind, f"{price:,}")
         return 0

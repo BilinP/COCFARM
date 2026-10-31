@@ -88,7 +88,12 @@ class Bot:
         self._game_restarts = 0  # game restarts since the last good round
         self.notifier = notifier or Notifier(config.notify)
         self._since_break = 0  # attacks since the last break
-        self._view_centred = False  # the village's view, centred once a run
+        self._walls_known: dict = {}  # what the wall upgrades learnt (the price), per account
+        self._builder_walls_known: dict = {}
+        # Upgrades, last before a battle, leave what they upgraded selected
+        # (the battle drops it); if no battle came, it's dropped next round.
+        self._left_selected = False
+        self._left_zoomed_in = False  # the same: the battle's view needs zooming out
         self._break_due: int | None = None  # attacks between breaks, picked at random
         # What each village's storages hold (config.storage) is read the first
         # time the bot is in that village each day (upgraded storages hold
@@ -126,7 +131,7 @@ class Bot:
             self._storage_max_reads = {}
             self._since_collect = self._since_home_collect = None
             self._in_clan = self._next_request = None
-            self._view_centred = False
+            self._walls_known, self._builder_walls_known = {}, {}
         return True
 
     def status(self, text: str) -> None:
@@ -371,12 +376,17 @@ class Bot:
         self.status("Looking after the village")
         village.leave_battle(self.game)
         village.clear_popups(self.game)
+        # A pinch finger on a building left selected would move it (one
+        # being upgraded shows no Upgrade button to tell).
+        if self._left_selected:
+            village.deselect(self.game)
+        else:
+            self.game.deselect()
+        self._left_selected = False
         # The village comes back from battles zoomed in a little, and the
         # next battle's view starts from the village's zoom.
-        if self.game.zoom_out() and not self._view_centred:
-            # Once a run: the camera stays where it is left, and the next
-            # battle's view starts from the village's.
-            self._view_centred = self.game.center_view()
+        self.game.zoom_out()
+        self._left_zoomed_in = False
         if self._pending:
             # Before collecting or training, which would blur the gain.
             self._settle_attack(self.read_resources())
@@ -394,18 +404,6 @@ class Bot:
         if cfg.bot.collect_loot_cart:
             village.collect_loot_cart(self.game)
         self.checkpoint()
-        if cfg.upgrade.enabled:
-            # Before walls: big upgrades get a full storage first, and walls
-            # get what's left (one builder is kept for them).
-            full = self.full_storages()
-            if full:
-                self.status("Upgrading")
-                upgrade.upgrade(self.game, cfg, self.read_resources, full)
-        if cfg.walls.enabled:
-            self.status("Upgrading walls")
-            full = self.full_storages() if cfg.walls.only_when_full else None
-            keep = cfg.storage.keep("home", {"gold": cfg.walls.keep_gold, "elixir": cfg.walls.keep_elixir})
-            village.upgrade_walls(self.game, cfg.walls, self.read_resources, keep, full)
         if (cfg.clan.donate or cfg.clan.request_troops) and self._in_clan is None:
             self._in_clan = clan.in_clan(self.game)
             if self._in_clan is False:
@@ -423,6 +421,24 @@ class Bot:
                 # Wait out the game's cooldown (read off the button), or the
                 # configured interval when it couldn't be read.
                 self._next_request = now + (wait + 30 if wait else cfg.clan.request_every_minutes * 60)
+        # Upgrades last, just before the battle: they leave the camera zoomed
+        # in on what they upgraded, and a battle zooms out and centres its
+        # view by itself, so nothing needs putting back.
+        if cfg.upgrade.enabled:
+            # Before walls: big upgrades get a full storage first, and walls
+            # get what's left (one builder is kept for them).
+            full = self.full_storages()
+            if full:
+                self.status("Upgrading")
+                if upgrade.upgrade(self.game, cfg, self.read_resources, full, last=not cfg.walls.enabled):
+                    self._left_selected = self._left_zoomed_in = not cfg.walls.enabled
+        if cfg.walls.enabled:
+            self.status("Upgrading walls")
+            full = self.full_storages() if cfg.walls.only_when_full else None
+            keep = cfg.storage.keep("home", {"gold": cfg.walls.keep_gold, "elixir": cfg.walls.keep_elixir})
+            if village.upgrade_walls(self.game, cfg.walls, self.read_resources, keep, full, self._walls_known,
+                                     last=True):
+                self._left_zoomed_in = True
 
     def playing(self) -> str:
         """The village being farmed: "home" or "builder" (mode "auto" starts
@@ -497,7 +513,7 @@ class Bot:
             self.status("Upgrading builder base walls")
             keep = self.config.storage.keep("builder", {"gold": bcfg.walls_keep_gold,
                                                          "elixir": bcfg.walls_keep_elixir})
-            walls = builder.upgrade_walls(self.game, bcfg, self.read_resources, keep)
+            walls = builder.upgrade_walls(self.game, bcfg, self.read_resources, keep, self._builder_walls_known)
         cart = False
         if bcfg.collect_cart:
             if self._cart_due is None:
@@ -578,10 +594,12 @@ class Bot:
         self.checkpoint()
         self.status("Searching for a base")
         search.start_search(self.game)
-        target = search.search(self.game, cfg.search, cfg.regions, self._base_seen)
+        target = search.search(self.game, cfg.search, cfg.regions, self._base_seen, zoom_out=self._left_zoomed_in)
+        self._left_zoomed_in = False
         self.status("Attacking")
         self._pending = AttackRecord(self._now(), target, before)
         self._pending.taken = attack.attack(self.game, cfg, target)
+        self._left_selected = False  # the battle dropped it
         self.attacks += 1
         self.attacks_today += 1
         self._since_break += 1
