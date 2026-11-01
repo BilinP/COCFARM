@@ -35,6 +35,7 @@ class Picture:
 QUICK_EXIT = "Leaving battles without restarting the game"
 BAT_SPELLS = "Casting only Bat Spells"
 SUPER_TROOPS = "Activating super troops"
+CAPITAL = "Clan Capital raids"
 
 PICTURES: list[Picture] = [
     # Attacking: without these the bot cannot get into or out of a battle.
@@ -172,6 +173,28 @@ PICTURES: list[Picture] = [
             "Donating", folder=True),
     Picture(T.REQUEST, "Request", "Clan chat, bottom (right of Challenge): the castle with a plus.", "Requesting troops"),
     Picture(T.REQUEST_SEND, "Send request", "Request window: the word \"Send\".", "Requesting troops"),
+    Picture(T.CAPITAL_BADGE, "Raid badge", "Home village, over the capital airship: the sword on the red badge "
+            "(raids left; a gold sword for the bonus raid).", CAPITAL, folder=True),
+    Picture(T.CAPITAL_COLLAPSE, "Fold event buttons", "Home village, bottom: the \"<\" at the end of the event "
+            "buttons.", CAPITAL),
+    Picture(T.CAPITAL_NEXT_RAID, "Next Raid", "Clan Capital, after a raid's summary: the words \"Next Raid\".",
+            CAPITAL),
+    Picture(T.CAPITAL_RAID_MAP, "Raid Map", "Clan Capital, bottom right: the words \"Raid Map\".", CAPITAL),
+    Picture(T.CAPITAL_LEAVE_RAID, "Raid map: Map", "Raid map, bottom left: the airship \"Map\" button.", CAPITAL),
+    Picture(T.CAPITAL_RETURN_HOME, "Capital: Return Home", "Clan Capital, bottom left: the words \"Return Home\".",
+            CAPITAL),
+    Picture(T.CAPITAL_DISTRICT_ATTACK, "District Attack", "Raid map, after tapping a district: the red \"Attack\".",
+            CAPITAL),
+    Picture(T.CAPITAL_ATTACK_NOW, "Attack Now?", "Raid map → Attack: the title \"Attack Now?\".", CAPITAL),
+    Picture(T.CAPITAL_ATTACK_GO, "Raid Attack", "\"Attack Now?\" window: the green \"Attack\".", CAPITAL),
+    Picture(T.CAPITAL_SURE_ATTACK, "Attack anyway", "\"Capital Gold storage is full\" question: \"Attack\".", CAPITAL),
+    Picture(T.CAPITAL_NOT_MEMBER, "Not a member yet", "\"Only members who were in the Clan before the Raid Weekend "
+            "began can attack\": its words.", CAPITAL),
+    Picture(T.CAPITAL_CARD_DIR, "Capital unit", "Change Capital Army list: the unit's picture, in colour (it tells the "
+            "cards in the raid's troop bar apart). Save it under the unit's name, e.g. super_miner.", CAPITAL, folder=True),
+    Picture(T.CAPITAL_BATTLE_HEAL, "Raid Heal card", "Troop bar during a raid: the Heal Spell card's bottle.",
+            CAPITAL),
+    Picture(T.CAPITAL_RESULT_MAP, "Raid result: Map", "Raid result screen: the word \"Map\".", CAPITAL),
     Picture(T.TRY_AGAIN, "Try Again", "Connection lost popup: \"Try Again\".", "Recovering from disconnects"),
     Picture(T.RELOAD, "Reload", "\"Another device is connected\" popup: \"Reload\".", "Recovering from disconnects"),
 ]

@@ -125,6 +125,9 @@ FIELDS = [
     Field("clan.donate_fill", "bool"),
     Field("clan.max_donations_per_request", "int", 1, 50),
     Field("clan.request_troops", "bool"),
+    Field("capital.raid", "bool"),
+    Field("capital.miner_heal_at", "percent", 10, 95),
+    Field("capital.fortress_heal_at", "percent", 10, 95),
     Field("clan.request_every_minutes", "int", 1, 600),
     # Schedule
     Field("schedule.enabled", "bool"),

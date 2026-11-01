@@ -284,6 +284,16 @@ class ClanConfig:
 
 
 @dataclass
+class CapitalConfig:
+    """Clan Capital raids on Raid Weekends (Friday 07:00 to Monday 07:00 UTC)."""
+
+    raid: bool = False
+    # A heal goes on the units once their health bars fall under this share.
+    miner_heal_at: float = 0.7  # Super Miners: kept going together
+    fortress_heal_at: float = 0.5  # Flying Fortresses
+
+
+@dataclass
 class ScheduleConfig:
     """When the bot may play."""
 
@@ -516,6 +526,7 @@ class Config:
     zone: ZoneConfig = field(default_factory=ZoneConfig)
     redline: RedLineConfig = field(default_factory=RedLineConfig)
     clan: ClanConfig = field(default_factory=ClanConfig)
+    capital: CapitalConfig = field(default_factory=CapitalConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     bot: BotConfig = field(default_factory=BotConfig)

@@ -6,7 +6,7 @@ import logging
 import threading
 from collections import Counter
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -16,7 +16,7 @@ from farmbot.config import Config, search_minimums_for
 from farmbot.device import DeviceError
 from farmbot.game import Game, Stopped, T
 from farmbot.history import AttackRecord
-from farmbot.tasks import attack, builder, clan, search, super_troops, upgrade, village
+from farmbot.tasks import attack, builder, capital, clan, search, super_troops, upgrade, village
 from farmbot.tasks.search import Loot
 
 log = logging.getLogger(__name__)
@@ -96,6 +96,7 @@ class Bot:
         self._since_break = 0  # attacks since the last break
         self._walls_known: dict = {}  # what the wall upgrades learnt (the price), per account
         self._builder_walls_known: dict = {}
+        self._capital_after: datetime | None = None  # when to look for Clan Capital raids again
         # Upgrades, last before a battle, leave what they upgraded selected
         # (the battle drops it); if no battle came, it's dropped next round.
         self._left_selected = False
@@ -136,7 +137,7 @@ class Bot:
             self.full_villages = set()
             self._storage_max_reads = {}
             self._since_collect = self._since_home_collect = None
-            self._in_clan = self._next_request = None
+            self._in_clan = self._next_request = self._capital_after = None
             self._walls_known, self._builder_walls_known = {}, {}
         return True
 
@@ -251,7 +252,7 @@ class Bot:
             minutes = int((self._now() - self._session_start).total_seconds() // 60)
             fields.append(("⏱️ Ran for", f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"))
         for key, label in (("walls", "🧱 Walls upgraded"), ("upgrades", "🔨 Upgrades started"),
-                           ("super troops", "⭐ Super troops boosted")):
+                           ("super troops", "⭐ Super troops boosted"), ("raids", "🏰 Capital raids")):
             if self.session[key]:
                 fields.append((label, f"{self.session[key]:,}"))
         return fields
@@ -449,6 +450,8 @@ class Bot:
                 # Wait out the game's cooldown (read off the button), or the
                 # configured interval when it couldn't be read.
                 self._next_request = now + (wait + 30 if wait else cfg.clan.request_every_minutes * 60)
+        if cfg.capital.raid:
+            self.raid_capital()
         # Upgrades last, just before the battle: they leave the camera zoomed
         # in on what they upgraded, and a battle zooms out and centres its
         # view by itself, so nothing needs putting back.
@@ -473,6 +476,30 @@ class Bot:
                                                            self._walls_known, last=True)
             # Even with none paid for, walls tapped are left selected and zoomed in on.
             self._left_selected = self._left_zoomed_in = True
+
+    def raid_capital(self) -> None:
+        """Clan Capital raids, with every raid attack left, on Raid Weekends
+        (looked for again an hour later)."""
+        now = self._now()
+        if not capital.raid_weekend(now) or (self._capital_after and now < self._capital_after):
+            return
+        self.checkpoint()
+        self.status("Raiding the Clan Capital")
+        self._capital_after = now + timedelta(hours=1)
+        try:
+            raids = capital.raid_capital(self.game, self.config.capital)
+        except capital.NotAllowed:
+            log.info("Clan Capital: you joined the clan after this Raid Weekend began, so the game allows no "
+                     "raids until the next one")
+            end = capital.weekend_end(now)
+            if end is not None:
+                self._capital_after = end.astimezone(now.tzinfo) if now.tzinfo else end.astimezone().replace(tzinfo=None)
+            raids = 0
+        self.session["raids"] += raids
+        if raids:
+            log.info("Clan Capital: %d raid(s) made", raids)
+        # Back home the village is shown at its default zoom.
+        self.game.zoom_out()
 
     def playing(self) -> str:
         """The village being farmed: "home" or "builder" (mode "auto" starts

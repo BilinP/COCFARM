@@ -1811,6 +1811,7 @@ class FarmbotWindow(FluentWindow):
         self._attacking_tab(page.tab("attacking", "Attacking"))
         self._village_tab(page.tab("village", "Village"))
         self._clan_tab(page.tab("clan", "Clan"))
+        self._raid_weekend_tab(page.tab("raids", "Raid Weekend (beta)"))
         return page
 
     def _bases_tab(self, page: Page) -> None:
@@ -1997,6 +1998,19 @@ class FarmbotWindow(FluentWindow):
         self.switch(request, "clan.request_troops", FIF.SEND, "Request Clan Castle troops",
                     "Asks the clan for troops, then again as soon as the game lets you.")
         self._note(page, self._template_note("Donating", "Requesting troops"))
+
+    def _raid_weekend_tab(self, page: Page) -> None:
+        raids = page.add(SettingCardGroup("Clan Capital raids (beta)"))
+        self.switch(raids, "capital.raid", FIF.FLAG, "Raid the Clan Capital on Raid Weekends",
+                    "From Friday to Monday (07:00 UTC), uses every raid attack with the capital army you set "
+                    "in the game (it must be full): the troops in one clump, healed when they get hurt, "
+                    "lightning on the most packed buildings, skeletons in the middle. Never spends Capital Gold.")
+        self.number(raids, "capital.miner_heal_at", FIF.HEART, "Heal Super Miners at",
+                    "A heal goes where the miners are heading once their health falls under this.", "%")
+        self.number(raids, "capital.fortress_heal_at", FIF.HEART, "Heal Flying Fortresses at",
+                    "A heal goes on the fortresses once one falls under this.", "%")
+        self.depends("capital.raid", "capital.miner_heal_at", "capital.fortress_heal_at")
+        self._note(page, self._template_note(catalog.CAPITAL))
 
     def _has_unit_picture(self, name: str) -> bool:
         from farmbot.units import slug

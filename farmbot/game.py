@@ -189,6 +189,21 @@ class T:
     # "Defensive Layout obstructed" after asking for a battle, and its Attack button
     LAYOUT_OBSTRUCTED = "buttons/layout_obstructed"
     OBSTRUCTED_ATTACK = "buttons/obstructed_attack"
+    # Clan Capital raids (Raid Weekends)
+    CAPITAL_BADGE = "capital/raid_badge"  # the sword on the red badge over the capital airship: raids left
+    CAPITAL_COLLAPSE = "capital/collapse_bar"  # "<" at the end of the event buttons: folds them off the airship
+    CAPITAL_NEXT_RAID = "capital/next_raid"  # "Next Raid" under the last raid's summary
+    CAPITAL_RAID_MAP = "capital/raid_map"  # "Raid Map", bottom right of the capital
+    CAPITAL_LEAVE_RAID = "capital/leave_raid"  # the airship "Map" button, bottom left of the raid map
+    CAPITAL_RETURN_HOME = "capital/return_home"  # "Return Home", bottom left of the capital
+    CAPITAL_DISTRICT_ATTACK = "capital/district_attack"  # red Attack under a picked district
+    CAPITAL_ATTACK_NOW = "capital/attack_now"  # "Attack Now?" title
+    CAPITAL_ATTACK_GO = "capital/attack_go"  # its Attack, green only with a full army
+    CAPITAL_SURE_ATTACK = "capital/sure_attack"  # "Capital Gold storage is full. Attack anyway?"
+    CAPITAL_NOT_MEMBER = "capital/not_member"  # "Only members who were in the Clan before the Raid Weekend..."
+    CAPITAL_CARD_DIR = "capital/cards"  # capital/cards/<name>.png: the army editor's units, found in the troop bar too
+    CAPITAL_BATTLE_HEAL = "capital/battle_heal"  # the heal spell's card in the raid's troop bar
+    CAPITAL_RESULT_MAP = "capital/result_map"  # "Map" under a raid's result
     BAT_SPELL_CARD = "cards/bat_spell"  # the Bat Spell card's picture in the troop bar
     DONATE_ITEM_DIR = "donate"  # donate/<unit slug>.png: units in the donate window
     DONATE_WINDOW = "buttons/donate_window"  # the donate window's "Donation Resource" title
@@ -300,6 +315,7 @@ class Game:
         self._calibration_tried: dict[str, float] = {}
         self._any_sizes: dict[str, float] = {}  # ANY_SIZE picture -> the size it last matched at
         self._selected_sizes: dict[str, float] = {}  # the same, under a selected building (no list open)
+        self._zoomed_view: np.ndarray | None = None  # the screen the last full zoom-out ended on
         # Finds on the screenshot in ``_seen_on``: (name, threshold, region) -> matches.
         self._seen_on: np.ndarray | None = None
         self._seen: dict[tuple, list[Match]] = {}
@@ -456,22 +472,43 @@ class Game:
         pinch = getattr(self.device, "zoom_out", None)
         if pinch is None:
             return False
+        if self._still_zoomed_out(self.refresh()):
+            # The view the last zoom-out ended on, unmoved: still all the
+            # way out. Another pinch would only make the map spring back.
+            log.debug("Still zoomed out: no pinch")
+            return True
+        self._zoomed_view = None
         for _ in range(ZOOM_TRIES):
             # Pinch again while the view keeps changing: a pinch the game misses
             # (it happens on LDPlayer) must not leave a battle zoomed in.
             before = self.refresh()
+            still = False
             for _ in range(ZOOM_PASSES):
+                log.debug("Pinching out")
                 if not pinch():
                     return False
                 self.wait(0.5)
                 after = self.refresh()
                 if view_change(before, after) < VIEW_STILL:
+                    still = True
                     break
                 before = after
             if not self.deselect():
+                if still:
+                    self._zoomed_view = after
                 return True
             log.info("Zooming out selected a building: dropped it, zooming again")
         return True
+
+    def _still_zoomed_out(self, screen: np.ndarray) -> bool:
+        """``screen`` shows the very view the last full zoom-out ended on:
+        hardly anything changed, and the map's features sit where they did
+        (another base, mostly grass too, can change as little)."""
+        view = self._zoomed_view
+        if view is None or view_change(view, screen) >= VIEW_STILL:
+            return False
+        shift = view_shift(view, screen)
+        return shift is not None and abs(shift[0]) <= VIEW_NEAR and abs(shift[1]) <= VIEW_NEAR
 
     def selected(self) -> bool:
         """A building is selected in a village (its Upgrade button shows
