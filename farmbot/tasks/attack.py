@@ -106,14 +106,91 @@ def fixed_lines(width: int, cfg: Config) -> dict[str, list[Point]]:
     return lines
 
 
-def cycle_points(edges: dict[str, list[Point]], sides: list[str]) -> Iterator[Point]:
-    """Endless stream of deploy points that alternates between sides and
-    walks along each side, so troops spread around the base."""
-    streams = [itertools.cycle(edges[s]) for s in sides if edges.get(s)]
-    if not streams:
-        raise RuntimeError("no deploy points on any side")
-    for stream in itertools.cycle(streams):
-        yield next(stream)
+class DeployPoints:
+    """Endless deploy points that alternate between sides and walk along
+    each side, so troops spread around the base. A batch can be taken from
+    one side (:meth:`take`), so a side whose points the game refuses (a
+    guessed line running through a base that fills the map, say) shows up,
+    and is dropped: troops then go only where they land."""
+
+    def __init__(self, edges: dict[str, list[Point]], sides: list[str]):
+        self.streams = {s: itertools.cycle(edges[s]) for s in sides if edges.get(s)}
+        if not self.streams:
+            raise RuntimeError("no deploy points on any side")
+        self.live = list(self.streams)
+        self.misses: dict[str, int] = {}
+        self.turn = 0
+        self.seen_land: set[str] = set()  # sides where troops have landed
+        self.redrawn: set[str] = set()  # sides moved onto the red line a refusal showed
+
+    def __iter__(self) -> DeployPoints:
+        return self
+
+    def _side(self) -> str:
+        side = self.live[self.turn % len(self.live)]
+        self.turn += 1
+        return side
+
+    def __next__(self) -> Point:
+        return next(self.streams[self._side()])
+
+    def take(self, count: int) -> tuple[str, list[Point]]:
+        """``count`` points along one side, the sides taking turns."""
+        side = self._side()
+        return side, [next(self.streams[side]) for _ in range(count)]
+
+    def refused(self, side: str) -> bool:
+        """A batch from ``side`` went nowhere: after SIDE_REFUSALS of them
+        in a row the side is dropped. True while there are other sides to
+        try (False: this is the last one)."""
+        if len(self.live) == 1:
+            return False
+        self.misses[side] = self.misses.get(side, 0) + 1
+        if self.misses[side] >= SIDE_REFUSALS and side in self.live:
+            self.live.remove(side)
+            log.info("Deploy points: the %s side is refused; using %s", side, ", ".join(self.live))
+        return True
+
+    def landed(self, side: str) -> None:
+        self.misses[side] = 0
+        self.seen_land.add(side)
+
+    def redraw(self, side: str, screen: np.ndarray, cfg: Config) -> bool:
+        """A batch from ``side`` was refused, and a refused tap makes the
+        game show the red line: read it off ``screen`` and move the sides
+        it shows (that haven't landed troops yet) onto it, once each. True
+        if ``side`` moved."""
+        if side in self.redrawn or not cfg.redline.enabled:
+            return False
+        self.redrawn.add(side)
+        found = rl.detect(screen, cfg.redline)
+        if found is None:
+            return False
+        moved = []
+        for s, points in found.sides.items():
+            if s not in self.streams or (s != side and (s in self.seen_land or s in self.redrawn)):
+                continue
+            points = on_open_ground(screen, points, cfg)
+            if len(points) >= cfg.redline.min_side_points:
+                self.streams[s] = itertools.cycle(points)
+                self.redrawn.add(s)
+                self.misses[s] = 0
+                moved.append(s)
+        if moved:
+            log.info("Deploy points: the red line showed; %s moved onto it", ", ".join(moved))
+        return side in moved
+
+    def restore(self) -> None:
+        """Every side back (the taps were lost, not refused)."""
+        self.live = list(self.streams)
+        self.misses.clear()
+
+
+SIDE_REFUSALS = 2  # batches in a row a side's points go nowhere before it's dropped
+
+
+def cycle_points(edges: dict[str, list[Point]], sides: list[str]) -> DeployPoints:
+    return DeployPoints(edges, sides)
 
 
 def spell_points(edges: dict[str, list[Point]], center: Point | None, reach: float) -> Iterator[Point]:
@@ -174,19 +251,43 @@ def cast_together(game: Game, card: Card, spot: Point, count: int | None, cfg: C
         deploy_card(game, card, itertools.repeat(spot), cfg)
 
 
+def batches_for(count: int | None, cfg: Config) -> int:
+    """How many batches a card of ``count`` units may take: enough for half
+    its taps to be refused (too close to the base, or lost in a burst), and
+    never fewer than max_batches_per_card."""
+    acfg = cfg.attack
+    if not count:
+        return acfg.max_batches_per_card
+    needed = math.ceil(count * TAPS_PER_UNIT / max(acfg.taps_per_batch, 1)) + 2
+    return min(max(acfg.max_batches_per_card, needed), MAX_BATCHES)
+
+
+TAPS_PER_UNIT = 1.5  # taps allowed per unit on a card
+MAX_BATCHES = 60  # a card's batches at most, whatever its count
+
+
 def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
-                fallback: Iterator[Point] | None = None) -> bool:
-    """Select ``card`` and deploy until it greys out. True if it emptied.
-    If the game refuses ``points``, the ``fallback`` points are tried."""
+                fallback: Iterator[Point] | None = None, count: int | None = None) -> bool | None:
+    """Select ``card`` and deploy until it greys out. True if it emptied,
+    False if it was still deploying when its batches ran out, ``None`` if
+    the game wouldn't take any more of it. If the game refuses ``points``,
+    the ``fallback`` points are tried. ``count``: its units, when read (big
+    cards get more batches)."""
     acfg = cfg.attack
     if card.kind in ("single", "siege"):  # a hero or siege machine: one unit
         return place_single(game, card, points, cfg, fallback)
     stalled = 0
+    progressed = False  # any of it went out
     before = game.refresh()
-    for _ in range(acfg.max_batches_per_card):
+    batches = batches_for(count, cfg)
+    for _ in range(batches):
         game.tap(*card.center)
         game.wait(0.15)
-        game.tap_many([next(points) for _ in range(acfg.taps_per_batch)], jitter=3, pause=acfg.tap_delay)
+        if isinstance(points, DeployPoints):
+            side, batch = points.take(acfg.taps_per_batch)
+        else:
+            side, batch = None, [next(points) for _ in range(acfg.taps_per_batch)]
+        game.tap_many(batch, jitter=3, pause=acfg.tap_delay)
         game.wait(0.3)
         after = game.refresh()
         if pick_reward(game):
@@ -194,23 +295,37 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
         if armybar.is_spent(after, card, cfg.bar):
             return True
         # The count on the card changes as units go out; if it stays the
-        # same twice in a row, the game is rejecting our points.
-        stalled = 0 if armybar.card_changed(before, after, card) else stalled + 1
+        # same, the game refused that side's points: the side is dropped,
+        # and once there's none left to drop, twice in a row means the game
+        # is rejecting our points.
+        if armybar.card_changed(before, after, card):
+            stalled, progressed = 0, True
+            if side is not None:
+                points.landed(side)
+        elif side is not None and (points.redraw(side, after, cfg) or points.refused(side)):
+            continue  # before stays: nothing changed
+        else:
+            stalled += 1
         if stalled >= 2:
             # Heroes go down with single taps, troops and spells with fast
             # bursts; on emulators where the bursts don't get through,
             # nothing but the card selection happens. Retry with plain taps.
             if game.stop_fast_taps():
                 stalled = 0
+                if isinstance(points, DeployPoints):
+                    points.restore()  # the sides dropped lost their bursts, not their points
                 continue
             if fallback is not None and points is not fallback:
                 log.info("Card at x=%d is not deploying; trying the fixed deploy lines", card.left)
                 points, stalled = fallback, 0
                 continue
             log.warning("Card at x=%d is not deploying; moving on", card.left)
-            return False
+            return None
         before = after
-    log.warning("Card at x=%d still has units after %d batches", card.left, acfg.max_batches_per_card)
+    if not progressed:
+        log.warning("Card at x=%d is not deploying; moving on", card.left)
+        return None
+    log.warning("Card at x=%d still has units after %d batches", card.left, batches)
     return False
 
 
@@ -470,13 +585,15 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
         # Troops in waves: earlier waves send a share of each card (by its
         # count, or one batch when unreadable); the last wave empties them.
         remaining = dict(counts)
+        unfinished: list[Card] = []
         for wave in range(waves):
             if waves > 1:
                 log.info("Wave %d of %d", wave + 1, waves)
             last = wave == waves - 1
             for card in troops:
                 if last:
-                    deploy_card(game, card, edge_points, cfg, fixed_points)
+                    if deploy_card(game, card, edge_points, cfg, fixed_points, remaining.get(card)) is False:
+                        unfinished.append(card)
                     continue
                 left = remaining.get(card)
                 share = math.ceil(left / (waves - wave)) if left else acfg.taps_per_batch
@@ -487,6 +604,11 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
                 game.wait(acfg.wave_delay)
 
         here = place_singles(game, singles, edge_points, cfg, fixed_points)
+        for card in unfinished:
+            # Troops a card still holds: another go, now the others are down.
+            if not armybar.is_spent(game.refresh(), card, cfg.bar):
+                log.info("Card at x=%d still has units; deploying the rest", card.left)
+                deploy_card(game, card, edge_points, cfg, fixed_points)
         for card in spells:
             if acfg.spell_placement == "together":
                 cast_together(game, card, spot, counts.get(card), cfg)

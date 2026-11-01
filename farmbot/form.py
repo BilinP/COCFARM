@@ -18,7 +18,7 @@ SIDE_LABELS = {"nw": "Top-left (NW)", "ne": "Top-right (NE)", "sw": "Bottom-left
 @dataclass(frozen=True)
 class Field:
     path: str  # e.g. "search.min_gold"
-    kind: str  # amount | int | float | percent | bool | text | sides | resources | hours | units
+    kind: str  # amount | int | float | percent | bool | text | sides | resources | hours | units | order
     low: float | None = None
     high: float | None = None
 
@@ -42,6 +42,7 @@ FIELDS = [
     Field("attack.spells", "text"),
     Field("attack.spell_spot", "text"),
     Field("attack.use_siege", "bool"),
+    Field("attack.super_troops", "bool"),
     Field("attack.hero_abilities", "bool"),
     Field("attack.hero_ability_delay", "float", 0, 120),
     Field("attack.ability_health", "percent", 0, 95),
@@ -59,6 +60,7 @@ FIELDS = [
     Field("bot.collect_dark", "bool"),
     Field("bot.collect_every", "int", 1, 100),
     Field("bot.collect_loot_cart", "bool"),
+    Field("bot.clear_gravestones", "bool"),
     Field("bot.stop_when_full", "resources"),
     Field("bot.mode", "text"),
     Field("bot.theme", "text"),
@@ -89,8 +91,11 @@ FIELDS = [
     Field("builder.walls_keep_gold", "percent", 0, 100),
     Field("builder.walls_keep_elixir", "percent", 0, 100),
     Field("builder.upgrade", "bool"),
-    Field("builder.upgrade_first", "text"),
+    Field("builder.upgrade_order", "order"),
+    Field("builder.upgrade_heroes", "bool"),
     Field("builder.upgrade_lab", "bool"),
+    Field("builder.upgrade_buildings", "bool"),
+    Field("builder.upgrade_first", "text"),
     Field("walls.enabled", "bool"),
     Field("walls.use", "text"),
     Field("walls.pick", "text"),
@@ -98,10 +103,12 @@ FIELDS = [
     Field("walls.keep_elixir", "percent", 0, 100),
     Field("walls.only_when_full", "bool"),
     Field("upgrade.enabled", "bool"),
-    Field("upgrade.first", "text"),
-    Field("upgrade.buildings", "bool"),
-    Field("upgrade.lab", "bool"),
+    Field("upgrade.order", "order"),
     Field("upgrade.pets", "bool"),
+    Field("upgrade.heroes", "bool"),
+    Field("upgrade.lab", "bool"),
+    Field("upgrade.buildings", "bool"),
+    Field("upgrade.first", "text"),
     # What the storages hold
     Field("storage.gold", "amount"),
     Field("storage.elixir", "amount"),
@@ -188,7 +195,7 @@ def _display(field: Field, value: Any) -> Any:
         if field.path.startswith("storage.") and not value:
             return ""  # not known yet
         return f"{value:,}"
-    if field.kind in ("sides", "resources", "hours", "units"):
+    if field.kind in ("sides", "resources", "hours", "units", "order"):
         return list(value)
     if field.kind == "float":
         return f"{value:g}"
@@ -220,6 +227,8 @@ def _parse(field: Field, raw: Any) -> Any:
         from farmbot.units import BY_NAME
 
         return [name for name in dict.fromkeys(raw) if name in BY_NAME]  # in the order given
+    if field.kind == "order":
+        return list(dict.fromkeys(str(k) for k in raw))  # first to last
     if field.kind == "hours":
         hours = sorted({int(h) for h in raw})
         if any(not 0 <= h <= 23 for h in hours):

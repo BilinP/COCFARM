@@ -1,3 +1,3 @@
 """farmbot: a clean-room Clash of Clans farming bot driven over ADB."""
 
-__version__ = "0.9.3"
+__version__ = "0.9.4"

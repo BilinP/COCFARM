@@ -16,7 +16,7 @@ from farmbot.game import Game, T
 from farmbot.geometry import Rect
 from farmbot.tasks.build_list import (LIST_BOTTOM_FROM_BOTTOM, LIST_PAGE, LIST_STEP, LIST_SWIPE_FROM_BOTTOM,
                                       LIST_SWIPE_TO_Y, LIST_SWIPE_X, LIST_TOP, MAX_SORTED_SCROLLS, SLOW_SWIPE_MS,
-                                      green_confirm, set_filter)
+                                      asks_for_gems, green_confirm, set_filter, shows_gems)
 from farmbot.tasks.search import Loot
 
 log = logging.getLogger(__name__)
@@ -97,18 +97,26 @@ def reward_cards(screen: np.ndarray, banner_x: int, banner_y: int) -> list[tuple
 
 
 REWARD_SCREENS = Path("screens/rewards")  # the last few reward screens, to check the pick
-REWARD_SCREENS_KEPT = 10
+WALL_SCREENS = Path("screens/walls")  # the last few walls that showed no Upgrade button
+SCREENS_KEPT = 10
+
+
+def _keep_screen(folder: Path, screen: np.ndarray | None) -> None:
+    """Keep ``screen`` in ``folder`` (the last SCREENS_KEPT of them), for a look later."""
+    if screen is None:
+        return
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        old = sorted(folder.glob("*.png"))
+        for path in old[:max(0, len(old) - SCREENS_KEPT + 1)]:
+            path.unlink()
+        cv2.imwrite(str(folder / f"{datetime.now():%Y%m%d-%H%M%S}.png"), screen)
+    except OSError:
+        pass
 
 
 def _keep_reward_screen(screen: np.ndarray) -> None:
-    try:
-        REWARD_SCREENS.mkdir(parents=True, exist_ok=True)
-        old = sorted(REWARD_SCREENS.glob("*.png"))
-        for path in old[:max(0, len(old) - REWARD_SCREENS_KEPT + 1)]:
-            path.unlink()
-        cv2.imwrite(str(REWARD_SCREENS / f"{datetime.now():%Y%m%d-%H%M%S}.png"), screen)
-    except OSError:
-        pass
+    _keep_screen(REWARD_SCREENS, screen)
 
 
 def pick_reward(game: Game) -> bool:
@@ -140,24 +148,6 @@ def attack_despite_obstructed_layout(game: Game) -> bool:
         return False
     game.wait(1.0)
     return True
-
-
-GEM_SCALES = (0.5, 0.6, 0.7, 0.85, 1.0, 1.2)  # gem icons in windows are drawn at many sizes
-GEM_LIKENESS = 0.8
-POPUP_AREA = (150, 1000)  # x range of a centred window: clear of the resource bar's own gem
-
-
-def shows_gems(screen, top: int, bottom: int, gem) -> bool:
-    """True if a gem icon is anywhere in the window between ``top`` and
-    ``bottom`` (bot px)."""
-    area = screen[max(top, 0):bottom, POPUP_AREA[0]:POPUP_AREA[1]]
-    for scale in GEM_SCALES:
-        icon = cv2.resize(gem, None, fx=scale, fy=scale)
-        if area.shape[0] < icon.shape[0] or area.shape[1] < icon.shape[1]:
-            continue
-        if cv2.matchTemplate(area, icon, cv2.TM_CCOEFF_NORMED).max() >= GEM_LIKENESS:
-            return True
-    return False
 
 
 def _confirm_is_free(game: Game) -> bool:
@@ -495,9 +485,9 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, loot: Loot, budget: list[str], 
     price = _wall_price(game, entry)
     if price:
         known["price"] = price
-    game.tap_match(entry)
-    if not game.wait_for(T.UPGRADE, timeout=4):
-        log.info("Walls: no Upgrade button under the wall")
+    if not _select_wall(game, entry):
+        log.info("Walls: no Upgrade button under the wall (%.2f alike)", game.likeness(T.UPGRADE))
+        _keep_screen(WALL_SCREENS, game.screen)
         return 0, None, loot, False
     game.wait(0.6)  # the buttons fade in
     game.refresh()
@@ -529,7 +519,10 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, loot: Loot, budget: list[str], 
         log.info("Walls: the %s Upgrade button went away", kind)
         return 0, None, loot, False
     game.tap_match(buttons[kind])
-    if not _confirm_walls(game):
+    confirmed = _confirm_walls(game)
+    if confirmed is None:
+        return 0, None, loot, False  # it asked for gems (logged): left unpaid
+    if not confirmed:
         log.info("Walls: the upgrade window didn't open (Confirm %.2f, Okay %.2f alike)",
                  game.likeness(T.UPGRADE_CONFIRM), game.likeness(T.OKAY))
         return 0, None, loot, False
@@ -537,6 +530,22 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, loot: Loot, budget: list[str], 
     # Buildings & Heroes stays open, for the other resource's walls.
     left = getattr(loot, kind) - count * price if price else getattr(loot, kind)
     return count, price, replace(loot, **{kind: left}), True
+
+
+def _select_wall(game: Game, entry, button: str = T.UPGRADE) -> bool:
+    """Tap a "Wall x N" row: the list closes and the game selects one of
+    those walls, its Upgrade button (``button``) under it. A tap the list
+    took as the end of a glide leaves it open: the row is tapped once more."""
+    game.tap_match(entry)
+    if game.wait_for(button, timeout=4):
+        return True
+    rows = game.find_all(T.WALL_SUGGESTION)
+    row = min(rows, key=lambda m: abs(m.y - entry.y), default=None)
+    if row is None or abs(row.y - entry.y) > row.h:
+        return False  # the list closed (or moved): not some other row
+    log.info("Walls: the list stayed open; tapping the wall again")
+    game.tap_match(row)
+    return game.wait_for(button, timeout=4) is not None
 
 
 def _select_more(game: Game, count: int) -> int:
@@ -579,20 +588,25 @@ def _reading_order(matches: list) -> list:
     return [m for row in rows for m in sorted(row, key=lambda m: m.x)]
 
 
-def _confirm_walls(game: Game, timeout: float = 4) -> bool:
+def _confirm_walls(game: Game, timeout: float = 4) -> bool | None:
     """Accept the window Upgrade opens: for one wall, its green Confirm
     (never the grey one that spends a Hammer); after Upgrade More, an
     "Upgrade Walls" question with Okay. Whichever shows is pressed, so it
-    doesn't matter how many walls ended up selected."""
+    doesn't matter how many walls ended up selected. ``None``: it asked
+    for gems, and was left alone."""
     okay = game.has(T.OKAY)
     deadline = game.clock() + timeout
     while True:
         game.refresh()
         confirm = green_confirm(game) if game.has(T.UPGRADE_CONFIRM) else None
-        if confirm:
+        if confirm is None and okay:
+            confirm = game.find(T.OKAY)
+        if confirm is not None:
+            if asks_for_gems(game, confirm.y):
+                log.warning("Walls: the upgrade asks for gems; leaving it alone")
+                _keep_screen(WALL_SCREENS, game.screen)
+                return None
             game.tap_match(confirm)
-            return True
-        if okay and game.click(T.OKAY):
             return True
         if game.clock() >= deadline:
             return False
@@ -615,6 +629,27 @@ def deselect(game: Game) -> None:
 
 
 CART_BELOW_LABEL = 1.9  # the cart sits this many label heights below its label
+
+
+def clear_gravestones(game: Game) -> bool:
+    """Tap a gravestone (left by an attacker's troops) if one shows: one
+    tap clears them all. True if one was tapped."""
+    if not game.has(T.GRAVESTONE):
+        return False
+    game.refresh()
+    stone = game.find(T.GRAVESTONE, threshold=COLLECTOR_THRESHOLD)
+    if stone is None:
+        return False
+    game.tap_match(stone)
+    game.wait(3)  # they fade out
+    game.refresh()
+    left = len(game.find_all(T.GRAVESTONE, threshold=COLLECTOR_THRESHOLD))
+    if left:
+        log.info("Tapped a gravestone; %d still show", left)
+    else:
+        log.info("Cleared the gravestones")
+    deselect(game)  # a building next to it may have been tapped instead
+    return True
 
 
 def collect_loot_cart(game: Game) -> bool:

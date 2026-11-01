@@ -169,8 +169,11 @@ def full_by_amount(loot: Loot, maxes: dict[str, int]) -> set[str]:
     return {k for k, most in maxes.items() if getattr(loot, k) >= most * FULL_AMOUNT}
 
 
-def start_search(game: Game) -> None:
-    """Home village → Battle → Find a Match → Attack! (army screen)."""
+def start_search(game: Game, super_troops: bool = False, dark: int | None = None) -> int:
+    """Home village → Battle → Find a Match → Attack! (army screen).
+    ``super_troops``: on the army screen, boost the super troops showing
+    Activate first, with ``dark``, the dark elixir you have. Returns how
+    many were boosted."""
     game.refresh()
     # The battle menu may already be open (e.g. after a failed round).
     if not game.find(T.FIND_MATCH) and not game.click(T.BATTLE):
@@ -179,6 +182,11 @@ def start_search(game: Game) -> None:
     if not game.click_when_visible(T.FIND_MATCH, timeout=5, leftmost=True):
         raise SearchError("find-a-match button did not appear")
     # Newer versions confirm the army first; older ones go straight to scouting.
+    boosted = 0
+    if super_troops and game.has(T.ARMY_ATTACK) and game.wait_for(T.ARMY_ATTACK, timeout=4):
+        from farmbot.tasks.super_troops import activate_super_troops
+
+        boosted = activate_super_troops(game, dark)
     if game.has(T.ARMY_ATTACK) and game.click_when_visible(T.ARMY_ATTACK, timeout=4):
         log.debug("Confirmed army")
     if game.has(T.LAYOUT_OBSTRUCTED):
@@ -187,6 +195,7 @@ def start_search(game: Game) -> None:
         game.wait(1.0)
         game.refresh()
         attack_despite_obstructed_layout(game)
+    return boosted
 
 
 MAX_UNREADABLE = 3  # bases in a row whose loot can't be read before giving up

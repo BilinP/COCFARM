@@ -31,6 +31,7 @@ import numpy as np
 from farmbot.config import BuilderConfig
 from farmbot.tasks.search import Loot
 from farmbot.game import VIEW_AREA, VIEW_NEAR, VIEW_STILL, Game, T, view_change, view_shift
+from farmbot.tasks.build_list import asks_for_gems
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,12 @@ BOAT_DRAG = (500, 250, 400, 600, 600)  # x1, y1, x2, y2, ms: pulls the builder b
 # until it stops moving, at the first base, then pull the dock into view.
 # Drags stay clear of the buttons a selected building shows at the bottom.
 FIRST_BASE_DRAG = (725, 580, 425, 280, 700)
+# The home village's view can settle low, the boat (bottom left) behind the
+# Battle button: drag the map up and right, the boat with it.
+HOME_BOAT_DRAG = (600, 450, 750, 250, 600)  # x1, y1, x2, y2, ms
+HOME_BOAT_DRAGS = 3
+BATTLE_BUTTON = (3.0, 12.0, 1.5)  # around the Battle label, in its heights (either side, above, below): the
+# button and the margin its touch reaches past it (a boat 45 px above it opened the battle menu)
 FIRST_BASE_DRAGS = 8
 
 
@@ -97,7 +104,7 @@ def go_to_builder_base(game: Game) -> bool:
     if in_builder_base(game):
         return True
     game.zoom_out()
-    boat = _find_scaled(game, T.BB_HOME_BOAT)
+    boat = _home_boat(game)
     if boat is None:
         raise BuilderError("boat to the builder base not visible; is the home village showing?")
     game.tap(*boat)
@@ -105,6 +112,34 @@ def go_to_builder_base(game: Game) -> bool:
         raise BuilderError("builder base didn't load")
     log.info("Sailed to the builder base")
     return True
+
+
+def _home_boat(game: Game) -> tuple[int, int] | None:
+    """The home village's boat, clear of the Battle button: the view can
+    settle low, with the boat behind the button (a tap there opens the
+    battle menu) or off the screen. Then the view is dragged up and right
+    and looked at again."""
+    for look in range(HOME_BOAT_DRAGS + 1):
+        boat = _find_scaled(game, T.BB_HOME_BOAT)
+        if boat is not None and not _behind_battle(game, boat):
+            return boat
+        if look == HOME_BOAT_DRAGS:
+            break
+        log.info("The boat is %s; dragging the view", "behind the Battle button" if boat else "out of sight")
+        game.swipe(*HOME_BOAT_DRAG)
+        game.wait(1)
+    return None
+
+
+def _behind_battle(game: Game, point: tuple[int, int]) -> bool:
+    if not game.has(T.BATTLE):
+        return False
+    label = game.find(T.BATTLE)  # the button's "Battle" label, at its bottom
+    if label is None:
+        return False
+    side, above, below = (round(k * label.h) for k in BATTLE_BUTTON)
+    return (abs(point[0] - label.x) <= label.w // 2 + side
+            and label.y - above <= point[1] <= label.y + below)
 
 
 def _boat_at_first_base(game: Game) -> tuple[int, int] | None:
@@ -478,7 +513,8 @@ def _upgrade_walls(game: Game, loot: Loot, budget: list[str], keep: dict[str, in
     """One resource's walls (see ``village._upgrade_walls``). Returns how
     many walls were selected and paid for, at what price, and the
     resources left after (as paid)."""
-    from farmbot.tasks.village import MAX_WALLS, _cost_kind, _select_more, _wall_price, find_wall_entry
+    from farmbot.tasks.village import (MAX_WALLS, WALL_SCREENS, _cost_kind, _keep_screen, _select_more,
+                                       _select_wall, _wall_price, find_wall_entry)
 
     # The list doesn't stay open after an upgrade, as it does at home.
     _close_windows(game)
@@ -494,9 +530,9 @@ def _upgrade_walls(game: Game, loot: Loot, budget: list[str], keep: dict[str, in
     price = _wall_price(game, entry)
     if price:
         known["price"] = price
-    game.tap_match(entry)
-    if not game.wait_for(T.BB_UPGRADE, timeout=4):
-        log.info("Builder walls: no Upgrade button under the wall")
+    if not _select_wall(game, entry, T.BB_UPGRADE):
+        log.info("Builder walls: no Upgrade button under the wall (%.2f alike)", game.likeness(T.BB_UPGRADE))
+        _keep_screen(WALL_SCREENS, game.screen)
         return 0, None, loot
     game.wait(0.6)  # the buttons fade in
     game.refresh()
@@ -543,14 +579,17 @@ def _confirm_walls(game: Game, timeout: float = 4) -> bool:
     deadline = game.clock() + timeout
     while True:
         game.refresh()
-        if game.has(T.OKAY) and game.click(T.OKAY):
-            return True
-        title = game.find(T.BB_UPGRADE_TITLE)
+        okay = game.find(T.OKAY) if game.has(T.OKAY) else None
+        button = (okay.x, okay.y) if okay else None
+        title = game.find(T.BB_UPGRADE_TITLE) if button is None else None
         if title is not None:
             button = _green_button(game.screen, (title.x - 360, title.y + 450, title.x + 600, title.y + 720))
-            if button is not None:
-                game.tap(*button)
-                return True
+        if button is not None:
+            if asks_for_gems(game, button[1]):
+                log.warning("Builder walls: the upgrade asks for gems; leaving it alone")
+                return False
+            game.tap(*button)
+            return True
         if game.clock() >= deadline:
             return False
         game.wait(0.5)

@@ -1,16 +1,25 @@
-"""Upgrading once a storage is full: buildings and heroes, research, pets.
+"""Upgrading once a storage is full: pets, heroes, research and buildings.
 
-Only a full storage's resource is spent, as far as the builders go: the
-dearest upgrade it covers, then the dearest the rest covers, and so on
-(going from the dearest down spends nearly all of it). Builders go to the
-kinds of building in the chosen order first (heroes, say), then to anything
-else. One builder stays free for the walls when they're upgraded too.
-Research takes the laboratory's one researcher; pets come last, with the
-dark elixir left. Everything is picked in the Build list (see
-build_list.py), sorted Cost Max and filtered to the resource.
+Only a full storage's resource is spent. The kinds of upgrade take their
+turn in the order chosen (by default pets, heroes, research, then
+buildings), each spending only what it may:
+
+- pets: dark elixir (the pet house's one slot),
+- heroes: elixir or dark elixir (builders),
+- research: elixir or dark elixir (the laboratory's one researcher),
+- buildings: gold, elixir or dark elixir (builders; the kind of building
+  chosen first, then the others).
+
+Each picks the dearest upgrade the resource left covers, then the dearest
+the rest covers, and so on (going from the dearest down spends nearly all
+of it). One builder stays free for the walls when they're upgraded too.
+Everything is picked in the Build list (see build_list.py), sorted Cost
+Max and filtered to the resource. Gems are never spent: an upgrade window
+showing a gem (some events make upgrades cost gems too) is closed unpaid.
 
 The builder base works the same way with its gold and elixir, its builders
-and its Star Laboratory (no pets there).
+and its Star Laboratory (no pets there): by default research, heroes, then
+buildings; heroes and research take elixir, buildings gold or elixir.
 """
 
 from __future__ import annotations
@@ -36,18 +45,28 @@ BUILDER_NEEDED = (T.BUILD, T.CLOSE, T.LIST_FILTER, T.SORT_COST_MAX, T.BB_FILTER_
                   T.BB_COST_GOLD, T.BB_COST_ELIXIR)
 KIND_FILTER = {"hero": T.FILTER_HERO, "defense": T.FILTER_DEFENSE, "resource": T.FILTER_RESOURCE,
                "army": T.FILTER_ARMY}
-ORDER = ("hero", "defense", "resource", "army")
-LAB_RESOURCES = ("elixir", "dark")  # elixir first: pets want the dark elixir
+BUILDING_KINDS = ("defense", "resource", "army")  # the filter's types, heroes aside
+# What each kind of upgrade may spend, in the order it's tried.
+HOME_SPEND = {"pets": ("dark",), "hero": ("dark", "elixir"), "research": ("elixir", "dark"),
+              "building": ("gold", "elixir", "dark")}
+BUILDER_SPEND = {"hero": ("elixir",), "research": ("elixir",), "building": ("gold", "elixir")}
 
 Reader = Callable[..., Loot | None]
 
 
-def priority(first: str) -> list[str | None]:
-    """The kinds of building in the order they get builders; ``None``:
-    any kind (last, for what the kinds before it don't cover)."""
+def building_kinds(first: str, heroes: bool) -> list[str | None]:
+    """The kinds of building in the order they get builders; ``None``: any
+    kind, the dearest of anything (heroes too, so only while heroes are
+    upgraded)."""
     if first == "none":
-        return [None]
-    return [first, *(k for k in ORDER if k != first), None]
+        return [None] if heroes else list(BUILDING_KINDS)
+    rest = [k for k in BUILDING_KINDS if k != first]
+    return [first, *rest] + ([None] if heroes else [])
+
+
+def plan(order: list[str], enabled: dict[str, bool]) -> list[str]:
+    """The kinds of upgrade that are on, in their order."""
+    return [k for k in order if enabled.get(k)]
 
 
 def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], last: bool = False) -> int:
@@ -62,17 +81,14 @@ def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], las
     budget = _open(game, read_resources, full)
     if budget is None:
         return 0
-    builders = _spare(free_builders(game), cfg.walls.enabled)
+    kinds = plan(ucfg.order, {"pets": ucfg.pets, "hero": ucfg.heroes, "research": ucfg.lab,
+                              "building": ucfg.buildings})
+    builders = _spare(free_builders(game), cfg.walls.enabled) if {"hero", "building"} & set(kinds) else 0
     done = 0
     try:
         if not _open_list(game):
             return 0
-        if ucfg.buildings and builders > 0:
-            done += _buildings(game, ucfg.first, budget, builders, read_resources, HOME)
-        if ucfg.lab and any(k in budget for k in LAB_RESOURCES):
-            done += _research(game, budget, read_resources, HOME)
-        if ucfg.pets and "dark" in budget:
-            done += _pets(game, budget, read_resources)
+        done = _in_order(game, kinds, HOME_SPEND, ucfg.first, ucfg.heroes, budget, builders, read_resources, HOME)
     finally:
         _close_windows(game)
         if not last:
@@ -97,17 +113,40 @@ def upgrade_builder_base(game: Game, bcfg: BuilderConfig, read_resources: Reader
     try:
         if not _open_list(game):
             return 0
-        # The builder base's counters are on the list's tabs.
-        open_tab(game, "buildings", BUILDER)
-        builders = _spare(tab_free(game, "buildings", BUILDER), bcfg.walls)
-        if builders > 0:
-            done += _buildings(game, bcfg.upgrade_first, budget, builders, read_resources, BUILDER)
-        if bcfg.upgrade_lab:
-            done += _research(game, budget, read_resources, BUILDER)
+        kinds = plan(bcfg.upgrade_order, {"hero": bcfg.upgrade_heroes, "research": bcfg.upgrade_lab,
+                                          "building": bcfg.upgrade_buildings})
+        builders = 0
+        if {"hero", "building"} & set(kinds):
+            # The builder base's counters are on the list's tabs.
+            open_tab(game, "buildings", BUILDER)
+            builders = _spare(tab_free(game, "buildings", BUILDER), bcfg.walls)
+        done = _in_order(game, kinds, BUILDER_SPEND, bcfg.upgrade_first, bcfg.upgrade_heroes, budget, builders,
+                         read_resources, BUILDER)
     finally:
         _close_windows(game)
         if not last:
             _leave(game, view)
+    return done
+
+
+def _in_order(game: Game, kinds: list[str], spend: dict[str, tuple[str, ...]], first: str, heroes: bool,
+              budget: dict[str, int], builders: int, read_resources: Reader, lst: BuildList) -> int:
+    """Each kind of upgrade in turn, with the resources it may spend that
+    are still in ``budget``. Returns how many were started."""
+    done = 0
+    for kind in kinds:
+        money = [r for r in spend[kind] if r in budget]
+        if not money:
+            continue
+        if kind == "pets":
+            done += _pets(game, budget, read_resources)
+        elif kind == "research":
+            done += _research(game, money, budget, read_resources, lst)
+        elif builders > 0:
+            types = ["hero"] if kind == "hero" else building_kinds(first, heroes)
+            started = _buildings(game, types, money, budget, builders, read_resources, lst)
+            builders -= started
+            done += started
     return done
 
 
@@ -165,12 +204,14 @@ def _spend(game: Game, row: Row, budget: dict[str, int], read_resources: Reader,
     return True
 
 
-def _buildings(game: Game, first: str, budget: dict[str, int], builders: int, read_resources: Reader,
-               lst: BuildList) -> int:
+def _buildings(game: Game, kinds: list[str | None], money: list[str], budget: dict[str, int], builders: int,
+               read_resources: Reader, lst: BuildList) -> int:
+    """Up to ``builders`` upgrades of the ``kinds`` of building (``None``:
+    any), paid with ``money``. Returns how many were started."""
     open_tab(game, "buildings", lst)
     done = 0
-    for kind in priority(first):
-        for resource in list(budget):
+    for kind in kinds:
+        for resource in money:
             if builders <= 0:
                 return done
             if not set_filter(game, lst.resource_filter[resource], KIND_FILTER.get(kind), T.SORT_COST_MAX, lst):
@@ -184,7 +225,7 @@ def _buildings(game: Game, first: str, budget: dict[str, int], builders: int, re
     return done
 
 
-def _research(game: Game, budget: dict[str, int], read_resources: Reader, lst: BuildList) -> int:
+def _research(game: Game, money: list[str], budget: dict[str, int], read_resources: Reader, lst: BuildList) -> int:
     open_tab(game, "army", lst)
     if lst.builder_base:
         # The Star Laboratory's tab counts its researcher ("0/1": busy).
@@ -193,12 +234,12 @@ def _research(game: Game, budget: dict[str, int], read_resources: Reader, lst: B
             log.info("Upgrades: the star laboratory is busy" if free == 0 else
                      "Upgrades: couldn't read the star laboratory's researcher")
             return 0
-    elif busy(game):
+    elif busy(game) or tab_free(game, "army") == 0:
+        # The tab's counter ("0/1") says so even when the research under
+        # way has a green bar rather than a grey one.
         log.info("Upgrades: the laboratory is busy")
         return 0
-    for resource in LAB_RESOURCES:
-        if resource not in budget:
-            continue
+    for resource in money:
         # The Star Laboratory's research is all elixir: its filter only sorts.
         button = None if lst.builder_base else lst.resource_filter[resource]
         if not set_filter(game, button, None, T.SORT_COST_MAX, lst):

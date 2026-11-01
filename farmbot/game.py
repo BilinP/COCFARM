@@ -92,6 +92,11 @@ class T:
     BATTLE = "buttons/battle"  # directory: the button with its old and new icons
     FIND_MATCH = "buttons/find_match"
     ARMY_ATTACK = "buttons/attack"
+    # A super troop that isn't boosted: "Activate" under its card on the army screen, the
+    # "Boost?" window that opens, and that window's dark elixir button (never the Super Potion)
+    SUPER_ACTIVATE = "buttons/super_activate"
+    SUPER_BOOST_TITLE = "buttons/super_boost_title"
+    SUPER_BOOST_DARK = "buttons/super_boost_dark"
     # Scouting / battle
     NEXT = "buttons/next"
     END_BATTLE = "buttons/end_battle"  # directory: "End Battle", or "Surrender" once units are out
@@ -163,6 +168,7 @@ class T:
     BB_COST_ELIXIR = "builder/cost/elixir"
     LOOT_CART = "buttons/loot_cart"  # the "Collect" label over the loot cart
     LOOT_CART_COLLECT = "buttons/loot_cart_collect"  # the Collect button once it is selected
+    GRAVESTONE = "collectors/gravestone"  # left by an attacker's troops: tapping one clears them all
     # Full-collector bubbles (one tap empties every collector of that kind)
     COLLECT_GOLD = "collectors/gold"
     COLLECT_ELIXIR = "collectors/elixir"

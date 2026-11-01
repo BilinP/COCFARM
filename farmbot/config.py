@@ -78,11 +78,28 @@ class RegionsConfig:
         return Rect.from_list(getattr(self, name))
 
 
+# The search minimums a new profile starts with. The first time the home
+# storages are read, minimums all still at these are set from what the
+# storages hold instead (bigger storages: a higher town hall, richer bases).
+SEARCH_DEFAULTS = {"gold": 300_000, "elixir": 300_000, "dark": 0}
+SEARCH_SHARES = {"gold": 0.025, "elixir": 0.025, "dark": 0.01}
+SEARCH_STEPS = {"gold": 50_000, "elixir": 50_000, "dark": 1_000}  # rounded to these
+
+
+def search_minimums_for(storage: dict[str, int], current: dict[str, int]) -> dict[str, int]:
+    """Search minimums from what the storages hold (``storage``), if the
+    ``current`` ones are all still the defaults; otherwise none."""
+    if current != SEARCH_DEFAULTS or not {"gold", "elixir"} <= set(storage):
+        return {}
+    return {k: max(SEARCH_STEPS[k], round(storage[k] * share / SEARCH_STEPS[k]) * SEARCH_STEPS[k])
+            for k, share in SEARCH_SHARES.items() if k in storage}
+
+
 @dataclass
 class SearchConfig:
-    min_gold: int = 300_000
-    min_elixir: int = 300_000
-    min_dark: int = 0
+    min_gold: int = SEARCH_DEFAULTS["gold"]
+    min_elixir: int = SEARCH_DEFAULTS["elixir"]
+    min_dark: int = SEARCH_DEFAULTS["dark"]
     match_any: bool = False  # accept a base if any one minimum is met
     max_searches: int = 150
     next_delay: float = 2.5  # seconds to wait for the next base to load
@@ -101,6 +118,8 @@ class AttackConfig:
     wave_speed: int = 8  # 1 (slow) - 9 (fast): pause between waves
     # Siege machines let the Clan Castle troops out when destroyed; off leaves them in the bar.
     use_siege: bool = False
+    # Boost the army's super troops that show Activate, with dark elixir (never a Super Potion or gems).
+    super_troops: bool = False
     hero_abilities: bool = True
     hero_ability_delay: float = 10.0
     # Fire each hero's ability once its health drops to this share (0.5 =
@@ -311,6 +330,7 @@ class BotConfig:
     collect_dark: bool = True
     collect_every: int = 7  # ...every N rounds (1 = each round); the first round after Start always collects
     collect_loot_cart: bool = True  # loot left over from defences, shown as a cart
+    clear_gravestones: bool = True  # left by attackers' troops; tapping one clears them all
     # Stop farming once all of these storages are full ("gold", "elixir", "dark").
     stop_when_full: list[str] = field(default_factory=list)
     max_attacks: int = 0  # 0 = unlimited
@@ -344,15 +364,22 @@ class UpgradeConfig:
     (see ``farmbot/tasks/upgrade.py``)."""
 
     enabled: bool = False
-    # The kind of building that gets builders first ("none": dearest of any kind).
-    first: str = "hero"
-    buildings: bool = True
+    # What gets upgraded, first to last: each takes what it can of the full
+    # storages before the next. Pets: dark elixir; heroes and research: elixir
+    # or dark elixir; buildings: gold, elixir or dark elixir.
+    order: list[str] = field(default_factory=lambda: list(UPGRADE_ORDER))
+    pets: bool = True
+    heroes: bool = True
     lab: bool = True
-    pets: bool = True  # last: the dark elixir heroes and research leave
+    buildings: bool = True
+    # The kind of building that gets builders first ("none": dearest of any kind).
+    first: str = "none"
 
 
 WALL_RESOURCES = ("gold", "elixir", "both")
-UPGRADE_FIRST = ("hero", "defense", "resource", "army", "none")
+UPGRADE_FIRST = ("defense", "resource", "army", "none")
+UPGRADE_ORDER = ("pets", "hero", "research", "building")
+BUILDER_UPGRADE_ORDER = ("research", "hero", "building")
 WALL_PICKS = ("cheapest", "first")
 MODES = ("home", "builder", "auto")  # auto: one village until its storages are full, then the other
 THEMES = ("auto", "light", "dark")
@@ -406,8 +433,13 @@ class BuilderConfig:
     # Upgrade buildings, heroes and research once a builder storage is full
     # (as the home village's upgrade.*; one builder stays for the walls).
     upgrade: bool = False
-    upgrade_first: str = "hero"
+    # What gets upgraded, in this order (see UpgradeConfig.order); each can
+    # be turned off. Heroes: builder elixir; research: elixir; buildings: both.
+    upgrade_order: list[str] = field(default_factory=lambda: list(BUILDER_UPGRADE_ORDER))
+    upgrade_heroes: bool = True
     upgrade_lab: bool = True
+    upgrade_buildings: bool = True
+    upgrade_first: str = "none"  # the kind of building that gets builders first
     battle_timeout: float = 400.0  # both stages together
     return_home_after: bool = False  # sail back to the home village when the bot stops
     # The troop bar (bot coordinates at 860 x 672).
@@ -540,6 +572,10 @@ class Config:
             raise ValueError(f"upgrade.first must be one of {UPGRADE_FIRST}")
         if self.builder.upgrade_first not in UPGRADE_FIRST:
             raise ValueError(f"builder.upgrade_first must be one of {UPGRADE_FIRST}")
+        for name, order, kinds in (("upgrade.order", self.upgrade.order, UPGRADE_ORDER),
+                                   ("builder.upgrade_order", self.builder.upgrade_order, BUILDER_UPGRADE_ORDER)):
+            if sorted(order) != sorted(kinds):
+                raise ValueError(f"{name} must list each of {kinds} once")
         if not 1 <= self.attack.waves <= 3:
             raise ValueError("attack.waves must be 1, 2 or 3")
         bad_hours = [h for h in self.schedule.active_hours if not 0 <= h <= 23]
@@ -647,12 +683,26 @@ def _widen_own_regions(regions: RegionsConfig) -> None:
             setattr(regions, name, list(NEW_OWN_REGIONS[name]))
 
 
+def _upgrade_orders(config: Config) -> None:
+    """Each kind once, in the order given; any missing (an older file, or a
+    hand edit) go after, in the default order. "Heroes first" became a
+    place in that order, so builders then go to any kind of building."""
+    for obj, name, kinds in ((config.upgrade, "order", UPGRADE_ORDER),
+                             (config.builder, "upgrade_order", BUILDER_UPGRADE_ORDER)):
+        given = [k for k in dict.fromkeys(getattr(obj, name)) if k in kinds]
+        setattr(obj, name, given + [k for k in kinds if k not in given])
+    for obj, name in ((config.upgrade, "first"), (config.builder, "upgrade_first")):
+        if getattr(obj, name) == "hero":
+            setattr(obj, name, "none")
+
+
 def load_config(path: str | Path | None) -> Config:
     config = Config()
     if path is not None:
         # utf-8-sig: Notepad (and PowerShell) can save the file with a byte-order mark.
         _merge(config, tomllib.loads(Path(path).read_text(encoding="utf-8-sig")), "")
     _siege_out_of_main(config.clan)
+    _upgrade_orders(config)
     _widen_own_regions(config.regions)
     config.validate()
     return config

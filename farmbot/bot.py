@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import Counter
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable
 
 from farmbot import accounts, history, screens
 from farmbot.notify import Notifier
-from farmbot.config import Config
+from farmbot.config import Config, search_minimums_for
 from farmbot.device import DeviceError
 from farmbot.game import Game, Stopped, T
 from farmbot.history import AttackRecord
-from farmbot.tasks import attack, builder, clan, search, upgrade, village
+from farmbot.tasks import attack, builder, clan, search, super_troops, upgrade, village
 from farmbot.tasks.search import Loot
 
 log = logging.getLogger(__name__)
@@ -73,6 +75,9 @@ class Bot:
         self.pause_event = pause_event or threading.Event()  # set: wait at the next safe point
         self.resources: Loot | None = None  # last reading of your resource bar
         self.gained = Loot(0, 0, 0)
+        # This run's work besides battles, for the summary sent when it stops.
+        self.session: Counter[str] = Counter()
+        self._session_start: datetime | None = None
         self._pending: AttackRecord | None = None  # attack waiting for its "after" reading
         self.storage_full = False  # set when the storages in bot.stop_when_full are all full
         # Mode "auto": the village being farmed now, and the ones whose storages are already full.
@@ -238,6 +243,19 @@ class Bot:
             self.status("Waiting for the emulator to finish starting up")
             self.game.wait(BOOT_SETTLE - up)
 
+    def session_fields(self) -> list[tuple[str, str]]:
+        """This run, beside its attacks and loot, for the message sent when
+        it stops: how long it ran, and what it upgraded and boosted."""
+        fields = []
+        if self._session_start is not None:
+            minutes = int((self._now() - self._session_start).total_seconds() // 60)
+            fields.append(("⏱️ Ran for", f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"))
+        for key, label in (("walls", "🧱 Walls upgraded"), ("upgrades", "🔨 Upgrades started"),
+                           ("super troops", "⭐ Super troops boosted")):
+            if self.session[key]:
+                fields.append((label, f"{self.session[key]:,}"))
+        return fields
+
     def _daily_summary(self, day: date) -> None:
         if not self.config.bot.history:
             return
@@ -336,6 +354,13 @@ class Bot:
             storage.set(village, maxes)
             if self._on_storage_max:
                 self._on_storage_max(village, maxes)
+        if village == "home" and read:
+            s = self.config.search
+            fitted = search_minimums_for(storage.of("home"), {k: getattr(s, f"min_{k}") for k in ("gold", "elixir", "dark")})
+            for kind, least in fitted.items():
+                setattr(s, f"min_{kind}", least)
+            if fitted:
+                log.info("Search minimums set from your storages: %s", ", ".join(f"{v:,} {k}" for k, v in fitted.items()))
         where = "Storages" if village == "home" else "Builder storages"
         if maxes:
             log.info("%s hold %s", where, ", ".join(f"{v:,} {k}" for k, v in maxes.items()))
@@ -404,6 +429,8 @@ class Bot:
                 log.info("Collectors: next in %d round(s)", cfg.bot.collect_every - self._since_home_collect)
         if cfg.bot.collect_loot_cart:
             village.collect_loot_cart(self.game)
+        if cfg.bot.clear_gravestones:
+            village.clear_gravestones(self.game)
         self.checkpoint()
         if (cfg.clan.donate or cfg.clan.request_troops) and self._in_clan is None:
             self._in_clan = clan.in_clan(self.game)
@@ -431,15 +458,21 @@ class Bot:
             full = self.full_storages()
             if full:
                 self.status("Upgrading")
-                if upgrade.upgrade(self.game, cfg, self.read_resources, full, last=not cfg.walls.enabled):
+                started = upgrade.upgrade(self.game, cfg, self.read_resources, full, last=not cfg.walls.enabled)
+                self.session["upgrades"] += started
+                if started:
                     self._left_selected = self._left_zoomed_in = not cfg.walls.enabled
         if cfg.walls.enabled:
             self.status("Upgrading walls")
             full = self.full_storages() if cfg.walls.only_when_full else None
-            keep = cfg.storage.keep("home", {"gold": cfg.walls.keep_gold, "elixir": cfg.walls.keep_elixir})
-            if village.upgrade_walls(self.game, cfg.walls, self.read_resources, keep, full, self._walls_known,
-                                     last=True):
-                self._left_zoomed_in = True
+            # Walls leave the gold searching needs: spent below it, there'd be no more battles to earn it back.
+            search_gold = 0.0 if cfg.search.maintain_only else cfg.search.min_own_gold_share
+            keep = cfg.storage.keep("home", {"gold": max(cfg.walls.keep_gold, search_gold),
+                                             "elixir": cfg.walls.keep_elixir})
+            self.session["walls"] += village.upgrade_walls(self.game, cfg.walls, self.read_resources, keep, full,
+                                                           self._walls_known, last=True)
+            # Even with none paid for, walls tapped are left selected and zoomed in on.
+            self._left_selected = self._left_zoomed_in = True
 
     def playing(self) -> str:
         """The village being farmed: "home" or "builder" (mode "auto" starts
@@ -461,7 +494,7 @@ class Bot:
             log.info("Storage full in both villages: stopping")
             self.notifier.send("Both villages are full", "Storage is full in the home village and the builder "
                                "base, so the bot stopped.", "on_storage_full", "good",
-                               attacks=self.attacks, loot=self.gained)
+                               attacks=self.attacks, loot=self.gained, fields=self.session_fields())
             self.status("Stopped: storage full in both villages")
             return True
         self.auto_village = other
@@ -528,7 +561,8 @@ class Bot:
             if full & {"gold", "elixir"}:
                 self.status("Upgrading (builder base)")
                 last = not bcfg.walls and not may_leave
-                upgrade.upgrade_builder_base(self.game, bcfg, self.read_resources, full, last=last)
+                self.session["upgrades"] += upgrade.upgrade_builder_base(self.game, bcfg, self.read_resources, full,
+                                                                         last=last)
                 self._left_selected = last
         if may_leave and set(wanted) <= self.full_storages("builder"):
             self._village_full("builder")
@@ -540,6 +574,7 @@ class Bot:
                                                          "elixir": bcfg.walls_keep_elixir})
             walls = builder.upgrade_walls(self.game, bcfg, self.read_resources, keep, self._builder_walls_known,
                                           last=True)
+            self.session["walls"] += walls
             self._left_selected = True
         self.checkpoint()
         if not self._left_selected:  # (a pinch finger on what's selected would move it)
@@ -574,6 +609,15 @@ class Bot:
         self.status(f"Attack {self.attacks} done")
         return True
 
+    def _no_battle(self) -> None:
+        """No battle follows the upgrades and walls, which left the view
+        zoomed in on them (a battle would zoom out by itself): drop what's
+        selected and zoom out."""
+        if self._left_selected or self._left_zoomed_in:
+            village.deselect(self.game)
+            self.game.zoom_out()
+        self._left_selected = self._left_zoomed_in = False
+
     def cycle(self) -> bool:
         """One round: look after the village, then (unless told not to)
         find a base and attack it. Returns True if an attack happened."""
@@ -593,6 +637,7 @@ class Bot:
         before = self.read_resources()
         wanted = cfg.bot.stop_when_full
         if wanted and set(wanted) <= self.full_storages(loot=before):
+            self._no_battle()
             if cfg.bot.mode == "auto":  # on to the builder base instead of stopping
                 self._village_full("home")
                 return False
@@ -601,20 +646,28 @@ class Bot:
             full = {"gold": "gold", "elixir": "elixir", "dark": "dark elixir"}
             self.notifier.send("Storage full", f"Your {' and '.join(full.get(w, w) for w in wanted)} storage"
                                f"{'s are' if len(wanted) > 1 else ' is'} full, so the bot stopped.",
-                               "on_storage_full", "good", attacks=self.attacks, loot=self.gained)
+                               "on_storage_full", "good", attacks=self.attacks, loot=self.gained,
+                               fields=self.session_fields())
             self.status(f"Stopped: storage full ({', '.join(wanted)})")
             return False
         if cfg.search.maintain_only:
+            self._no_battle()
             return False
         least = cfg.storage.keep("home", {"gold": cfg.search.min_own_gold_share}).get("gold", 0)
         if least:
             gold = before.gold if before else search.own_gold(self.game, cfg.regions)
             if gold is not None and gold < least:
                 self.status(f"Saving up: {gold:,} gold is below {least:,}")
+                log.info("Not searching: %s gold is below %s", f"{gold:,}", f"{least:,}")
+                self._no_battle()
                 return False
         self.checkpoint()
         self.status("Searching for a base")
-        search.start_search(self.game)
+        boosted = search.start_search(self.game, cfg.attack.super_troops, before.dark if before else None)
+        self.session["super troops"] += boosted
+        if boosted and before is not None:
+            # What the boosts cost isn't the battle's: it's counted from after them.
+            before = replace(before, dark=before.dark - boosted * super_troops.BOOST_PRICE)
         target = search.search(self.game, cfg.search, cfg.regions, self._base_seen, zoom_out=self._left_zoomed_in)
         self._left_zoomed_in = False
         self.status("Attacking")
@@ -655,6 +708,7 @@ class Bot:
 
     def run(self) -> None:
         limit = self.config.bot.max_attacks
+        self._session_start = self._now()
         try:
             while not limit or self.attacks < limit:
                 self.checkpoint()
@@ -694,7 +748,8 @@ class Bot:
 
             problem = explain(str(exc))
             self.notifier.send("Stopped by a problem", f"**{problem.title}**\n{problem.why}\n```{str(exc)[:900]}```",
-                               "on_stopped", "error", attacks=self.attacks, loot=self.gained)
+                               "on_stopped", "error", attacks=self.attacks, loot=self.gained,
+                               fields=self.session_fields())
             raise
         self._settle_attack(None)
         if self.playing() == "builder" and self.config.builder.return_home_after:
@@ -709,4 +764,4 @@ class Bot:
             g = self.gained
             self.notifier.send("Bot stopped", f"Finished after {self.attacks:,} "
                                f"attack{'' if self.attacks == 1 else 's'}.", "on_stopped", "summary",
-                               attacks=self.attacks, loot=g)
+                               attacks=self.attacks, loot=g, fields=self.session_fields())

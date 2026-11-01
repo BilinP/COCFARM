@@ -34,6 +34,7 @@ class Picture:
 
 QUICK_EXIT = "Leaving battles without restarting the game"
 BAT_SPELLS = "Casting only Bat Spells"
+SUPER_TROOPS = "Activating super troops"
 
 PICTURES: list[Picture] = [
     # Attacking: without these the bot cannot get into or out of a battle.
@@ -66,6 +67,14 @@ PICTURES: list[Picture] = [
             "Collecting the loot cart"),
     Picture(T.LOOT_CART_COLLECT, "Loot cart Collect", "After tapping the loot cart: the word \"Collect\" on "
             "the button under it.", "Collecting the loot cart"),
+    Picture(T.GRAVESTONE, "Gravestone", "Home village, zoomed out, after someone attacked you: one grey "
+            "gravestone, tight around the stone.", "Clearing gravestones"),
+    Picture(T.SUPER_ACTIVATE, "Activate (super troop)", "Army screen after Find a Match, with a super troop that "
+            "isn't boosted: the word \"Activate\" under its card.", SUPER_TROOPS),
+    Picture(T.SUPER_BOOST_TITLE, "Boost? (super troop)", "The window Activate opens: the title \"Boost?\".",
+            SUPER_TROOPS),
+    Picture(T.SUPER_BOOST_DARK, "Boost with dark elixir", "The same window: the dark elixir drop on the green "
+            "button (not the Super Potion).", SUPER_TROOPS),
     Picture(T.BB_HOME_BOAT, "Boat to the builder base", "Home village, bottom left: the boat.", "Builder base"),
     Picture(T.BB_BUILDER_BOAT, "Boat home", "Builder base, top right: the boat's hull.", "Builder base"),
     Picture(T.BB_BATTLE, "Builder Battle", "Builder base, bottom left: the crossed axes.", "Builder base"),

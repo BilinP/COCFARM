@@ -179,12 +179,14 @@ class Notifier:
         return bool(self.cfg.discord_webhook)
 
     def send(self, title: str, text: str = "", event: str = "", kind: str = "info",
-             attacks: int | None = None, loot=None) -> None:
+             attacks: int | None = None, loot=None, fields: list[tuple[str, str]] = ()) -> None:
         """Post a card to the webhook, if ``event`` (a NotifyConfig switch
-        name, e.g. "on_storage_full") is turned on."""
+        name, e.g. "on_storage_full") is turned on. ``fields``: more lines
+        after the attacks (a run's summary)."""
         if not self.configured or (event and not getattr(self.cfg, event, True)):
             return
-        fields, files = loot_parts(attacks, loot)
+        lines, files = loot_parts(attacks, loot)
+        fields = lines + list(fields)
         payload = message(title, text, kind, fields, image=bool(files))
         if self._background:
             threading.Thread(target=self._send, args=(payload, files), daemon=True).start()

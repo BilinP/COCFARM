@@ -38,7 +38,7 @@ with contextlib.redirect_stdout(io.StringIO()):
 from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox, ElevatedCardWidget,
                             Action, FluentIcon as FIF, FluentWindow, InfoBadge, InfoBadgePosition, InfoBar, InfoBarIcon, InfoBarPosition, LineEdit, ListWidget, MessageBox, MessageBoxBase,
                             NavigationAvatarWidget, NavigationItemPosition, PlainTextEdit, PrimaryPushButton, ProgressBar, PushButton,
-                            RoundMenu, SegmentedWidget,
+                            IconWidget, RoundMenu, SegmentedWidget,
                             SettingCard, SettingCardGroup, SimpleCardWidget, Slider, SmoothScrollArea,
                             StrongBodyLabel, SubtitleLabel, SwitchButton, Theme, TitleLabel, TogglePushButton,
                             TransparentPushButton, TransparentToolButton, themeColor,
@@ -534,6 +534,122 @@ def pill(text: str, tone: Tone, background: str) -> QLabel:
     tint(label, tone, f"background: {background}; border-radius: 9px; padding: 1px 8px; font-size: 12px; "
                       "font-weight: 600;")
     return label
+
+
+# The resources' colours, for the tags saying what an upgrade may spend.
+RESOURCE_TAGS = {"gold": ("Gold", Tone("#f5c542", "#8a6100"), "rgba(245,197,66,0.18)"),
+                 "elixir": ("Elixir", Tone("#d68cff", "#8b3fbf"), "rgba(184,90,230,0.18)"),
+                 "dark": ("Dark elixir", Tone("#b9b2d6", "#3d3654"), "rgba(90,80,130,0.22)")}
+
+
+class FitCard(SimpleCardWidget):
+    """A card as tall as what's in it at its width (wrapped text included):
+    the settings groups lay their cards out by the cards' own height."""
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        layout = self.layout()
+        height = layout.heightForWidth(self.width()) if layout is not None and layout.hasHeightForWidth() else -1
+        if height <= 0 and layout is not None:
+            height = layout.sizeHint().height()
+        if height > 0 and height != self.height():
+            self.setFixedHeight(height)
+
+
+class ListCard(FitCard):
+    """A card with a title and an explanation over a list; the explanation
+    doubles as its error line, as on :class:`Card`."""
+
+    def __init__(self, title: str, help_text: str):
+        super().__init__()
+        self.help_text = help_text
+        self.column = QVBoxLayout(self)
+        self.column.setContentsMargins(16, 12, 16, 14)
+        self.column.setSpacing(8)
+        self.column.addWidget(StrongBodyLabel(title))
+        self.hint = _muted(_wrapping(CaptionLabel(help_text)))
+        self.column.addWidget(self.hint)
+
+    def show_error(self, message: str | None) -> None:
+        self.hint.setText(f"⚠  {message}" if message else self.help_text)
+        tint(self.hint, BAD if message else MUTED)
+
+    def show_warning(self, message: str) -> None:
+        self.hint.setText(f"⚠  {message}")
+        tint(self.hint, WARN)
+
+
+class PriorityList(QWidget):
+    """Rows to put in order with up and down buttons, each with a switch:
+    what gets upgraded first. ``rows``: key -> (icon, title, resources)."""
+
+    def __init__(self, rows: dict[str, tuple[Any, str, tuple[str, ...]]], parent: QWidget | None = None):
+        super().__init__(parent)
+        self.layout_ = QVBoxLayout(self)
+        self.layout_.setContentsMargins(0, 0, 0, 0)
+        self.layout_.setSpacing(6)
+        self.order = list(rows)
+        self.rows: dict[str, QWidget] = {}
+        self.ranks: dict[str, QLabel] = {}
+        self.switches: dict[str, SwitchButton] = {}
+        self.buttons: list[QWidget] = []
+        self.callbacks: list[Callable] = []
+        for key, (icon, title, resources) in rows.items():
+            row = SimpleCardWidget()
+            line = QHBoxLayout(row)
+            line.setContentsMargins(12, 8, 12, 8)
+            line.setSpacing(10)
+            rank = SubtitleLabel("")
+            rank.setFixedWidth(24)
+            rank.setAlignment(Qt.AlignCenter)
+            tint(rank, ACCENT)
+            picture = IconWidget(icon)
+            picture.setFixedSize(20, 20)
+            name = StrongBodyLabel(title)
+            name.setMinimumWidth(110)
+            line.addWidget(rank)
+            line.addWidget(picture)
+            line.addWidget(name)
+            for resource in resources:
+                text, tone, background = RESOURCE_TAGS[resource]
+                line.addWidget(pill(text, tone, background))
+            line.addStretch(1)
+            up, down = TransparentToolButton(FIF.UP), TransparentToolButton(FIF.DOWN)
+            up.setToolTip("Earlier")
+            down.setToolTip("Later")
+            up.clicked.connect(lambda _=False, k=key: self.move(k, -1))
+            down.clicked.connect(lambda _=False, k=key: self.move(k, 1))
+            switch = SwitchButton()
+            line.addWidget(up)
+            line.addWidget(down)
+            line.addSpacing(6)
+            line.addWidget(switch)
+            self.rows[key], self.ranks[key], self.switches[key] = row, rank, switch
+            self.buttons += [up, down]
+        self.set_order(self.order)
+
+    def move(self, key: str, step: int) -> None:
+        i = self.order.index(key)
+        j = min(max(i + step, 0), len(self.order) - 1)
+        if i == j:
+            return
+        order = list(self.order)
+        order[i], order[j] = order[j], order[i]
+        self.set_order(order)
+        for cb in self.callbacks:
+            cb()
+
+    def set_order(self, order: list[str]) -> None:
+        known = [k for k in dict.fromkeys(order) if k in self.rows]
+        self.order = known + [k for k in self.rows if k not in known]
+        for row in self.rows.values():
+            self.layout_.removeWidget(row)
+        for n, key in enumerate(self.order, 1):
+            self.layout_.addWidget(self.rows[key])
+            self.ranks[key].setText(str(n))
+
+    def binding(self) -> Binding:
+        return Binding(lambda: list(self.order), self.set_order, self.callbacks.append, self.buttons)
 
 
 def avatar(name: str, size: int = 40) -> QLabel:
@@ -1104,6 +1220,21 @@ class FarmbotWindow(FluentWindow):
         w.setFixedWidth(width * len(keys))
         self._bind(path, bind_segments(w, keys))
         return self._card(group, path, icon, title, help_text, w)
+
+    def priority(self, group, path: str, title: str, hint: str,
+                 rows: dict[str, tuple[str, Any, str, tuple[str, ...]]]) -> PriorityList:
+        """An ordered list (``path``) of things to switch on and off, each
+        row: key -> (its switch's path, icon, title, resources it spends)."""
+        box = ListCard(title, hint)
+        listing = PriorityList({k: (icon, name, spends) for k, (_, icon, name, spends) in rows.items()})
+        box.column.addWidget(listing)
+        self._bind(path, listing.binding())
+        self.cards[path] = box
+        for key, (switch_path, *_rest) in rows.items():
+            self._bind(switch_path, bind_switch(listing.switches[key]))
+            self.cards[switch_path] = box
+        group.addSettingCard(box)
+        return listing
 
     def depends(self, controller: str, *paths: str, when: Any = True) -> None:
         """Enable the controls of ``paths`` only while ``controller`` is on
@@ -1742,7 +1873,10 @@ class FarmbotWindow(FluentWindow):
                       {"middle": "Middle", "random": "Random"}, width=90)
         self.depends("attack.spell_placement", "attack.spell_spot", when="together")
 
-        heroes = page.add(SettingCardGroup("Heroes and siege machines"))
+        heroes = page.add(SettingCardGroup("Troops, heroes and siege machines"))
+        self.switch(heroes, "attack.super_troops", FIF.UP, "Activate super troops",
+                    "Before a battle, boosts the super troops in your army that show Activate, for 25,000 dark "
+                    "elixir each. Never uses a Super Potion or gems.")
         self.switch(heroes, "attack.use_siege", FIF.CAR, "Use siege machines",
                     "Off: siege machines stay in the bar. Your Clan Castle troops ride inside the siege machine and "
                     "come out when it's destroyed, so this also decides whether they're used.")
@@ -1781,6 +1915,8 @@ class FarmbotWindow(FluentWindow):
                      "bot.collect_every")
         self.switch(village, "bot.collect_loot_cart", FIF.SHOPPING_CART, "Collect the loot cart",
                     "Empties the loot cart when it shows \"Collect\".")
+        self.switch(village, "bot.clear_gravestones", FIF.BROOM, "Clear gravestones",
+                    "After someone attacks you, taps a gravestone once: that clears them all.")
         self._storage_group(page, "home")
         walls = page.add(SettingCardGroup("Walls"))
         self.switch(walls, "walls.enabled", FIF.UP, "Upgrade walls with spare loot",
@@ -1792,7 +1928,8 @@ class FarmbotWindow(FluentWindow):
         self.segments(walls, "walls.use", FIF.MARKET, "Pay with", "Which resource may go on walls.",
                       {"gold": "Gold", "elixir": "Elixir", "both": "Either"}, width=90)
         self.share(walls, "walls.keep_gold", FIF.SAVE, "Keep this much gold",
-                   "A share of what your gold storages hold; walls only get what's above it.", "storage.gold", "gold")
+                   "A share of what your gold storages hold; walls only get what's above it (and always leave "
+                   "the gold searching needs, under Home village → Bases).", "storage.gold", "gold")
         self.share(walls, "walls.keep_elixir", FIF.SAVE, "Keep this much elixir",
                    "A share of what your elixir storages hold; walls only get what's above it.", "storage.elixir",
                    "elixir")
@@ -1804,16 +1941,20 @@ class FarmbotWindow(FluentWindow):
         self.switch(ups, "upgrade.enabled", FIF.UP, "Upgrade when storage is full",
                     "Spends a full storage's resource on the dearest upgrades it covers, while builders are "
                     "free. Off by default: it spends loot. Runs before walls, keeping one builder for them.")
-        self.segments(ups, "upgrade.first", FIF.PEOPLE, "Builders go to first",
-                      "That kind of building is upgraded first, then the others; Any: the dearest of anything.",
-                      {"hero": "Heroes", "defense": "Defenses", "resource": "Resources", "army": "Army",
-                       "none": "Any"}, width=90)
-        self.switch(ups, "upgrade.buildings", FIF.HOME, "Buildings and heroes", "With the free builders.")
-        self.switch(ups, "upgrade.lab", FIF.EDUCATION, "Research", "In the laboratory, when it's free (elixir or "
-                    "dark elixir).")
-        self.switch(ups, "upgrade.pets", FIF.HEART, "Pets", "Last, with the dark elixir left, when the pet house "
-                    "is free.")
-        self.depends("upgrade.enabled", "upgrade.first", "upgrade.buildings", "upgrade.lab", "upgrade.pets")
+        self.priority(ups, "upgrade.order", "What to upgrade first",
+                      "Top to bottom: each takes what it can of the full storages before the next gets a turn. "
+                      "The arrows move one up or down; the switch turns it off. Only the resources shown are "
+                      "spent on each.",
+                      {"pets": ("upgrade.pets", FIF.HEART, "Pets", ("dark",)),
+                       "hero": ("upgrade.heroes", FIF.PEOPLE, "Heroes", ("elixir", "dark")),
+                       "research": ("upgrade.lab", FIF.EDUCATION, "Research", ("elixir", "dark")),
+                       "building": ("upgrade.buildings", FIF.HOME, "Buildings", ("gold", "elixir", "dark"))})
+        self.segments(ups, "upgrade.first", FIF.FILTER, "Buildings: this kind first",
+                      "Then the other kinds. Army: camps, barracks, the laboratory and the like (not research). "
+                      "Any: the dearest building of any kind.",
+                      {"none": "Any", "defense": "Defenses", "resource": "Resources", "army": "Army"}, width=90)
+        self.depends("upgrade.enabled", "upgrade.order", "upgrade.pets", "upgrade.heroes", "upgrade.lab",
+                     "upgrade.buildings", "upgrade.first")
         self._note(page, self._template_note("Collecting resources", "Collecting the loot cart", "Upgrading walls",
                                              "Upgrades"))
 
@@ -1944,13 +2085,19 @@ class FarmbotWindow(FluentWindow):
         self.switch(ups, "builder.upgrade", FIF.UP, "Upgrade when storage is full",
                     "Spends a full gold or elixir storage on the dearest upgrades it covers, while builders are "
                     "free. Off by default: it spends loot. Runs before walls, keeping one builder for them.")
-        self.segments(ups, "builder.upgrade_first", FIF.PEOPLE, "Builders go to first",
-                      "That kind of building is upgraded first, then the others; Any: the dearest of anything.",
-                      {"hero": "Heroes", "defense": "Defenses", "resource": "Resources", "army": "Army",
-                       "none": "Any"}, width=90)
-        self.switch(ups, "builder.upgrade_lab", FIF.EDUCATION, "Research",
-                    "In the star laboratory, when it's free (elixir).")
-        self.depends("builder.upgrade", "builder.upgrade_first", "builder.upgrade_lab")
+        self.priority(ups, "builder.upgrade_order", "What to upgrade first",
+                      "Top to bottom: each takes what it can of the full storages before the next gets a turn. "
+                      "The arrows move one up or down; the switch turns it off. Only the resources shown are "
+                      "spent on each.",
+                      {"research": ("builder.upgrade_lab", FIF.EDUCATION, "Research", ("elixir",)),
+                       "hero": ("builder.upgrade_heroes", FIF.PEOPLE, "Heroes", ("elixir",)),
+                       "building": ("builder.upgrade_buildings", FIF.HOME, "Buildings", ("gold", "elixir"))})
+        self.segments(ups, "builder.upgrade_first", FIF.FILTER, "Buildings: this kind first",
+                      "Then the other kinds. Army: camps, barracks, the laboratory and the like (not research). "
+                      "Any: the dearest building of any kind.",
+                      {"none": "Any", "defense": "Defenses", "resource": "Resources", "army": "Army"}, width=90)
+        self.depends("builder.upgrade", "builder.upgrade_order", "builder.upgrade_heroes", "builder.upgrade_lab",
+                     "builder.upgrade_buildings", "builder.upgrade_first")
         self._note(page, self._template_note("Builder base upgrades", "Upgrades"))
 
     def _when_to_play(self) -> Page:
@@ -2280,7 +2427,8 @@ class FarmbotWindow(FluentWindow):
             w.setAlignment(Qt.AlignRight)
             w.setPlaceholderText("e.g. 1.5m")
             card = Card(FIF.MARKET, name, f"Only attack bases offering at least this much {name.lower()}. "
-                        "0 ignores it. Accepts 500k or 1.5m.", w)
+                        "0 ignores it. Accepts 500k or 1.5m. Left as it starts, it's set from what your "
+                        "storages hold the first time COCFARM reads them.", w)
             step.addSettingCard(card)
             self._mirror(path, bind_line(w), card)
         more = PushButton(FIF.FILTER if hasattr(FIF, "FILTER") else FIF.MORE, "More choices")
@@ -2340,6 +2488,21 @@ class FarmbotWindow(FluentWindow):
                         b.set(value)
         finally:
             self._syncing = False
+
+    def _fit_search_minimums(self, storage: dict[str, int]) -> None:
+        """Search minimums still at the starting ones: set from the storages
+        just read (``storage``), as the bot does (see ``config.search_minimums_for``)."""
+        from farmbot.config import search_minimums_for
+
+        paths = {k: f"search.min_{k}" for k in ("gold", "elixir", "dark")}
+        if not all(p in self.bindings for p in paths.values()):
+            return
+        try:
+            current = {k: parse_amount(self.bindings[p].get() or "0") for k, p in paths.items()}
+        except ValueError:
+            return
+        for kind, least in search_minimums_for(storage, current).items():
+            self.bindings[paths[kind]].set(f"{least:,}")
 
     def _steps_done(self) -> list[bool]:
         mode = self.bindings["device.mode"].get()
@@ -3176,6 +3339,8 @@ class FarmbotWindow(FluentWindow):
                         path = f"storage.{'builder_' if village == 'builder' else ''}{resource}"
                         if path in self.bindings:
                             self.bindings[path].set(f"{most:,}")
+                    if village == "home":
+                        self._fit_search_minimums(maxes)
                     self.save_timer.start()  # the day they were read too, even if the amounts didn't change
                 elif kind == "builder":
                     self._bb_show(data)

@@ -287,6 +287,37 @@ def pay_button(game: Game, kind: str) -> tuple[int, int] | None:
     return round(cx), round(cy)
 
 
+GEM_SCALES = (0.5, 0.6, 0.7, 0.85, 1.0, 1.2)  # gem icons in windows are drawn at many sizes
+GEM_LIKENESS = 0.8
+POPUP_AREA = (150, 1000)  # x range of a centred window: clear of the resource bar's own gem
+GEM_BELOW_BUTTON = 80  # an upgrade window's price is this far below its button's label (home) or middle
+# And no further above it: higher up, with Buildings & Heroes open, is the
+# resource bar's own gem count (moved left, into the window's x range).
+GEM_ABOVE_BUTTON = 250
+
+
+def shows_gems(screen, top: int, bottom: int, gem) -> bool:
+    """True if a gem icon is anywhere in the window between ``top`` and
+    ``bottom`` (bot px)."""
+    area = screen[max(top, 0):bottom, POPUP_AREA[0]:POPUP_AREA[1]]
+    for scale in GEM_SCALES:
+        icon = cv2.resize(gem, None, fx=scale, fy=scale)
+        if area.shape[0] < icon.shape[0] or area.shape[1] < icon.shape[1]:
+            continue
+        if cv2.matchTemplate(area, icon, cv2.TM_CCOEFF_NORMED).max() >= GEM_LIKENESS:
+            return True
+    return False
+
+
+def asks_for_gems(game: Game, button_y: int) -> bool:
+    """True if the upgrade window whose pay button is at ``button_y`` shows
+    a gem near that button (or gems can't be looked for)."""
+    if not game.has(T.GEM):
+        return True  # can't check, so don't risk it
+    [(_, gem)] = game.vision.library.get(T.GEM)[:1]
+    return shows_gems(game.screen, max(120, button_y - GEM_ABOVE_BUTTON), button_y + GEM_BELOW_BUTTON, gem)
+
+
 def close_windows(game: Game, list_close_y: int) -> None:
     """Close windows open over the list (an upgrade window left open, a
     popup offering to do it for gems) with their X, never their buttons.
@@ -322,6 +353,10 @@ def upgrade_row(game: Game, row: Row, lst: BuildList = HOME) -> bool:
                 confirm = (m.x, m.y) if m else None
         if confirm is not None or any(m.y > list_y + 40 for m in game.find_all(T.CLOSE)):
             break  # a window opened (to pay, or saying why not)
+    if confirm is not None and asks_for_gems(game, confirm[1]):
+        # Some events make upgrades and research cost gems too: never paid.
+        log.warning("Upgrades: that upgrade asks for gems; leaving it alone")
+        confirm = None
     if confirm is not None:
         game.tap(*confirm)
         game.wait(1.5)
