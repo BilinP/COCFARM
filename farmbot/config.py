@@ -190,7 +190,7 @@ class BarConfig:
     frame_hue: list[int] = field(default_factory=lambda: [85, 160])
     min_frame_share: float = 0.3  # of a card's left or right border in frame colour
     spent_ratio: float = 0.55  # greyed out below this share of the start colour
-    count_font: str = "fonts/loot"  # digit glyphs used to read the "xN" counts
+    count_font: str = "fonts/count"  # digit glyphs used to read the "xN" counts
 
 
 @dataclass
@@ -699,6 +699,13 @@ def _widen_own_regions(regions: RegionsConfig) -> None:
             setattr(regions, name, list(NEW_OWN_REGIONS[name]))
 
 
+def _count_font(bar: BarConfig) -> None:
+    """Before 0.9.7 the troop counts were read with the loot digits, which
+    misread them (x68 as 50); settings still naming them get the bar's own."""
+    if bar.count_font == "fonts/loot":
+        bar.count_font = BarConfig.count_font
+
+
 def _upgrade_orders(config: Config) -> None:
     """Each kind once, in the order given; any missing (an older file, or a
     hand edit) go after, in the default order. "Heroes first" became a
@@ -720,6 +727,7 @@ def load_config(path: str | Path | None) -> Config:
     _siege_out_of_main(config.clan)
     _upgrade_orders(config)
     _widen_own_regions(config.regions)
+    _count_font(config.bar)
     config.validate()
     return config
 

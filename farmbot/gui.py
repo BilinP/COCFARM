@@ -726,7 +726,36 @@ def avatar(name: str, size: int = 40) -> QLabel:
     return label
 
 
-class NameDialog(MessageBoxBase):
+class BelowTitleBar:
+    """For a dimmed dialog over the window: the dimming starts below the
+    title bar, so the window can still be dragged, and its minimise,
+    maximise and close buttons light up and work in one click. (Mix in
+    before the dialog class.)"""
+
+    def _fit_below_title_bar(self) -> None:
+        parent, main = self.parentWidget(), self.window()
+        bar = getattr(main, "titleBar", None)
+        if parent is None or bar is None:
+            return
+        top = max(0, bar.mapTo(main, QPoint(0, bar.height())).y() - parent.mapTo(main, QPoint(0, 0)).y())
+        self.setGeometry(0, top, parent.width(), parent.height() - top)
+
+    def showEvent(self, e) -> None:
+        self._fit_below_title_bar()
+        super().showEvent(e)
+
+    def eventFilter(self, obj, e: QEvent) -> bool:
+        if obj is self.window() and e.type() == QEvent.Resize:  # the base class would cover the title bar again
+            self._fit_below_title_bar()
+            return False
+        return super().eventFilter(obj, e)
+
+
+class Confirm(BelowTitleBar, MessageBox):
+    """An "are you sure?" box."""
+
+
+class NameDialog(BelowTitleBar, MessageBoxBase):
     """Ask for a profile's new name."""
 
     def __init__(self, title: str, name: str, parent: QWidget):
@@ -740,7 +769,7 @@ class NameDialog(MessageBoxBase):
         self.widget.setMinimumWidth(360)
 
 
-class WhatsNewDialog(MessageBoxBase):
+class WhatsNewDialog(BelowTitleBar, MessageBoxBase):
     """What changed in the versions since the player last looked."""
 
     def __init__(self, notes: list[tuple[str, list[str]]], parent: QWidget):
@@ -754,11 +783,12 @@ class WhatsNewDialog(MessageBoxBase):
                 self.viewLayout.addWidget(_wrapping(BodyLabel(f"•  {line}")))
         self.yesButton.setText("Got it")
         self.cancelButton.hide()
+        self.setClosableOnMaskClicked(True)  # a click anywhere outside closes it too
         self.widget.setMinimumWidth(520)
         self.widget.setMaximumWidth(620)
 
 
-class AccountsDialog(MessageBoxBase):
+class AccountsDialog(BelowTitleBar, MessageBoxBase):
     """The account manager: every profile, the one in use and the starred
     one (new accounts start from its settings); switch to one, copy one's
     settings to another, rename or delete one."""
@@ -792,27 +822,6 @@ class AccountsDialog(MessageBoxBase):
         self.setClosableOnMaskClicked(True)
         self.widget.setMinimumWidth(600)
         self.refresh()
-
-    def eventFilter(self, obj, e: QEvent) -> bool:
-        # The dimmed mask covers the window's title bar too: a click on its
-        # close, maximise or minimise button closes this and then does that,
-        # rather than taking two clicks.
-        if obj is self.windowMask and e.type() == QEvent.MouseButtonRelease and e.button() == Qt.LeftButton:
-            button = self._title_button(self.windowMask.mapTo(self.main, e.position().toPoint()))
-            if button is not None:
-                self.finished.connect(lambda _: button.click())
-                self.reject()
-                return True
-        return super().eventFilter(obj, e)
-
-    def _title_button(self, point: QPoint) -> QAbstractButton | None:
-        """The title bar's close, maximise or minimise button at ``point``
-        (in the main window), if any."""
-        bar = self.main.titleBar
-        for button in (bar.closeBtn, bar.maxBtn, bar.minBtn):
-            if button.isVisible() and button.rect().contains(button.mapFrom(self.main, point)):
-                return button
-        return None
 
     def refresh(self) -> None:
         while self.rows.count():
@@ -945,7 +954,7 @@ class AccountsDialog(MessageBoxBase):
         self.refresh()
 
     def _copy(self, source: str, target: str) -> None:
-        box = MessageBox(f"Copy {source}'s settings to {target}?",
+        box = Confirm(f"Copy {source}'s settings to {target}?",
                          f"{target}'s settings are replaced with {source}'s. What the bot read of {target}'s "
                          "account (its storage sizes) stays.", self)
         box.yesButton.setText("Copy")
@@ -987,7 +996,7 @@ class AccountsDialog(MessageBoxBase):
         self.refresh()
 
     def _delete(self, name: str) -> None:
-        box = MessageBox(f"Delete {name}?", "Its settings go. If the bot sees that account again, it makes a new "
+        box = Confirm(f"Delete {name}?", "Its settings go. If the bot sees that account again, it makes a new "
                          "profile for it from the starred profile's settings.", self)
         box.yesButton.setText("Delete")
         if not box.exec():

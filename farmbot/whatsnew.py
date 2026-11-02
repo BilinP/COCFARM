@@ -14,6 +14,15 @@ from farmbot.update import STATE, _load, _save, parse_version
 
 # Newest first. A line says what the player gets, not how it's done.
 NOTES: dict[str, list[str]] = {
+    "0.9.7": [
+        "Troops go out exactly: each card gets as many taps as it has units left, so no spare taps drop the "
+        "next troop or a hero once a card is empty.",
+        "Troop counts on the cards are read right (x68 no longer reads as 50, x7 as 2).",
+        "Big armies that fill more than one screen of the troop bar: a hero already placed isn't tapped again "
+        "(which fired its ability early), and hero abilities are used even when the heroes scrolled out of sight.",
+        "Windows like What's new and Accounts no longer block moving COCFARM, and What's new closes when you click "
+        "outside it.",
+    ],
     "0.9.6": [
         "Donations: each request gets an army that suits the requester's Clan Castle level (read from the "
         "request), with Super Yeti, Super Wizard and Super Archer first and Rage Spells. Set your own on "

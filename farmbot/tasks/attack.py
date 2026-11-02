@@ -272,21 +272,27 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
     False if it was still deploying when its batches ran out, ``None`` if
     the game wouldn't take any more of it. If the game refuses ``points``,
     the ``fallback`` points are tried. ``count``: its units, when read (big
-    cards get more batches)."""
+    cards get more batches).
+
+    A batch is never more taps than the card has units left (its count is
+    read again after each one), so the last units don't come with spare
+    taps that would drop whatever the game selects once the card is empty."""
     acfg = cfg.attack
     if card.kind in ("single", "siege"):  # a hero or siege machine: one unit
         return place_single(game, card, points, cfg, fallback)
     stalled = 0
     progressed = False  # any of it went out
     before = game.refresh()
-    batches = batches_for(count, cfg)
+    left = count or read_count(game, card, cfg)
+    batches = batches_for(left, cfg)
     for _ in range(batches):
         game.tap(*card.center)
         game.wait(0.15)
+        taps = min(acfg.taps_per_batch, left) if left else acfg.taps_per_batch
         if isinstance(points, DeployPoints):
-            side, batch = points.take(acfg.taps_per_batch)
+            side, batch = points.take(taps)
         else:
-            side, batch = None, [next(points) for _ in range(acfg.taps_per_batch)]
+            side, batch = None, [next(points) for _ in range(taps)]
         game.tap_many(batch, jitter=3, pause=acfg.tap_delay)
         game.wait(0.3)
         after = game.refresh()
@@ -298,10 +304,13 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
         # same, the game refused that side's points: the side is dropped,
         # and once there's none left to drop, twice in a row means the game
         # is rejecting our points.
-        if armybar.card_changed(before, after, card):
+        now = read_count(game, card, cfg)
+        if armybar.card_changed(before, after, card) or (now and left and now < left):
             stalled, progressed = 0, True
             if side is not None:
                 points.landed(side)
+            # Unread, it's at most the taps fewer (some may have been refused).
+            left = now or (max(left - taps, 1) if left else None)
         elif side is not None and (points.redraw(side, after, cfg) or points.refused(side)):
             continue  # before stays: nothing changed
         else:
@@ -529,6 +538,24 @@ def rewind_bar(game: Game, cfg: Config) -> None:
             return
 
 
+PLACED_HEALTH = 0.5  # a hero/siege card with this much green bar on it is out already
+
+
+def _out_already(screen, card: Card) -> bool:
+    """A hero or siege machine placed on an earlier screenful: once the bar
+    scrolls on, its card can still show at the edge. Tapping it again would
+    fire its ability early. (An unplaced siege card shows a little green of
+    its own, well under a placed unit's bar.)"""
+    health = armybar.hero_health(screen, card)
+    return health is not None and health >= PLACED_HEALTH
+
+
+def _placed_on_show(game: Game, cfg: Config) -> list[Card]:
+    screen = game.refresh()
+    return [c for c in armybar.find_cards(screen, cfg.bar)
+            if c.kind in ("single", "siege") and _out_already(screen, c)]
+
+
 def _bar_cards(game: Game, cfg: Config) -> list[Card]:
     acfg = cfg.attack
     cards = armybar.find_cards(game.refresh(), cfg.bar)
@@ -570,7 +597,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
     waves = 1 if scrolls else acfg.waves  # waves only when the whole army is on show
 
     placed: list[Card] = []
-    singles_seen = 0
+    singles_seen = placed_total = 0
     for page in range(BAR_PAGES):
         cards = _bar_cards(game, cfg)
         if not cards and page == 0:
@@ -579,7 +606,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
         log.info("Troop bar%s: %s", f" (screen {page + 1})" if scrolls else "", ", ".join(
             f"{c.kind} x{counts[c]}" if counts.get(c) else c.kind for c in cards))
         troops = [c for c in cards if c.kind == "troop"]
-        singles = [c for c in cards if c.kind in ("single", "siege")]
+        singles = [c for c in cards if c.kind in ("single", "siege") and not _out_already(game.screen, c)]
         spells = spells_to_cast(game, [c for c in cards if c.kind == "spell"], cfg)
 
         # Troops in waves: earlier waves send a share of each card (by its
@@ -617,13 +644,22 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
         # One more go for any hero that was refused, now on other points.
         here += place_singles(game, [c for c in singles if c not in here], edge_points, cfg, fixed_points)
         singles_seen += len(singles)
+        placed_total += len(here)
         # Abilities are fired from the cards on show at the end: earlier
         # screens' cards have scrolled away.
         placed = here if scrolls else placed + here
         if not scrolls or not scroll_bar(game, cfg):
             break
     if singles_seen:
-        log.info("Placed %d of %d hero/siege card(s)", len(placed), singles_seen)
+        log.info("Placed %d of %d hero/siege card(s)", placed_total, singles_seen)
+    if scrolls and len(placed) < placed_total:
+        # Abilities need the cards on show: the bar's end may hold only some
+        # of them (or none), so look one screenful back too.
+        placed = _placed_on_show(game, cfg)
+        if len(placed) < placed_total and scroll_bar(game, cfg, forward=False):
+            back = _placed_on_show(game, cfg)
+            if len(back) > len(placed):
+                placed = back
 
     if placed and acfg.hero_abilities:
         # Heroes: a second tap fires the ability. Siege machines: it
