@@ -92,6 +92,11 @@ class T:
     BATTLE = "buttons/battle"  # directory: the button with its old and new icons
     FIND_MATCH = "buttons/find_match"
     ARMY_ATTACK = "buttons/attack"
+    # A super troop that isn't boosted: "Activate" under its card on the army screen, the
+    # "Boost?" window that opens, and that window's dark elixir button (never the Super Potion)
+    SUPER_ACTIVATE = "buttons/super_activate"
+    SUPER_BOOST_TITLE = "buttons/super_boost_title"
+    SUPER_BOOST_DARK = "buttons/super_boost_dark"
     # Scouting / battle
     NEXT = "buttons/next"
     END_BATTLE = "buttons/end_battle"  # directory: "End Battle", or "Surrender" once units are out
@@ -104,6 +109,7 @@ class T:
     # Home village (optional)
     CLOSE = "buttons/close"
     BUILD = "buttons/build"  # home village, bottom right: opens Buildings & Heroes
+    GOBLIN = "buttons/goblin"  # over the builder/lab counter: the Goblin Builder/Researcher (gems)
     WALL_SUGGESTION = "buttons/wall_suggestion"  # "Wall x N" in that list
     UPGRADE = "buttons/upgrade"  # under a selected building (gold and elixir versions look alike)
     UPGRADE_CONFIRM = "buttons/upgrade_confirm"  # "Confirm" in the upgrade window
@@ -151,6 +157,10 @@ class T:
     BB_COLLECT_ELIXIR = "builder/collect_elixir"  # (the elixir cart's tag looks the same)
     BB_COLLECT_GEMS = "builder/collect_gems"  # the green gem over a full gem mine
     BB_CART_COLLECT = "builder/cart_collect"  # Collect in the Elixir Cart window
+    BB_CLOCK_READY = "builder/clock_ready"  # the clock over the Clock Tower while its free boost is ready
+    BB_CLOCK_FREE_BOOST = "builder/clock_free_boost"  # "Free Boost!" under the selected Clock Tower
+    BB_FREE_BOOST_WINDOW = "builder/free_boost_window"  # title of the window it opens
+    BB_FREE_BOOST_CONFIRM = "builder/free_boost_confirm"  # its green Boost (no price: free)
     BB_UPGRADE = "builder/upgrade"  # under a selected builder base building
     BB_UPGRADE_TITLE = "builder/upgrade_title"  # "Upgrade to level N?" window (price on a green button)
     BB_FILTER_GOLD = "builder/filter/gold"  # the Build list's filter menu, builder base resources
@@ -159,12 +169,14 @@ class T:
     BB_COST_ELIXIR = "builder/cost/elixir"
     LOOT_CART = "buttons/loot_cart"  # the "Collect" label over the loot cart
     LOOT_CART_COLLECT = "buttons/loot_cart_collect"  # the Collect button once it is selected
+    GRAVESTONE = "collectors/gravestone"  # left by an attacker's troops: tapping one clears them all
     # Full-collector bubbles (one tap empties every collector of that kind)
     COLLECT_GOLD = "collectors/gold"
     COLLECT_ELIXIR = "collectors/elixir"
     COLLECT_DARK = "collectors/dark"
     TRY_AGAIN = "buttons/try_again"
     RELOAD = "buttons/reload"
+    LOGIN = "buttons/login"  # the game's start screen with no account logged in: "Log in with Supercell ID"
     OKAY = "buttons/okay"
     # Clan (optional)
     REQUEST = "buttons/request"
@@ -179,6 +191,21 @@ class T:
     # "Defensive Layout obstructed" after asking for a battle, and its Attack button
     LAYOUT_OBSTRUCTED = "buttons/layout_obstructed"
     OBSTRUCTED_ATTACK = "buttons/obstructed_attack"
+    # Clan Capital raids (Raid Weekends)
+    CAPITAL_BADGE = "capital/raid_badge"  # the sword on the red badge over the capital airship: raids left
+    CAPITAL_COLLAPSE = "capital/collapse_bar"  # "<" at the end of the event buttons: folds them off the airship
+    CAPITAL_NEXT_RAID = "capital/next_raid"  # "Next Raid" under the last raid's summary
+    CAPITAL_RAID_MAP = "capital/raid_map"  # "Raid Map", bottom right of the capital
+    CAPITAL_LEAVE_RAID = "capital/leave_raid"  # the airship "Map" button, bottom left of the raid map
+    CAPITAL_RETURN_HOME = "capital/return_home"  # "Return Home", bottom left of the capital
+    CAPITAL_DISTRICT_ATTACK = "capital/district_attack"  # red Attack under a picked district
+    CAPITAL_ATTACK_NOW = "capital/attack_now"  # "Attack Now?" title
+    CAPITAL_ATTACK_GO = "capital/attack_go"  # its Attack, green only with a full army
+    CAPITAL_SURE_ATTACK = "capital/sure_attack"  # "Capital Gold storage is full. Attack anyway?"
+    CAPITAL_NOT_MEMBER = "capital/not_member"  # "Only members who were in the Clan before the Raid Weekend..."
+    CAPITAL_CARD_DIR = "capital/cards"  # capital/cards/<name>.png: the army editor's units, found in the troop bar too
+    CAPITAL_BATTLE_HEAL = "capital/battle_heal"  # the heal spell's card in the raid's troop bar
+    CAPITAL_RESULT_MAP = "capital/result_map"  # "Map" under a raid's result
     BAT_SPELL_CARD = "cards/bat_spell"  # the Bat Spell card's picture in the troop bar
     DONATE_ITEM_DIR = "donate"  # donate/<unit slug>.png: units in the donate window
     DONATE_WINDOW = "buttons/donate_window"  # the donate window's "Donation Resource" title
@@ -199,36 +226,37 @@ ANCHORS = [T.BATTLE, T.NEXT, T.END_BATTLE]
 ANY_SIZE = {T.UPGRADE, T.UPGRADE_MORE, T.ADD_WALL}
 ANY_SIZES = (1.3, 1.2, 1.1, 1.4, 0.85)
 
-# Zooming out: pinches at most, and the change (mean grey level, 0-255)
-# below which the view has stopped moving.
+# Zooming out: pinches at most, and the share of the middle of the screen
+# whose grey level changes by more than VIEW_GREY (0-255) below which the
+# view has stopped moving. The village's animations (water, flags, troops
+# walking) change 2-4% of it; a zoom or a drag, over half.
 ZOOM_PASSES = 3
-VIEW_STILL = 3.0
-# Centring the view (bot px): where drags start, how far one drag goes,
-# the piece of the map followed between screens (y0, y1, x0, x1), how sure
-# a match must be, and the move below which the view counts as still.
-PAN_CENTER = (588, 420)
-PAN_DRAG = (420, 300)
-PAN_PATCH = (330, 560, 430, 750)  # its height; it's placed in the middle of the screen's
-PAN_MARGIN = 20  # px kept between the followed piece, dragged, and the screen's edge
-PAN_SURE = 0.6
-PAN_STILL = 8
-PAN_TRIES = 3
-PAN_MS = 900  # slow, so the map doesn't keep sliding after the finger lifts
-PAN_LEAST = 80  # px: shorter drags count as taps in the game
+ZOOM_TRIES = 2  # zoom-outs, when one leaves a building selected
+VIEW_GREY = 40
+VIEW_STILL = 0.12
+SELECTED_TOP = 0.6  # a selected building's buttons show below this share of the screen's height
 
 
 def view_change(before: np.ndarray, after: np.ndarray) -> float:
-    """How much the map moved between two screens (mean grey difference
-    over the middle of the screen)."""
+    """How much the map moved between two screens: the share (0-1) of the
+    middle of the screen that changed."""
     if before.shape != after.shape:
-        return 255.0
+        return 1.0
     h, w = before.shape[:2]
     a, b = (cv2.cvtColor(s[h // 6:h * 5 // 6, w // 6:w * 5 // 6], cv2.COLOR_BGR2GRAY) for s in (before, after))
-    return float(cv2.absdiff(a, b).mean())
+    return float((cv2.absdiff(a, b) > VIEW_GREY).mean())
 
 
 class Stopped(Exception):
     """Raised inside long waits when the bot is asked to stop."""
+
+
+class GameNotInFront(RuntimeError):
+    """Another app is in front of the game (it crashed or closed): taps
+    would land in that app instead."""
+
+
+FRONT_CHECK = 3.0  # seconds between checks that the game is still the app in front, before tapping
 
 
 # Matching two pictures of the map by features (they only need to overlap
@@ -290,18 +318,21 @@ class Game:
         self.picture_scales = dict(picture_scales or {})
         vision.scales.update(self.picture_scales)
         vision.fixed_scales = set(self.picture_scales)
+        vision.two_sizes = {T.OKAY}  # the surrender Okay and the Star Bonus window's
         self.raw: np.ndarray | None = None
         self.screen: np.ndarray | None = None
-        # Each village's view once centred (measured the first time in a run):
-        # later centring drags straight back to it.
-        self.centred_views: dict[str, np.ndarray] = {}
         # When each anchor last failed to give the UI scale. Measuring takes about a second, so while
         # the game loads it's tried again every CALIBRATE_RETRY seconds, not on every screenshot.
         self._calibration_tried: dict[str, float] = {}
         self._any_sizes: dict[str, float] = {}  # ANY_SIZE picture -> the size it last matched at
+        self._selected_sizes: dict[str, float] = {}  # the same, under a selected building (no list open)
+        self._zoomed_view: np.ndarray | None = None  # the screen the last full zoom-out ended on
         # Finds on the screenshot in ``_seen_on``: (name, threshold, region) -> matches.
         self._seen_on: np.ndarray | None = None
         self._seen: dict[tuple, list[Match]] = {}
+        # The game's package, set by the bot: taps stop if another app comes in front.
+        self.package = ""
+        self._front_checked = -FRONT_CHECK
 
     # -- timing ---------------------------------------------------------
     def wait(self, seconds: float) -> None:
@@ -413,7 +444,20 @@ class Game:
         return self.vision.read_number(self._current(), region, font)
 
     # -- input ----------------------------------------------------------
+    def check_in_front(self) -> None:
+        """Raise ``GameNotInFront`` if another app has come in front of the
+        game (a crash drops to the emulator's home screen, whose icons and
+        ads the next taps would open). Looked at every FRONT_CHECK seconds."""
+        if not self.package or self.clock() - self._front_checked < FRONT_CHECK:
+            return
+        front = self.device.foreground_package()
+        if front and front != self.package:
+            self._front_checked = -FRONT_CHECK  # look again before the next tap
+            raise GameNotInFront(f"{front} is in front instead of the game (it crashed or closed); not tapping")
+        self._front_checked = self.clock()
+
     def tap(self, x: int, y: int, jitter: int = 0) -> None:
+        self.check_in_front()
         if jitter:
             x += self.rng.randint(-jitter, jitter)
             y += self.rng.randint(-jitter, jitter)
@@ -424,6 +468,7 @@ class Game:
         support it, single taps ``pause`` seconds apart otherwise."""
         if self.stop_event.is_set():
             raise Stopped
+        self.check_in_front()
         scaled = []
         for x, y in points:
             if jitter:
@@ -448,106 +493,100 @@ class Game:
     def zoom_out(self) -> bool:
         """Pinch the view all the way out, on devices that can. The game
         keeps its zoom between battles, and a zoomed-in view hides the
-        map's edges where troops go."""
+        map's edges where troops go. A pinch close in on a wall just
+        upgraded can select it (and a pinch finger on a selected building
+        moves it, so whoever left one selected drops it first): one that
+        did is dropped, and the view pinched again."""
         pinch = getattr(self.device, "zoom_out", None)
         if pinch is None:
             return False
-        # Pinch again while the view keeps changing: a pinch the game misses
-        # (it happens on LDPlayer) must not leave a battle zoomed in.
-        before = self.screen
-        for _ in range(ZOOM_PASSES):
-            if not pinch():
-                return False
-            self.wait(0.5)
-            after = self.refresh()
-            if before is not None and view_change(before, after) < VIEW_STILL:
-                break
-            before = after
-        return True
-
-    def center_view(self, village: str = "home") -> bool:
-        """Drag the map so the view sits in the middle of its range.
-
-        The game keeps the camera where it was left, and a view dragged to
-        one side (by a stray touch, or by zooming out around an off-centre
-        spot) hides part of the base. The first time in a run, the map is
-        dragged to one end and then the other, measuring how far the
-        picture moves, and then back to halfway; that view is kept (per
-        ``village``), and after that the map is dragged straight back to it.
-        False if the picture couldn't be followed (a popup, say)."""
-        centred = self.centred_views.get(village)
-        if centred is not None:
-            if self._back_to(centred):
-                return True
-            log.info("Centring the view: can't find the centred view (another zoom?); measuring again")
-            del self.centred_views[village]
-        prev = self.refresh().copy()
-        # Drags no longer than keeps the followed piece of the map on screen
-        # (a short screen, such as a phone's, has less room above and below it).
-        drag_y = min(PAN_DRAG[1], (prev.shape[0] - (PAN_PATCH[1] - PAN_PATCH[0])) // 2 - PAN_MARGIN)
-        pos, low, high = [0, 0], [0, 0], [0, 0]
-        for sign in (1, -1):
-            for _ in range(PAN_TRIES):
-                moved = self._drag_view(prev, sign * PAN_DRAG[0], sign * drag_y)
-                if moved is None:
+        self.check_in_front()
+        if self._still_zoomed_out(self.refresh()):
+            # The view the last zoom-out ended on, unmoved: still all the
+            # way out. Another pinch would only make the map spring back.
+            log.debug("Still zoomed out: no pinch")
+            return True
+        self._zoomed_view = None
+        for _ in range(ZOOM_TRIES):
+            # Pinch again while the view keeps changing: a pinch the game misses
+            # (it happens on LDPlayer) must not leave a battle zoomed in.
+            before = self.refresh()
+            still = False
+            for _ in range(ZOOM_PASSES):
+                log.debug("Pinching out")
+                if not pinch():
                     return False
-                (dx, dy), prev = moved
-                pos = [pos[0] + dx, pos[1] + dy]
-                low, high = [min(l, p) for l, p in zip(low, pos)], [max(h, p) for h, p in zip(high, pos)]
-                if abs(dx) < PAN_STILL and abs(dy) < PAN_STILL:
-                    break  # at the end of the range
-        move = [round((lo + hi) / 2 - p) for lo, hi, p in zip(low, high, pos)]
-        log.info("Centring the view: range %dx%d px, moving it %s", high[0] - low[0], high[1] - low[1], tuple(move))
-        if max(map(abs, move)) >= PAN_STILL:
-            self._pan(*move)
-        self.centred_views[village] = self.refresh().copy()
+                self.wait(0.5)
+                after = self.refresh()
+                if view_change(before, after) < VIEW_STILL:
+                    still = True
+                    break
+                before = after
+            if not self.deselect():
+                if still:
+                    self._zoomed_view = after
+                return True
+            log.info("Zooming out selected a building: dropped it, zooming again")
         return True
 
-    def _back_to(self, centred: np.ndarray) -> bool:
-        """Drag the map back to the ``centred`` view. False if it can't be
-        found in the screen (zoomed differently, or a window over it)."""
-        for _ in range(PAN_TRIES):
-            shift = view_shift(centred, self.refresh())
-            if shift is None:
-                return False
-            if max(map(abs, shift)) < PAN_STILL:
-                log.info("Centring the view: back where it was centred")
+    def _still_zoomed_out(self, screen: np.ndarray) -> bool:
+        """``screen`` shows the very view the last full zoom-out ended on:
+        hardly anything changed, and the map's features sit where they did
+        (another base, mostly grass too, can change as little)."""
+        view = self._zoomed_view
+        if view is None or view_change(view, screen) >= VIEW_STILL:
+            return False
+        shift = view_shift(view, screen)
+        return shift is not None and abs(shift[0]) <= VIEW_NEAR and abs(shift[1]) <= VIEW_NEAR
+
+    def selected(self) -> bool:
+        """A building is selected in a village (its Upgrade button shows
+        under it). The button's size is looked for once (about a second),
+        then only that size is (quick)."""
+        buttons = [n for n in (T.UPGRADE, T.BB_UPGRADE) if self.has(n)]
+        if not buttons or not self.has(T.BUILD):
+            return False
+        self.refresh()
+        if self.find(T.BUILD) is None:
+            return False
+        w, h = self.size
+        below = Rect(0, round(h * SELECTED_TOP), w, h - round(h * SELECTED_TOP))  # where the buttons show
+        for name in buttons:
+            if self.vision.find_all(self.screen, name, None, below):
                 return True
-            self._pan(-shift[0], -shift[1])
+            if name not in ANY_SIZE:
+                continue
+            for tname, image in self.vision.library.get(name):
+                size = self._selected_sizes.get(tname)
+                if size is None:
+                    size, score = best_scale(self.screen, image, list(ANY_SIZES), below)
+                    if score < self.vision.default_threshold:
+                        continue
+                    self._selected_sizes[tname] = size
+                if match_template(self.screen, _resized(image, size), self.vision.default_threshold, below, tname):
+                    return True
         return False
 
-    def _pan(self, dx: int, dy: int) -> None:
-        """Move the picture by (dx, dy) with drags none of which is short
-        enough to count as a tap (which selects, and a drag starting on a
-        selected building moves it): a small move goes out and back."""
-        moves = [(dx, dy)]
-        if np.hypot(dx, dy) < PAN_LEAST:
-            moves = [(dx + PAN_LEAST, dy), (-PAN_LEAST, 0)]
-        cx, cy = PAN_CENTER
-        for mx, my in moves:
-            self.swipe(cx - mx // 2, cy - my // 2, cx + mx // 2, cy + my // 2, PAN_MS)
-            self.wait(0.8)
-
-    def _drag_view(self, before: np.ndarray, dx: int, dy: int):
-        """Drag the map by (dx, dy) bot px. Returns how far the picture
-        actually moved and the new screen, or None if it can't be told."""
-        cx, cy = PAN_CENTER
-        self.swipe(cx - dx // 2, cy - dy // 2, cx + dx // 2, cy + dy // 2, PAN_MS)
-        self.wait(0.8)
-        after = self.refresh().copy()
-        y0, y1, x0, x1 = PAN_PATCH
-        y0 = (after.shape[0] - (y1 - y0)) // 2  # in the middle of the screen's height, whatever it is
-        y1 = y0 + PAN_PATCH[1] - PAN_PATCH[0]
-        if before.shape != after.shape or y0 < 0 or after.shape[1] < x1:
-            return None
-        found = cv2.matchTemplate(after, before[y0:y1, x0:x1], cv2.TM_CCOEFF_NORMED)
-        _, score, _, (x, y) = cv2.minMaxLoc(found)
-        if not score >= PAN_SURE:
-            log.info("Can't follow the view while centring it (likeness %.2f)", score)
-            return None
-        return (x - x0, y - y0), after
+    def deselect(self, always: bool = False) -> bool:
+        """Leave nothing selected: a building stays selected once the windows
+        over it are closed. Opening the Build list and closing it again drops
+        it (Back would ask to quit the game). ``always``: even when no
+        Upgrade button shows (a building being upgraded has none). True if
+        the list was opened for it."""
+        if not (always or self.selected()):
+            return False
+        self.refresh()
+        if self.click(T.BUILD) and self.wait_for(T.CLOSE, timeout=4):
+            self.wait(0.5)
+            for _ in range(2):
+                self.refresh()
+                if not self.click(T.CLOSE):
+                    break
+                self.wait(0.8)
+        return True
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 500) -> None:
+        self.check_in_front()
         s = self.scale
         self.device.swipe(round(x1 * s), round(y1 * s), round(x2 * s), round(y2 * s), duration_ms)
         self.screen = None

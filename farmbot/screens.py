@@ -24,6 +24,7 @@ class Screen(enum.Enum):
     CHEST = "event chest room"
     REWARD = "reward picker"
     POPUP = "popup"
+    LOGIN = "login screen"  # no account logged in: the bot can't play
     UNKNOWN = "unknown screen"  # loading, an animation, or something new
 
 
@@ -60,11 +61,21 @@ def identify(game: Game, refresh: bool = True) -> Screen:
         return Screen.BUILDER
     if _seen(game, T.BATTLE):
         return Screen.HOME
+    if _seen(game, T.LOGIN):
+        return Screen.LOGIN
     return Screen.UNKNOWN
 
 
 class StuckError(RuntimeError):
     """The game stayed on a screen the bot can't get past."""
+
+
+class NotLoggedIn(RuntimeError):
+    """The game is on its login screen: no account, so nothing to play.
+    Restarting the game won't help, so the bot stops."""
+
+    def __init__(self) -> None:
+        super().__init__("Clash of Clans isn't logged in (it shows \"Log in with Supercell ID\")")
 
 
 SETTLE_STEPS = 10
@@ -85,6 +96,8 @@ def settle(game: Game, steps: int | None = None) -> Screen:
             if seen:
                 log.info("Back in the %s (after: %s)", screen.value, ", ".join(s.value for s in seen))
             return screen
+        if screen is Screen.LOGIN:
+            raise NotLoggedIn()
         seen.append(screen)
         if screen is Screen.REWARD:
             village.pick_reward(game)

@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from farmbot.castle import PRESETS
 from farmbot.geometry import Rect
 
 SIDES = ("nw", "ne", "sw", "se")
@@ -47,7 +48,7 @@ class DeviceConfig:
     # least the game runs well on, leaving the rest of the PC free.
     set_resources: bool = True
     cpus: int = 2
-    memory: int = 2048
+    memory: int = 4096
     serial: str = "127.0.0.1:5555"
     adb_path: str = "adb"  # "adb" = BlueStacks' own HD-Adb.exe when available
     package: str = "com.supercell.clashofclans"
@@ -78,11 +79,28 @@ class RegionsConfig:
         return Rect.from_list(getattr(self, name))
 
 
+# The search minimums a new profile starts with. The first time the home
+# storages are read, minimums all still at these are set from what the
+# storages hold instead (bigger storages: a higher town hall, richer bases).
+SEARCH_DEFAULTS = {"gold": 300_000, "elixir": 300_000, "dark": 0}
+SEARCH_SHARES = {"gold": 0.025, "elixir": 0.025, "dark": 0.01}
+SEARCH_STEPS = {"gold": 50_000, "elixir": 50_000, "dark": 1_000}  # rounded to these
+
+
+def search_minimums_for(storage: dict[str, int], current: dict[str, int]) -> dict[str, int]:
+    """Search minimums from what the storages hold (``storage``), if the
+    ``current`` ones are all still the defaults; otherwise none."""
+    if current != SEARCH_DEFAULTS or not {"gold", "elixir"} <= set(storage):
+        return {}
+    return {k: max(SEARCH_STEPS[k], round(storage[k] * share / SEARCH_STEPS[k]) * SEARCH_STEPS[k])
+            for k, share in SEARCH_SHARES.items() if k in storage}
+
+
 @dataclass
 class SearchConfig:
-    min_gold: int = 300_000
-    min_elixir: int = 300_000
-    min_dark: int = 0
+    min_gold: int = SEARCH_DEFAULTS["gold"]
+    min_elixir: int = SEARCH_DEFAULTS["elixir"]
+    min_dark: int = SEARCH_DEFAULTS["dark"]
     match_any: bool = False  # accept a base if any one minimum is met
     max_searches: int = 150
     next_delay: float = 2.5  # seconds to wait for the next base to load
@@ -101,6 +119,8 @@ class AttackConfig:
     wave_speed: int = 8  # 1 (slow) - 9 (fast): pause between waves
     # Siege machines let the Clan Castle troops out when destroyed; off leaves them in the bar.
     use_siege: bool = False
+    # Boost the army's super troops that show Activate, with dark elixir (never a Super Potion or gems).
+    super_troops: bool = False
     hero_abilities: bool = True
     hero_ability_delay: float = 10.0
     # Fire each hero's ability once its health drops to this share (0.5 =
@@ -170,7 +190,7 @@ class BarConfig:
     frame_hue: list[int] = field(default_factory=lambda: [85, 160])
     min_frame_share: float = 0.3  # of a card's left or right border in frame colour
     spent_ratio: float = 0.55  # greyed out below this share of the start colour
-    count_font: str = "fonts/loot"  # digit glyphs used to read the "xN" counts
+    count_font: str = "fonts/count"  # digit glyphs used to read the "xN" counts
 
 
 @dataclass
@@ -261,7 +281,19 @@ class ClanConfig:
     donate_siege: list[str] = field(default_factory=list)
     donate_spells: list[str] = field(default_factory=list)
     donate_fill: bool = True
-    max_donations_per_request: int = 15  # units given to one request at most
+    # With no main troops picked, a request gets its Clan Castle level's
+    # preset (see farmbot/castle.py), then the same filling.
+    donate_presets: dict[str, list[str]] = field(default_factory=lambda: {k: list(v) for k, v in PRESETS.items()})
+
+
+@dataclass
+class CapitalConfig:
+    """Clan Capital raids on Raid Weekends (Friday 07:00 to Monday 07:00 UTC)."""
+
+    raid: bool = False
+    # A heal goes on the units once their health bars fall under this share.
+    miner_heal_at: float = 0.7  # Super Miners: kept going together
+    fortress_heal_at: float = 0.5  # Flying Fortresses
 
 
 @dataclass
@@ -311,6 +343,7 @@ class BotConfig:
     collect_dark: bool = True
     collect_every: int = 7  # ...every N rounds (1 = each round); the first round after Start always collects
     collect_loot_cart: bool = True  # loot left over from defences, shown as a cart
+    clear_gravestones: bool = True  # left by attackers' troops; tapping one clears them all
     # Stop farming once all of these storages are full ("gold", "elixir", "dark").
     stop_when_full: list[str] = field(default_factory=list)
     max_attacks: int = 0  # 0 = unlimited
@@ -344,15 +377,22 @@ class UpgradeConfig:
     (see ``farmbot/tasks/upgrade.py``)."""
 
     enabled: bool = False
-    # The kind of building that gets builders first ("none": dearest of any kind).
-    first: str = "hero"
-    buildings: bool = True
+    # What gets upgraded, first to last: each takes what it can of the full
+    # storages before the next. Pets: dark elixir; heroes and research: elixir
+    # or dark elixir; buildings: gold, elixir or dark elixir.
+    order: list[str] = field(default_factory=lambda: list(UPGRADE_ORDER))
+    pets: bool = True
+    heroes: bool = True
     lab: bool = True
-    pets: bool = True  # last: the dark elixir heroes and research leave
+    buildings: bool = True
+    # The kind of building that gets builders first ("none": dearest of any kind).
+    first: str = "none"
 
 
 WALL_RESOURCES = ("gold", "elixir", "both")
-UPGRADE_FIRST = ("hero", "defense", "resource", "army", "none")
+UPGRADE_FIRST = ("defense", "resource", "army", "none")
+UPGRADE_ORDER = ("pets", "hero", "research", "building")
+BUILDER_UPGRADE_ORDER = ("research", "hero", "building")
 WALL_PICKS = ("cheapest", "first")
 MODES = ("home", "builder", "auto")  # auto: one village until its storages are full, then the other
 THEMES = ("auto", "light", "dark")
@@ -377,7 +417,9 @@ class BuilderConfig:
     troop_delay: float = 3.0  # seconds between the hero landing and the troops
     troop_speed: int = 5  # 1 (slow) - 9 (fast): pause between the troops going down
     hero_ability: bool = True
-    hero_ability_after: float = 15.0  # seconds after the hero lands (fully charged)
+    # Fired whenever its three charge bars are full; where the bars
+    # can't be seen, once, this many seconds after the hero lands.
+    hero_ability_after: float = 15.0
     troop_abilities: bool = True
     ability_batch: int = 2  # troop abilities fired together
     ability_delay: float = 5.0  # seconds between batches
@@ -392,6 +434,9 @@ class BuilderConfig:
     collect_cart: bool = True
     cart_every_min: int = 5
     cart_every_max: int = 5
+    # Use the Clock Tower's free boost whenever its clock shows (never the
+    # magic-item Boost beside it).
+    clock_tower: bool = True
     # Spend spare builder gold or elixir on builder base walls between battles.
     walls: bool = False
     walls_use: str = "both"  # "gold", "elixir" or "both"
@@ -401,8 +446,13 @@ class BuilderConfig:
     # Upgrade buildings, heroes and research once a builder storage is full
     # (as the home village's upgrade.*; one builder stays for the walls).
     upgrade: bool = False
-    upgrade_first: str = "hero"
+    # What gets upgraded, in this order (see UpgradeConfig.order); each can
+    # be turned off. Heroes: builder elixir; research: elixir; buildings: both.
+    upgrade_order: list[str] = field(default_factory=lambda: list(BUILDER_UPGRADE_ORDER))
+    upgrade_heroes: bool = True
     upgrade_lab: bool = True
+    upgrade_buildings: bool = True
+    upgrade_first: str = "none"  # the kind of building that gets builders first
     battle_timeout: float = 400.0  # both stages together
     return_home_after: bool = False  # sail back to the home village when the bot stops
     # The troop bar (bot coordinates at 860 x 672).
@@ -466,6 +516,7 @@ class ProfilesConfig:
     seen for the first time gets one, named after it."""
 
     active: str = ""  # the profile in use; "" = this file's own settings (before any account was seen)
+    default: str = ""  # starred: new accounts' profiles start from its settings ("": from the ones in use)
 
 
 @dataclass
@@ -478,6 +529,7 @@ class Config:
     zone: ZoneConfig = field(default_factory=ZoneConfig)
     redline: RedLineConfig = field(default_factory=RedLineConfig)
     clan: ClanConfig = field(default_factory=ClanConfig)
+    capital: CapitalConfig = field(default_factory=CapitalConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     bot: BotConfig = field(default_factory=BotConfig)
@@ -534,6 +586,10 @@ class Config:
             raise ValueError(f"upgrade.first must be one of {UPGRADE_FIRST}")
         if self.builder.upgrade_first not in UPGRADE_FIRST:
             raise ValueError(f"builder.upgrade_first must be one of {UPGRADE_FIRST}")
+        for name, order, kinds in (("upgrade.order", self.upgrade.order, UPGRADE_ORDER),
+                                   ("builder.upgrade_order", self.builder.upgrade_order, BUILDER_UPGRADE_ORDER)):
+            if sorted(order) != sorted(kinds):
+                raise ValueError(f"{name} must list each of {kinds} once")
         if not 1 <= self.attack.waves <= 3:
             raise ValueError("attack.waves must be 1, 2 or 3")
         bad_hours = [h for h in self.schedule.active_hours if not 0 <= h <= 23]
@@ -550,6 +606,8 @@ class Config:
 REMOVED_SETTINGS = {"bot.quick_train", "bot.army_recipe", "clan.request_text", "search.dead_base",
                     "search.dead_base_collectors", "attack.use_cc",
                     "search.min_total", "search.dark_weight",
+                    # A request is given what fits its room (the window closes when it's full).
+                    "clan.max_donations_per_request",
                     # Storages are judged full from what they hold (read in the game), not
                     # the bars' colour; amounts to keep became shares of what they hold.
                     "regions.full_gold", "regions.full_elixir", "regions.full_dark",
@@ -641,13 +699,35 @@ def _widen_own_regions(regions: RegionsConfig) -> None:
             setattr(regions, name, list(NEW_OWN_REGIONS[name]))
 
 
+def _count_font(bar: BarConfig) -> None:
+    """Before 0.9.7 the troop counts were read with the loot digits, which
+    misread them (x68 as 50); settings still naming them get the bar's own."""
+    if bar.count_font == "fonts/loot":
+        bar.count_font = BarConfig.count_font
+
+
+def _upgrade_orders(config: Config) -> None:
+    """Each kind once, in the order given; any missing (an older file, or a
+    hand edit) go after, in the default order. "Heroes first" became a
+    place in that order, so builders then go to any kind of building."""
+    for obj, name, kinds in ((config.upgrade, "order", UPGRADE_ORDER),
+                             (config.builder, "upgrade_order", BUILDER_UPGRADE_ORDER)):
+        given = [k for k in dict.fromkeys(getattr(obj, name)) if k in kinds]
+        setattr(obj, name, given + [k for k in kinds if k not in given])
+    for obj, name in ((config.upgrade, "first"), (config.builder, "upgrade_first")):
+        if getattr(obj, name) == "hero":
+            setattr(obj, name, "none")
+
+
 def load_config(path: str | Path | None) -> Config:
     config = Config()
     if path is not None:
         # utf-8-sig: Notepad (and PowerShell) can save the file with a byte-order mark.
         _merge(config, tomllib.loads(Path(path).read_text(encoding="utf-8-sig")), "")
     _siege_out_of_main(config.clan)
+    _upgrade_orders(config)
     _widen_own_regions(config.regions)
+    _count_font(config.bar)
     config.validate()
     return config
 

@@ -34,6 +34,8 @@ class Picture:
 
 QUICK_EXIT = "Leaving battles without restarting the game"
 BAT_SPELLS = "Casting only Bat Spells"
+SUPER_TROOPS = "Activating super troops"
+CAPITAL = "Clan Capital raids"
 
 PICTURES: list[Picture] = [
     # Attacking: without these the bot cannot get into or out of a battle.
@@ -66,6 +68,14 @@ PICTURES: list[Picture] = [
             "Collecting the loot cart"),
     Picture(T.LOOT_CART_COLLECT, "Loot cart Collect", "After tapping the loot cart: the word \"Collect\" on "
             "the button under it.", "Collecting the loot cart"),
+    Picture(T.GRAVESTONE, "Gravestone", "Home village, zoomed out, after someone attacked you: one grey "
+            "gravestone, tight around the stone.", "Clearing gravestones"),
+    Picture(T.SUPER_ACTIVATE, "Activate (super troop)", "Army screen after Find a Match, with a super troop that "
+            "isn't boosted: the word \"Activate\" under its card.", SUPER_TROOPS),
+    Picture(T.SUPER_BOOST_TITLE, "Boost? (super troop)", "The window Activate opens: the title \"Boost?\".",
+            SUPER_TROOPS),
+    Picture(T.SUPER_BOOST_DARK, "Boost with dark elixir", "The same window: the dark elixir drop on the green "
+            "button (not the Super Potion).", SUPER_TROOPS),
     Picture(T.BB_HOME_BOAT, "Boat to the builder base", "Home village, bottom left: the boat.", "Builder base"),
     Picture(T.BB_BUILDER_BOAT, "Boat home", "Builder base, top right: the boat's hull.", "Builder base"),
     Picture(T.BB_BATTLE, "Builder Battle", "Builder base, bottom left: the crossed axes.", "Builder base"),
@@ -101,11 +111,21 @@ PICTURES: list[Picture] = [
     Picture(T.BB_COLLECT_GEMS, "Builder gem bubble", "Builder base: the green gem bubble over a full gem mine.",
             "Builder base"),
     Picture(T.BB_CART_COLLECT, "Elixir Cart Collect", "Elixir Cart window: the word \"Collect\".", "Builder base"),
+    Picture(T.BB_CLOCK_READY, "Clock Tower ready", "Builder base: the clock bubble over the Clock Tower.",
+            "Builder base"),
+    Picture(T.BB_CLOCK_FREE_BOOST, "Free Boost (Clock Tower)", "The selected Clock Tower: the words \"Free "
+            "Boost!\" (leave out the time above them).", "Builder base"),
+    Picture(T.BB_FREE_BOOST_WINDOW, "Free Boost window", "The window it opens: its title, \"Free Boost!\".",
+            "Builder base"),
+    Picture(T.BB_FREE_BOOST_CONFIRM, "Free Boost confirm", "That window: the word \"Boost\" on the green button.",
+            "Builder base"),
     Picture(T.BB_UPGRADE, "Upgrade (builder)", "Builder base, a selected wall: the word \"Upgrade\".",
             "Builder base walls"),
     Picture(T.BB_UPGRADE_TITLE, "Upgrade to level", "Builder base upgrade window: the words \"Upgrade to\".",
             "Builder base walls"),
     Picture(T.BUILD, "Build", "Home village, bottom right: the word \"Build\" on the hammer button.", "Upgrading walls"),
+    Picture(T.GOBLIN, "Goblin Builder", "Home village, over the builder counter above Build: the goblin's face "
+            "(shown when only the Goblin Builder, for gems, is left).", "Not paying gems for the Goblin Builder or Researcher"),
     Picture(T.WALL_SUGGESTION, "Wall in Buildings & Heroes", "Build list: the words \"Wall x\" (leave out the "
             "number).", "Upgrading walls"),
     Picture(T.UPGRADE, "Upgrade", "A selected wall: the word \"Upgrade\" under the hammer.", "Upgrading walls"),
@@ -155,8 +175,32 @@ PICTURES: list[Picture] = [
             "Donating", folder=True),
     Picture(T.REQUEST, "Request", "Clan chat, bottom (right of Challenge): the castle with a plus.", "Requesting troops"),
     Picture(T.REQUEST_SEND, "Send request", "Request window: the word \"Send\".", "Requesting troops"),
+    Picture(T.CAPITAL_BADGE, "Raid badge", "Home village, over the capital airship: the sword on the red badge "
+            "(raids left; a gold sword for the bonus raid).", CAPITAL, folder=True),
+    Picture(T.CAPITAL_COLLAPSE, "Fold event buttons", "Home village, bottom: the \"<\" at the end of the event "
+            "buttons.", CAPITAL),
+    Picture(T.CAPITAL_NEXT_RAID, "Next Raid", "Clan Capital, after a raid's summary: the words \"Next Raid\".",
+            CAPITAL),
+    Picture(T.CAPITAL_RAID_MAP, "Raid Map", "Clan Capital, bottom right: the words \"Raid Map\".", CAPITAL),
+    Picture(T.CAPITAL_LEAVE_RAID, "Raid map: Map", "Raid map, bottom left: the airship \"Map\" button.", CAPITAL),
+    Picture(T.CAPITAL_RETURN_HOME, "Capital: Return Home", "Clan Capital, bottom left: the words \"Return Home\".",
+            CAPITAL),
+    Picture(T.CAPITAL_DISTRICT_ATTACK, "District Attack", "Raid map, after tapping a district: the red \"Attack\".",
+            CAPITAL),
+    Picture(T.CAPITAL_ATTACK_NOW, "Attack Now?", "Raid map → Attack: the title \"Attack Now?\".", CAPITAL),
+    Picture(T.CAPITAL_ATTACK_GO, "Raid Attack", "\"Attack Now?\" window: the green \"Attack\".", CAPITAL),
+    Picture(T.CAPITAL_SURE_ATTACK, "Attack anyway", "\"Capital Gold storage is full\" question: \"Attack\".", CAPITAL),
+    Picture(T.CAPITAL_NOT_MEMBER, "Not a member yet", "\"Only members who were in the Clan before the Raid Weekend "
+            "began can attack\": its words.", CAPITAL),
+    Picture(T.CAPITAL_CARD_DIR, "Capital unit", "Change Capital Army list: the unit's picture, in colour (it tells the "
+            "cards in the raid's troop bar apart). Save it under the unit's name, e.g. super_miner.", CAPITAL, folder=True),
+    Picture(T.CAPITAL_BATTLE_HEAL, "Raid Heal card", "Troop bar during a raid: the Heal Spell card's bottle.",
+            CAPITAL),
+    Picture(T.CAPITAL_RESULT_MAP, "Raid result: Map", "Raid result screen: the word \"Map\".", CAPITAL),
     Picture(T.TRY_AGAIN, "Try Again", "Connection lost popup: \"Try Again\".", "Recovering from disconnects"),
     Picture(T.RELOAD, "Reload", "\"Another device is connected\" popup: \"Reload\".", "Recovering from disconnects"),
+    Picture(T.LOGIN, "Not logged in", "The game's start screen with no account logged in: \"Log in with Supercell ID\".",
+            "Stopping when the game isn't logged in"),
 ]
 BY_NAME = {p.name: p for p in PICTURES}
 

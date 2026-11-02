@@ -201,6 +201,17 @@ class Profiles:
         self.folder.mkdir(parents=True, exist_ok=True)
         save_config(config, self.path(name))
 
+    def copy(self, source: str, target: str, shared: Config) -> None:
+        """Give profile ``target`` the settings of ``source``. What's only
+        true of ``target``'s account (its storage sizes) stays."""
+        settings = self.load(source, shared)
+        config = self.load(target, shared)
+        storage = config.storage
+        take(settings, config)
+        config.storage = storage
+        self.save(target, config)
+        log.info("Copied profile %s's settings to %s", source, target)
+
     def rename(self, old: str, new: str) -> str:
         new = _safe(new)
         if not new or new.lower() in {n.lower() for n in self.names() if n != old}:
@@ -237,7 +248,8 @@ def take(source: Config, target: Config) -> None:
 def for_account(profiles: Profiles, config: Config, mask: np.ndarray,
                 namer: Callable[[np.ndarray], str] = read_name) -> tuple[str | None, bool]:
     """The profile for the account whose name is ``mask``: a known one, or a
-    new one made from ``config`` and named after the account. The first
+    new one named after the account, made from the starred profile's
+    settings (``profiles.default``), else from ``config``. The first
     profile keeps its storage sizes (the settings were this account's);
     later ones read their own. (None, False) when it's too close to call.
     Returns (name, made)."""
@@ -247,7 +259,12 @@ def for_account(profiles: Profiles, config: Config, mask: np.ndarray,
     if score >= DIFFERENT:
         log.info("Account name looks a little like %s (%.2f): not switching", name, score)
         return None, False
-    fresh = copy.deepcopy(config)
+    starred = config.profiles.default
+    if starred and profiles.path(starred).is_file():
+        fresh = profiles.load(starred, config)
+    else:
+        fresh = copy.deepcopy(config)
+    fresh.profiles = copy.deepcopy(config.profiles)
     fresh.profiles.active = ""
     new = profiles.new_name(namer(mask))
     if not profiles.names():

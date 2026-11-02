@@ -127,7 +127,6 @@ donate_main = []  # e.g. ["Super Barbarian"]
 donate_siege = []  # e.g. ["Battle Blimp"]
 donate_spells = []  # e.g. ["Rage Spell"]
 donate_fill = true
-max_donations_per_request = 15
 
 [schedule]
 enabled = false

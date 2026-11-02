@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from farmbot import ports
 from farmbot.config import DeviceConfig
 from farmbot.device import NO_WINDOW, AdbDevice, DeviceError
 
@@ -57,6 +58,11 @@ class Instance:
     @property
     def serial(self) -> str:
         return f"emulator-{5554 + 2 * self.index}"
+
+    @property
+    def port(self) -> int:
+        """The ADB port, fixed by LDPlayer: whichever emulator takes it first keeps it."""
+        return 5555 + 2 * self.index
 
 
 @dataclass
@@ -202,12 +208,7 @@ def set_up(install: Install, inst: Instance, cfg: DeviceConfig, run: Runner = _r
     console, index = str(install.console), str(inst.index)
     if inst.running:
         log.info("Closing %s to change its settings", install.name)
-        run([console, "quit", "--index", index])
-        for _ in range(30):
-            sleep(1)
-            current = next((i for i in instances(install, run) if i.index == inst.index), None)
-            if current is None or not current.running:
-                break
+        _quit(install, inst, run, sleep)
     args = [console, "modify", "--index", index]
     if cfg.set_display:
         args += ["--resolution", f"{cfg.display_width},{cfg.display_height},{cfg.display_dpi}"]
@@ -217,6 +218,79 @@ def set_up(install: Install, inst: Instance, cfg: DeviceConfig, run: Runner = _r
         run(args)
     if cfg.enable_adb and not read_settings(install, inst.index).get("adb", True):
         enable_adb(install, inst.index)
+
+
+def _quit(install: Install, inst: Instance, run: Runner, sleep: Callable[[float], None]) -> None:
+    """Close an instance and wait (up to 30 s) until it has."""
+    run([str(install.console), "quit", "--index", str(inst.index)])
+    for _ in range(30):
+        sleep(1)
+        current = next((i for i in instances(install, run) if i.index == inst.index), None)
+        if current is None or not current.running:
+            return
+
+
+def emulator_of(path: Path, installs: list[Install]) -> tuple[str, Install | None]:
+    """Which emulator a program belongs to: ("ldplayer", its install),
+    ("bluestacks", None), ("mumu", None) or ("other", None)."""
+    text = str(path).lower().replace("/", "\\")
+    for install in installs:
+        if text.startswith(str(install.path).lower().replace("/", "\\").rstrip("\\") + "\\"):
+            return "ldplayer", install
+    # LDPlayer 9 runs its virtual machine from C:\Program Files\ldplayer9box.
+    if m := re.search(r"ldplayer(\d+)box", text):
+        return "ldplayer", next((i for i in installs if i.version == int(m.group(1))), None)
+    if "bluestacks" in text:
+        return "bluestacks", None
+    if "mumu" in text:
+        return "mumu", None
+    return "other", None
+
+
+PORT_FREE_TIMEOUT = 30  # seconds for the emulator that was closed to let go of the port
+
+
+def clear_port(install: Install, inst: Instance, installs: list[Install], run: Runner = _run,
+               sleep: Callable[[float], None] = time.sleep,
+               owner_of: Callable[[int], Path | None] | None = None) -> bool:
+    """Close whichever other emulator holds the instance's ADB port (an
+    LDPlayer of another version, BlueStacks or MuMu): with it open, this
+    instance has no connection. True if one was closed."""
+    owner_of = owner_of or ports.owner
+    path = owner_of(inst.port)
+    if path is None:
+        return False
+    kind, other = emulator_of(path, installs)
+    if kind == "ldplayer" and (other is None or other.path == install.path or other.version == install.version):
+        return False  # this LDPlayer's own
+    if kind == "ldplayer":
+        name = other.name
+        log.warning("Closing %s: it is using port %d, which %s needs", name, inst.port, install.name)
+        run([str(other.console), "quit", "--index", str(inst.index)])
+    elif kind == "bluestacks":
+        from farmbot import bluestacks
+
+        name = "BlueStacks"
+        log.warning("Closing BlueStacks: it is using port %d, which %s needs", inst.port, install.name)
+        bluestacks.stop_player(sleep)
+    elif kind == "mumu":
+        from farmbot import mumu
+
+        name = "MuMu Player"
+        manager = mumu.find_install()
+        if manager is None:
+            raise DeviceError(f"MuMu Player is using port {inst.port}, which {install.name} needs. Close MuMu Player.")
+        log.warning("Closing MuMu Player: it is using port %d, which %s needs", inst.port, install.name)
+        run([str(manager.manager), "control", "-v", "all", "shutdown"])
+    else:
+        # Not an emulator COCFARM knows how to close: never kill an unknown program.
+        raise DeviceError(f"{path.name} ({path.parent}) is using port {inst.port}, which {install.name} needs. "
+                          f"Close it.")
+    for _ in range(PORT_FREE_TIMEOUT):
+        if owner_of(inst.port) is None:
+            return True
+        sleep(1)
+    raise DeviceError(f"{name} did not close (it still holds port {inst.port}, which {install.name} needs)")
 
 
 class WrongEmulator(DeviceError):
@@ -232,10 +306,12 @@ def is_bluestacks(props: str) -> bool:
 def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], None] = time.sleep,
                 clock: Callable[[], float] = time.monotonic,
                 find: Callable[[], list[Install]] = find_installs,
-                make: Callable[[str, str], AdbDevice] = AdbDevice) -> AdbDevice:
+                make: Callable[[str, str], AdbDevice] = AdbDevice,
+                owner_of: Callable[[int], Path | None] | None = None) -> AdbDevice:
     """Find LDPlayer, set the instance up the way the bot needs it (once),
     start it if allowed, and connect over LDPlayer's own ADB."""
-    install = pick_install(cfg, find())
+    installs = find()
+    install = pick_install(cfg, installs)
     if install is None:
         raise DeviceError("LDPlayer was not found. Install LDPlayer 9 or newer, or pick its folder in Settings.")
     found = instances(install, run)
@@ -247,6 +323,11 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
     if changes:
         log.warning("Setting up %s: %s (restarts it)", install.name, "; ".join(changes))
         set_up(install, inst, cfg, run, sleep)
+        inst.running = False
+    if clear_port(install, inst, installs, run, sleep, owner_of) and inst.running:
+        # It started after the other one, so without a connection: start it again.
+        log.info("Restarting %s to get its connection", install.name)
+        _quit(install, inst, run, sleep)
         inst.running = False
     if not inst.running:
         if not cfg.launch_emulator:

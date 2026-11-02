@@ -126,7 +126,8 @@ def donate(game: Game, cfg: ClanConfig) -> int:
     if missing:
         log.warning("Cannot donate; missing pictures: %s", ", ".join(missing))
         return 0
-    if not cfg.donate_main and not cfg.donate_siege and not cfg.donate_spells and not cfg.donate_fill:
+    if (not cfg.donate_main and not cfg.donate_siege and not cfg.donate_spells and not cfg.donate_fill
+            and not any(cfg.donate_presets.values())):
         return 0
     if not _open_chat(game):
         return 0
@@ -139,11 +140,12 @@ def donate(game: Game, cfg: ClanConfig) -> int:
             break
         request = requests[0]
         seen.append(request.y)
+        chat = game.screen  # the request's bubble, before the window covers it
         game.tap_match(request)
         if not game.wait_for(T.DONATE_WINDOW, timeout=3):
             continue
         game.wait(0.5)
-        given = donate_open_window(game, cfg)
+        given = donate_open_window(game, cfg, chat, request.point)
         donated += given
         done += given > 0
         if game.find(T.DONATE_WINDOW):

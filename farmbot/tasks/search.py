@@ -169,8 +169,11 @@ def full_by_amount(loot: Loot, maxes: dict[str, int]) -> set[str]:
     return {k for k, most in maxes.items() if getattr(loot, k) >= most * FULL_AMOUNT}
 
 
-def start_search(game: Game) -> None:
-    """Home village → Battle → Find a Match → Attack! (army screen)."""
+def start_search(game: Game, super_troops: bool = False, dark: int | None = None) -> int:
+    """Home village → Battle → Find a Match → Attack! (army screen).
+    ``super_troops``: on the army screen, boost the super troops showing
+    Activate first, with ``dark``, the dark elixir you have. Returns how
+    many were boosted."""
     game.refresh()
     # The battle menu may already be open (e.g. after a failed round).
     if not game.find(T.FIND_MATCH) and not game.click(T.BATTLE):
@@ -179,6 +182,11 @@ def start_search(game: Game) -> None:
     if not game.click_when_visible(T.FIND_MATCH, timeout=5, leftmost=True):
         raise SearchError("find-a-match button did not appear")
     # Newer versions confirm the army first; older ones go straight to scouting.
+    boosted = 0
+    if super_troops and game.has(T.ARMY_ATTACK) and game.wait_for(T.ARMY_ATTACK, timeout=4):
+        from farmbot.tasks.super_troops import activate_super_troops
+
+        boosted = activate_super_troops(game, dark)
     if game.has(T.ARMY_ATTACK) and game.click_when_visible(T.ARMY_ATTACK, timeout=4):
         log.debug("Confirmed army")
     if game.has(T.LAYOUT_OBSTRUCTED):
@@ -187,25 +195,38 @@ def start_search(game: Game) -> None:
         game.wait(1.0)
         game.refresh()
         attack_despite_obstructed_layout(game)
+    return boosted
 
 
 MAX_UNREADABLE = 3  # bases in a row whose loot can't be read before giving up
 
 
-def search(game: Game, criteria: SearchConfig, regions: RegionsConfig, on_base: BaseCallback | None = None) -> Loot:
+def search(game: Game, criteria: SearchConfig, regions: RegionsConfig, on_base: BaseCallback | None = None,
+           zoom_out: bool = False) -> Loot:
     """Press Next until a base meets ``criteria``; returns its loot.
+    ``zoom_out``: the village was left zoomed in (on an upgrade), and the
+    battle opens at its zoom: zoom out on the first base.
 
     Must be called after :func:`start_search`. Raises :class:`SearchError`
     if the search gets stuck or exceeds ``criteria.max_searches``.
     """
     last: Loot | None = None
     repeats = unreadable = 0
+    zoomed = zoom_out
     for count in range(1, criteria.max_searches + 1):
         if not game.wait_for(T.NEXT, timeout=20):
             raise SearchError("next button never appeared; search screen not loaded")
         game.wait(0.5)  # let the loot counters finish animating
+        if count == 1 and zoom_out:
+            game.zoom_out()
         game.refresh()
         loot = read_settled_loot(game, regions)
+        if loot is None and not zoomed:
+            # The battle opens at the village's zoom: left zoomed in on an
+            # upgrade, the base's health bars can sit over the numbers.
+            zoomed = True
+            game.zoom_out()
+            loot = read_settled_loot(game, regions)
         if loot is None:
             unreadable += 1
             if unreadable >= MAX_UNREADABLE:

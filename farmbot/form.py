@@ -18,7 +18,7 @@ SIDE_LABELS = {"nw": "Top-left (NW)", "ne": "Top-right (NE)", "sw": "Bottom-left
 @dataclass(frozen=True)
 class Field:
     path: str  # e.g. "search.min_gold"
-    kind: str  # amount | int | float | percent | bool | text | sides | resources | hours | units
+    kind: str  # amount | int | float | percent | bool | text | sides | resources | hours | units | order | presets
     low: float | None = None
     high: float | None = None
 
@@ -42,6 +42,7 @@ FIELDS = [
     Field("attack.spells", "text"),
     Field("attack.spell_spot", "text"),
     Field("attack.use_siege", "bool"),
+    Field("attack.super_troops", "bool"),
     Field("attack.hero_abilities", "bool"),
     Field("attack.hero_ability_delay", "float", 0, 120),
     Field("attack.ability_health", "percent", 0, 95),
@@ -59,6 +60,7 @@ FIELDS = [
     Field("bot.collect_dark", "bool"),
     Field("bot.collect_every", "int", 1, 100),
     Field("bot.collect_loot_cart", "bool"),
+    Field("bot.clear_gravestones", "bool"),
     Field("bot.stop_when_full", "resources"),
     Field("bot.mode", "text"),
     Field("bot.theme", "text"),
@@ -89,8 +91,11 @@ FIELDS = [
     Field("builder.walls_keep_gold", "percent", 0, 100),
     Field("builder.walls_keep_elixir", "percent", 0, 100),
     Field("builder.upgrade", "bool"),
-    Field("builder.upgrade_first", "text"),
+    Field("builder.upgrade_order", "order"),
+    Field("builder.upgrade_heroes", "bool"),
     Field("builder.upgrade_lab", "bool"),
+    Field("builder.upgrade_buildings", "bool"),
+    Field("builder.upgrade_first", "text"),
     Field("walls.enabled", "bool"),
     Field("walls.use", "text"),
     Field("walls.pick", "text"),
@@ -98,10 +103,12 @@ FIELDS = [
     Field("walls.keep_elixir", "percent", 0, 100),
     Field("walls.only_when_full", "bool"),
     Field("upgrade.enabled", "bool"),
-    Field("upgrade.first", "text"),
-    Field("upgrade.buildings", "bool"),
-    Field("upgrade.lab", "bool"),
+    Field("upgrade.order", "order"),
     Field("upgrade.pets", "bool"),
+    Field("upgrade.heroes", "bool"),
+    Field("upgrade.lab", "bool"),
+    Field("upgrade.buildings", "bool"),
+    Field("upgrade.first", "text"),
     # What the storages hold
     Field("storage.gold", "amount"),
     Field("storage.elixir", "amount"),
@@ -116,8 +123,11 @@ FIELDS = [
     Field("clan.donate_siege", "units"),
     Field("clan.donate_spells", "units"),
     Field("clan.donate_fill", "bool"),
-    Field("clan.max_donations_per_request", "int", 1, 50),
+    Field("clan.donate_presets", "presets"),
     Field("clan.request_troops", "bool"),
+    Field("capital.raid", "bool"),
+    Field("capital.miner_heal_at", "percent", 10, 95),
+    Field("capital.fortress_heal_at", "percent", 10, 95),
     Field("clan.request_every_minutes", "int", 1, 600),
     # Schedule
     Field("schedule.enabled", "bool"),
@@ -188,8 +198,10 @@ def _display(field: Field, value: Any) -> Any:
         if field.path.startswith("storage.") and not value:
             return ""  # not known yet
         return f"{value:,}"
-    if field.kind in ("sides", "resources", "hours", "units"):
+    if field.kind in ("sides", "resources", "hours", "units", "order"):
         return list(value)
+    if field.kind == "presets":  # {"13": ["1 Ice Golem", ...]} → {"13": "1 Ice Golem, ..."}
+        return {level: ", ".join(entries) for level, entries in value.items()}
     if field.kind == "float":
         return f"{value:g}"
     if field.kind == "percent":  # stored as a share, shown as 0-100
@@ -220,6 +232,19 @@ def _parse(field: Field, raw: Any) -> Any:
         from farmbot.units import BY_NAME
 
         return [name for name in dict.fromkeys(raw) if name in BY_NAME]  # in the order given
+    if field.kind == "order":
+        return list(dict.fromkeys(str(k) for k in raw))  # first to last
+    if field.kind == "presets":
+        from farmbot.castle import parse_entry
+
+        out = {}
+        for level, text in raw.items():
+            entries = [e.strip() for e in str(text).split(",") if e.strip()]
+            unknown = [e for e in entries if parse_entry(e) is None]
+            if unknown:
+                raise ValueError(f"level {level}: no unit called '{unknown[0]}' (write it like '2 Valkyrie')")
+            out[str(level)] = entries
+        return out
     if field.kind == "hours":
         hours = sorted({int(h) for h in raw})
         if any(not 0 <= h <= 23 for h in hours):
@@ -276,3 +301,37 @@ def apply_form(config: Config, form: dict[str, Any]) -> None:
             continue
         _set(config, path, value)
     config.validate()
+
+
+def plan_summary(values: dict[str, Any]) -> str:
+    """One line on what the bot will do with these (validated) settings,
+    for the Dashboard before Start."""
+    def short(amount: int) -> str:
+        return f"{amount / 1_000_000:g}M" if amount >= 1_000_000 else f"{amount // 1_000}k" if amount >= 1_000 \
+            else str(amount)
+
+    village = {"home": "the home village", "builder": "the builder base"}.get(values.get("bot.mode"))
+    if village is None:  # auto
+        first = "builder base" if values.get("bot.auto_first") == "builder" else "home village"
+        village = f"the {first}, then the other once its storages are full"
+    parts = []
+    if values.get("bot.mode") != "builder":
+        if values.get("search.maintain_only"):
+            parts.append("no attacks")
+        else:
+            wants = [f"{short(values[f'search.min_{k}'])} {name}" for k, name in
+                     (("gold", "gold"), ("elixir", "elixir"), ("dark", "dark"))
+                     if values.get(f"search.min_{k}")]
+            joiner = " or " if values.get("search.match_any") else " and "
+            parts.append(f"attacks bases with {joiner.join(wants)}" if wants else "attacks any base")
+        for path, what in (("bot.collect_resources", "collects"), ("walls.enabled", "walls"),
+                           ("upgrade.enabled", "upgrades"), ("clan.donate", "donates"),
+                           ("clan.request_troops", "requests troops"), ("capital.raid", "raids")):
+            if values.get(path):
+                parts.append(what)
+    if values.get("schedule.enabled"):
+        parts.append("only in its hours")
+    full = values.get("bot.stop_when_full") or []
+    if full:
+        parts.append("stops when its " + " and ".join(full) + " storages are full")
+    return f"Plays {village}: " + ", ".join(parts) + ". Press Start (F5)."
