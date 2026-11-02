@@ -197,6 +197,7 @@ class Vision:
         self.scales: dict[str, float] = {}
         self.fixed_scales: set[str] = set()  # set in the config: never second-guessed
         self._rest: dict[str, int] = {}  # template name -> misses left before its next fine size search
+        self._nearly: set[str] = set()  # resting after a near miss (a button popping in, say)
         # Pictures (or directories) shown at both sizes, such as the Okay of a
         # small window and of a big one: on a miss the other size is always tried.
         self.two_sizes: set[str] = set()
@@ -241,7 +242,7 @@ class Vision:
             # again now and then (each look costs a match).
             relook = self.scales.get(tname) == 1.0 and tname not in self.fixed_scales
             if not found and self.adaptive and (tname not in self.scales or relook) and self.window_scale != 1.0 \
-                    and self._ready(tname):
+                    and (self._ready(tname) or self._there_now(screen, image, tname, threshold, region)):
                 if match_template(screen, _resized(image, self.window_scale), threshold - ADAPTIVE_NEAR, region):
                     # Most misses are buttons that simply aren't on screen: one
                     # look at the window size rules them out before the fine search.
@@ -251,6 +252,7 @@ class Vision:
                         found = match_template(screen, _resized(image, scale), threshold, region, tname)
                     else:
                         self._rest[tname] = ADAPTIVE_REST
+                        self._nearly.add(tname)
                 elif relook:
                     self._rest[tname] = ADAPTIVE_REST
             matches.extend(found)
@@ -263,12 +265,22 @@ class Vision:
     def _two_sizes(self, tname: str) -> bool:
         return any(tname == n or tname.startswith(n + "/") for n in self.two_sizes)
 
+    def _there_now(self, screen: np.ndarray, image: np.ndarray, tname: str, threshold: float,
+                   region: Rect | None) -> bool:
+        """Resting after a near miss, whether the picture now passes at the
+        window size: a button caught popping in mustn't go unseen for the
+        whole rest (the search's Next is only waited for so long)."""
+        return tname in self._nearly and bool(
+            match_template(screen, _resized(image, self.window_scale), threshold, region))
+
     def _ready(self, tname: str) -> bool:
         """Whether a fine size search for ``tname`` may run now (after one
         found nothing, it rests for a number of misses)."""
         left = self._rest.get(tname, 0)
         if left:
             self._rest[tname] = left - 1
+        else:
+            self._nearly.discard(tname)
         return not left
 
     def find(

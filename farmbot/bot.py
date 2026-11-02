@@ -12,7 +12,7 @@ from typing import Callable
 
 from farmbot import accounts, history, screens
 from farmbot.notify import Notifier
-from farmbot.config import Config, search_minimums_for
+from farmbot.config import Config, search_minimums_for, unreachable_minimums, unreachable_note
 from farmbot.device import DeviceError
 from farmbot.game import Game, Stopped, T
 from farmbot.history import AttackRecord
@@ -103,6 +103,7 @@ class Bot:
         # (the battle drops it); if no battle came, it's dropped next round.
         self._left_selected = False
         self._left_zoomed_in = False  # the same: the battle's view needs zooming out
+        self._warned_minimums: dict[str, int] = {}  # loot minimums no base meets, once logged
         self._break_due: int | None = None  # attacks between breaks, picked at random
         # What each village's storages hold (config.storage) is read the first
         # time the bot is in that village each day (upgraded storages hold
@@ -697,6 +698,11 @@ class Bot:
         if boosted and before is not None:
             # What the boosts cost isn't the battle's: it's counted from after them.
             before = replace(before, dark=before.dark - boosted * super_troops.BOOST_PRICE)
+        too_high = unreachable_minimums({k: getattr(cfg.search, f"min_{k}") for k in ("gold", "elixir", "dark")})
+        if too_high and too_high != self._warned_minimums:
+            for k, v in too_high.items():
+                log.warning("Search minimums: %s", unreachable_note(k, v, cfg.search.match_any))
+        self._warned_minimums = too_high
         target = search.search(self.game, cfg.search, cfg.regions, self._base_seen, zoom_out=self._left_zoomed_in)
         self._left_zoomed_in = False
         self.status("Attacking")

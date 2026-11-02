@@ -96,6 +96,25 @@ def search_minimums_for(storage: dict[str, int], current: dict[str, int]) -> dic
             for k, share in SEARCH_SHARES.items() if k in storage}
 
 
+# More than any base offers to loot (the richest seen give about half): a
+# minimum above it is a typo (an extra zero, say), and every base is skipped.
+MOST_LOOT = {"gold": 5_000_000, "elixir": 5_000_000, "dark": 50_000}
+
+
+def unreachable_minimums(minimums: dict[str, int]) -> dict[str, int]:
+    """The minimums no base ever meets: resource -> its minimum."""
+    return {k: v for k, v in minimums.items() if k in MOST_LOOT and v > MOST_LOOT[k]}
+
+
+def unreachable_note(resource: str, minimum: int, match_any: bool) -> str:
+    """What a minimum no base meets means for the search, in words."""
+    name = "dark elixir" if resource == "dark" else resource
+    most = f"{MOST_LOOT[resource] / 1_000_000:g}M" if MOST_LOOT[resource] >= 1_000_000 \
+        else f"{MOST_LOOT[resource] // 1_000}k"
+    effect = "this one is never met" if match_any else "every base will be skipped"
+    return f"No base offers {minimum:,} {name} (under {most}): {effect}. An extra zero?"
+
+
 @dataclass
 class SearchConfig:
     min_gold: int = SEARCH_DEFAULTS["gold"]

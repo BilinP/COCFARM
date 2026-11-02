@@ -19,6 +19,7 @@ from farmbot.geometry import Rect
 
 GLYPH_BOX = (12, 18)  # width, height every glyph is compared at
 BASELINE_SHARE = 0.25  # of the tallest piece: how far off the digits' line a piece may end
+TALLER_SHARE = 1.4  # of the digits' usual height: a piece taller than this is something behind them
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,13 @@ class TextStyle:
     # Pieces shorter than this share of the tallest one are noise (dots,
     # icon highlights), not digits.
     min_height_ratio: float = 0.6
+    # Hues left out of the text unless nearly grey (snow behind the digits
+    # is bluish white), or None.
+    skip_hue: tuple[int, int] | None = None
+    skip_min_saturation: int = 40
+
+
+SNOW = TextStyle(skip_hue=(85, 125))  # tried when a number can't be read: snow behind it
 
 
 def crop(screen: np.ndarray, region: Rect) -> np.ndarray:
@@ -48,13 +56,22 @@ def pieces(screen: np.ndarray, region: Rect, style: TextStyle = TextStyle()) -> 
     if area.size == 0:
         return []
     hsv = cv2.cvtColor(area, cv2.COLOR_BGR2HSV)
-    mask = ((hsv[:, :, 1] <= style.max_saturation) & (hsv[:, :, 2] >= style.min_value)).astype(np.uint8)
+    mask = (hsv[:, :, 1] <= style.max_saturation) & (hsv[:, :, 2] >= style.min_value)
+    if style.skip_hue:
+        lo, hi = style.skip_hue
+        mask &= ~((hsv[:, :, 0] >= lo) & (hsv[:, :, 0] <= hi) & (hsv[:, :, 1] >= style.skip_min_saturation))
+    mask = mask.astype(np.uint8)
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
     parts = [i for i in range(1, count) if stats[i, cv2.CC_STAT_AREA] >= style.min_area]
     if not parts:
         return []
-    tallest = max(stats[i, cv2.CC_STAT_HEIGHT] for i in parts)
-    parts = [i for i in parts if stats[i, cv2.CC_STAT_HEIGHT] >= style.min_height_ratio * tallest]
+    # The digits' height: what most of the tall pieces stand. A thin bright
+    # line behind the number (a wall's edge) runs taller, and a piece that
+    # much taller than the digits isn't one.
+    heights = [int(stats[i, cv2.CC_STAT_HEIGHT]) for i in parts]
+    usual = float(np.median([h for h in heights if h >= 0.5 * max(heights)]))
+    tallest = max(h for h in heights if h <= TALLER_SHARE * usual)
+    parts = [i for i, h in zip(parts, heights) if style.min_height_ratio * tallest <= h <= tallest]
     # Digits stand on one line: a bright piece off it is something behind
     # the text (the builder base's resource bars are see-through, and the
     # edge of their fill shows as a thin bright line).
@@ -88,6 +105,35 @@ def digit_groups(boxes: list[tuple[int, int]]) -> list[int] | None:
     if len(groups) > 1 and (groups[0] > 3 or any(g != 3 for g in groups[1:])):
         return None
     return groups
+
+
+JOINED_WIDTH = 1.3  # a piece this many times wider than tall is digits touching (no digit is)
+DIGIT_WIDTH = 0.8  # a digit's width, of its height
+
+
+def _split_joined(found: list[tuple[int, np.ndarray]]) -> list[tuple[int, np.ndarray]]:
+    """Digits touching over a bright background (the trees behind a base's
+    loot, say) come as one wide piece: cut it at its thinnest columns."""
+    out = []
+    for x, mask in found:
+        h, w = mask.shape
+        if w <= JOINED_WIDTH * h:
+            out.append((x, mask))
+            continue
+        n = max(2, round(w / (DIGIT_WIDTH * h)))
+        columns = (mask > 0).sum(axis=0)
+        cuts, reach = [0], max(1, int(w / n * 0.3))
+        for k in range(1, n):
+            guess = round(k * w / n)
+            lo, hi = max(guess - reach, cuts[-1] + 1), min(guess + reach, w - 1)
+            cuts.append(lo + int(columns[lo:hi + 1].argmin()) if hi >= lo else guess)
+        cuts.append(w)
+        for a, b in zip(cuts, cuts[1:]):
+            part = mask[:, a:b]
+            used = np.flatnonzero(part.any(axis=0))
+            if used.size:
+                out.append((x + a + int(used[0]), part[:, used[0]:used[-1] + 1]))
+    return out
 
 
 def _number_run(found: list[tuple[int, np.ndarray]]) -> list[tuple[int, np.ndarray]]:
@@ -178,7 +224,7 @@ class Font:
         confidence: a character inside it isn't recognised, or the digit
         grouping is wrong. Unlike :meth:`read`, nothing is silently dropped,
         so a hard-to-see digit can't turn 241 953 into 24 953."""
-        found = _number_run(pieces(screen, region, style))
+        found = _number_run(_split_joined(pieces(screen, region, style)))
         groups = digit_groups([(x, mask.shape[1]) for x, mask in found])
         if groups is None:
             return None

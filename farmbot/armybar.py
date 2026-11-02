@@ -199,6 +199,10 @@ def _health_bar_share(screen: np.ndarray, card: Card) -> float:
     return float(green.mean()) if green.size else 0.0
 
 
+BAR_START = 10  # px in from the card's side a health bar starts within (inside its border)
+BAR_SOLID = 0.95  # share of a health bar's run that is green (leaves: 0.9 at most)
+
+
 def hero_health(screen: np.ndarray, card: Card) -> float | None:
     """A placed hero's health (0-1) from the length of the green bar on its
     card, or ``None`` if no bar shows (not placed, or gone)."""
@@ -210,7 +214,9 @@ def hero_health(screen: np.ndarray, card: Card) -> float | None:
         return None
     row = green[int(green.sum(axis=1).argmax())]
     xs = np.flatnonzero(row)
-    if xs.size < 3:
+    # The bar fills from the left without a gap; green leaves of the village
+    # behind the bar (it's see-through above the cards) are scattered patches.
+    if xs.size < 3 or xs.min() > BAR_START or xs.size < BAR_SOLID * (xs.max() - xs.min() + 1):
         return None
     return min(1.0, (int(xs.max()) + 1) / row.size)
 

@@ -9,7 +9,7 @@ from typing import Callable
 from farmbot.config import RegionsConfig, SearchConfig
 from farmbot.game import Game, T
 from farmbot.geometry import Rect
-from farmbot.text import TextStyle
+from farmbot.text import SNOW, TextStyle
 
 log = logging.getLogger(__name__)
 
@@ -47,13 +47,20 @@ def is_worth_attacking(loot: Loot, criteria: SearchConfig) -> bool:
     return enough
 
 
+def _loot_number(game: Game, regions: RegionsConfig, name: str) -> int | None:
+    region = game.region(regions.rect(name))
+    found = game.read_number(region, T.LOOT_FONT)
+    # Snow behind the digits passes for their white and joins them: again without its blue.
+    return found if found is not None else game.read_number(region, T.LOOT_FONT, SNOW)
+
+
 def read_loot(game: Game, regions: RegionsConfig) -> Loot | None:
-    gold = game.read_number(game.region(regions.rect("loot_gold")), T.LOOT_FONT)
-    elixir = game.read_number(game.region(regions.rect("loot_elixir")), T.LOOT_FONT)
+    gold = _loot_number(game, regions, "loot_gold")
+    elixir = _loot_number(game, regions, "loot_elixir")
     if gold is None or elixir is None:
         return None
     # Dark elixir is absent on low town halls; treat unreadable as zero.
-    dark = game.read_number(game.region(regions.rect("loot_dark")), T.LOOT_FONT) or 0
+    dark = _loot_number(game, regions, "loot_dark") or 0
     return Loot(gold, elixir, dark)
 
 
@@ -180,7 +187,10 @@ def start_search(game: Game, super_troops: bool = False, dark: int | None = None
         raise SearchError("battle button not visible; is the home village showing?")
     # The menu has two "Find a Match" buttons; the regular one is on the left.
     if not game.click_when_visible(T.FIND_MATCH, timeout=5, leftmost=True):
-        raise SearchError("find-a-match button did not appear")
+        # A tap on Battle can go unanswered (the village just back from an
+        # attack, say): still on the village, tap it once more.
+        if not (game.click(T.BATTLE) and game.click_when_visible(T.FIND_MATCH, timeout=5, leftmost=True)):
+            raise SearchError("find-a-match button did not appear")
     # Newer versions confirm the army first; older ones go straight to scouting.
     boosted = 0
     if super_troops and game.has(T.ARMY_ATTACK) and game.wait_for(T.ARMY_ATTACK, timeout=4):

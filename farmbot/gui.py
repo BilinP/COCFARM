@@ -45,7 +45,7 @@ from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox,
                             isDarkTheme, qconfig, setCustomStyleSheet, setTheme, setThemeColor)
 
 from farmbot import __version__, accounts, catalog, icons, splash
-from farmbot.config import EMULATORS, Config, ensure_config, load_config
+from farmbot.config import EMULATORS, Config, ensure_config, load_config, unreachable_minimums, unreachable_note
 from farmbot.form import BY_PATH, apply_form, form_values, parse_amount, plan_summary, validate
 from farmbot.friendly import Problem, Status, describe_status, explain
 from farmbot.geometry import Rect
@@ -155,6 +155,28 @@ def bind_switch(w: SwitchButton) -> Binding:
 
 def bind_line(w: LineEdit) -> Binding:
     return Binding(w.text, lambda v: w.setText(str(v)), w.textChanged.connect, [w])
+
+
+def with_commas(w: LineEdit) -> LineEdit:
+    """Group a plain number's digits as it's typed (10000000 → 10,000,000),
+    the cursor staying by the same digit, so an extra zero shows. Shorthand
+    like 1.5m or 500k is left as typed."""
+
+    def regroup(text: str) -> None:
+        plain = text.replace(",", "")
+        # A leading 0 (the first digit just deleted, to type another) is left as it is.
+        if not plain.isdigit() or plain[0] == "0" and len(plain) > 1 or (grouped := f"{int(plain):,}") == text:
+            return
+        after = sum(c.isdigit() for c in text[w.cursorPosition():])  # digits right of the cursor
+        w.setText(grouped)
+        pos = len(grouped)
+        while after:
+            pos -= 1
+            after -= grouped[pos].isdigit()
+        w.setCursorPosition(pos)
+
+    w.textEdited.connect(regroup)
+    return w
 
 
 def bind_combo(w: EditableComboBox) -> Binding:
@@ -772,15 +794,44 @@ class NameDialog(BelowTitleBar, MessageBoxBase):
 class WhatsNewDialog(BelowTitleBar, MessageBoxBase):
     """What changed in the versions since the player last looked."""
 
-    def __init__(self, notes: list[tuple[str, list[str]]], parent: QWidget):
+    def __init__(self, notes: list[tuple[str, list[tuple[str, str, str]]]], parent: QWidget):
+        from farmbot.whatsnew import KINDS
+
         super().__init__(parent)
         title = f"What's new in COCFARM {notes[0][0]}" if len(notes) == 1 else "What's new in COCFARM"
         self.viewLayout.addWidget(SubtitleLabel(title))
-        for version, lines in notes:
+        # Several versions at once can be taller than the window: they scroll.
+        body = QWidget()
+        body.setStyleSheet("background: transparent;")
+        lines = QVBoxLayout(body)
+        lines.setContentsMargins(0, 0, 8, 0)
+        for version, changes in notes:
             if len(notes) > 1:
-                self.viewLayout.addWidget(StrongBodyLabel(version))
-            for line in lines:
-                self.viewLayout.addWidget(_wrapping(BodyLabel(f"•  {line}")))
+                lines.addSpacing(6)
+                lines.addWidget(StrongBodyLabel(f"Version {version}"))
+            for kind in KINDS:
+                here = [(headline, detail) for k, headline, detail in changes if k == kind]
+                if not here:
+                    continue
+                lines.addSpacing(4)
+                section = CaptionLabel(kind.upper())
+                tint(section, MUTED)
+                lines.addWidget(section)
+                for headline, detail in here:
+                    lines.addWidget(_wrapping(StrongBodyLabel(f"•  {headline}")))
+                    if detail:
+                        text = _wrapping(BodyLabel(detail))
+                        text.setContentsMargins(18, 0, 0, 4)
+                        tint(text, MUTED)
+                        lines.addWidget(text)
+        scroll = SmoothScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.setWidget(body)
+        body.setFixedWidth(456)  # the window's width less its margins and the scroll bar
+        scroll.setFixedHeight(min(body.sizeHint().height(), 420))
+        self.viewLayout.addWidget(scroll)
         self.yesButton.setText("Got it")
         self.cancelButton.hide()
         self.setClosableOnMaskClicked(True)  # a click anywhere outside closes it too
@@ -1199,7 +1250,7 @@ class FarmbotWindow(FluentWindow):
         w.setFixedWidth(170)
         w.setAlignment(Qt.AlignRight)
         w.setPlaceholderText("e.g. 1.5m")
-        self._bind(path, bind_line(w))
+        self._bind(path, bind_line(with_commas(w)))
         return self._card(group, path, icon, title, help_text, w)
 
     def number(self, group, path: str, icon, title: str, help_text: str = "", suffix: str = "") -> Card:
@@ -2573,7 +2624,7 @@ class FarmbotWindow(FluentWindow):
             card = Card(FIF.MARKET, name, f"Bases offering less {name.lower()} are skipped; 0 ignores it. "
                         "Type 500k or 1.5m. Untouched, it's set from what your storages hold.", w)
             step.addSettingCard(card)
-            self._mirror(path, bind_line(w), card)
+            self._mirror(path, bind_line(with_commas(w)), card)
         more = PushButton(FIF.FILTER if hasattr(FIF, "FILTER") else FIF.MORE, "More choices")
         more.clicked.connect(lambda: self.show_page("Home village", "bases"))
         self._card(step, None, FIF.MORE if hasattr(FIF, "MORE") else FIF.INFO, "Want more control?",
@@ -3069,6 +3120,14 @@ class FarmbotWindow(FluentWindow):
             card = self.cards.get(path)
             if card is not None and path not in errors and str(form.get(path)).strip() != str(trained):
                 card.show_warning(TRAINED_NOTE)
+        values = validate(form)[0]
+        minimums = {k: values.get(f"search.min_{k}", 0) for k in ("gold", "elixir", "dark")}
+        for k, v in unreachable_minimums(minimums).items():
+            path = f"search.min_{k}"
+            if path not in errors:
+                note = unreachable_note(k, v, values.get("search.match_any", False))
+                for card in [self.cards[path], *self.mirror_cards.get(path, [])]:
+                    card.show_warning(note)
         self.instance_card.setVisible(form.get("device.mode") == "bluestacks")
         for path, mode in EMULATOR_ONLY.items():  # only the chosen emulator's settings
             card = self.cards[path]

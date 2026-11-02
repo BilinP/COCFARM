@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from farmbot.config import RESOURCES, SIDES, Config
+from farmbot.config import RESOURCES, SIDES, Config, unreachable_minimums, unreachable_note
 
 SIDE_LABELS = {"nw": "Top-left (NW)", "ne": "Top-right (NE)", "sw": "Bottom-left (SW)", "se": "Bottom-right (SE)"}
 
@@ -253,7 +253,9 @@ def _parse(field: Field, raw: Any) -> Any:
     if field.kind == "percent":
         raw = str(raw).strip().rstrip("%")
     try:
-        value = int(str(raw).strip()) if field.kind == "int" else float(str(raw).strip())
+        # Whole numbers may be grouped (1,000); in a decimal a comma could be the point, so it stays an error.
+        value = int(str(raw).strip().replace(",", "").replace(" ", "")) if field.kind == "int" \
+            else float(str(raw).strip())
     except ValueError:
         raise ValueError("enter a whole number" if field.kind == "int" else "enter a number") from None
     if field.low is not None and value < field.low or field.high is not None and value > field.high:
@@ -334,4 +336,13 @@ def plan_summary(values: dict[str, Any]) -> str:
     full = values.get("bot.stop_when_full") or []
     if full:
         parts.append("stops when its " + " and ".join(full) + " storages are full")
-    return f"Plays {village}: " + ", ".join(parts) + ". Press Start (F5)."
+    summary = f"Plays {village}: " + ", ".join(parts) + "."
+    if values.get("bot.mode") != "builder" and not values.get("search.maintain_only"):
+        wanted = {k: values.get(f"search.min_{k}", 0) for k in ("gold", "elixir", "dark")}
+        too_high = unreachable_minimums(wanted)
+        # With any one enough, only when none can be met are they all skipped
+        # (a minimum of 0 is always met).
+        if too_high and (not values.get("search.match_any") or len(too_high) == len(wanted)):
+            k, v = next(iter(too_high.items()))
+            summary += " ⚠ " + unreachable_note(k, v, False)
+    return summary + " Press Start (F5)."

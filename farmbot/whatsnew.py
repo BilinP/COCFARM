@@ -12,43 +12,73 @@ from pathlib import Path
 from farmbot import __version__
 from farmbot.update import STATE, _load, _save, parse_version
 
-# Newest first. A line says what the player gets, not how it's done.
-NOTES: dict[str, list[str]] = {
+# Newest first. Each change is (kind, headline, detail): the kind is one of
+# KINDS, the headline says what the player gets in a few words, and the
+# detail (may be empty) explains it in one plain sentence, not how it's done.
+KINDS = ["New", "Improved", "Fixed"]
+
+NOTES: dict[str, list[tuple[str, str, str]]] = {
+    "0.9.8": [
+        ("Fixed", "Every hero goes out again",
+         "The trees behind the troop bar could look like a hero's health bar, so a hero (often the Royal Champion) "
+         "was taken as already placed and left out."),
+        ("Fixed", "Fewer bases skipped as unreadable",
+         "Loot numbers over snow, trees or a bright wall edge are read instead of skipped, and no longer misread "
+         "(a gold of 1, or dark elixir taken as none)."),
+        ("Fixed", "Requested spells are donated",
+         "When a request names the units it wants, the spells it asks for are given along with the troops."),
+        ("Fixed", "Donations by Clan Castle level on LDPlayer",
+         "The requester's Clan Castle room (like 0/50) is read again, so your armies by Clan Castle level are used."),
+        ("Improved", "Commas in amounts as you type", "10000000 shows as 10,000,000, so an extra zero stands out."),
+        ("Improved", "Warning for loot minimums no base meets",
+         "A minimum like 10,000,000 gold (an extra zero, say) is flagged in Settings, on the Dashboard and in the "
+         "log, since it makes the bot skip every base."),
+        ("Fixed", "Searching no longer stops with Next on screen",
+         "The bot could give up waiting for the Next button while it was showing."),
+        ("Fixed", "Battle is tapped again if the menu doesn't open",
+         "After an attack, a tap on Battle that the game missed no longer ends the round."),
+    ],
     "0.9.7": [
-        "Troops go out exactly: each card gets as many taps as it has units left, so no spare taps drop the "
-        "next troop or a hero once a card is empty.",
-        "Troop counts on the cards are read right (x68 no longer reads as 50, x7 as 2).",
-        "Big armies that fill more than one screen of the troop bar: a hero already placed isn't tapped again "
-        "(which fired its ability early), and hero abilities are used even when the heroes scrolled out of sight.",
-        "Windows like What's new and Accounts no longer block moving COCFARM, and What's new closes when you click "
-        "outside it.",
+        ("Improved", "Troops are placed exactly",
+         "Each card is tapped once per troop left, so spare taps no longer drop the next troop or a hero."),
+        ("Fixed", "Troop counts are read correctly", "Counts like x68 and x7 on the cards were sometimes misread."),
+        ("Fixed", "Heroes in big armies",
+         "When the troop bar scrolls, a hero already out isn't tapped again (which used its ability early), "
+         "and abilities still fire for heroes scrolled out of view."),
+        ("Fixed", "Pop-up windows",
+         "What's new and Accounts no longer stop you moving COCFARM, and What's new closes when you click outside it."),
     ],
     "0.9.6": [
-        "Donations: each request gets an army that suits the requester's Clan Castle level (read from the "
-        "request), with Super Yeti, Super Wizard and Super Archer first and Rage Spells. Set your own on "
-        "Home village → Clan → Armies by Clan Castle level.",
-        "Donations: only the requests on the first screen of chat are filled, and Fill the rest tops up the room left.",
-        "Upgrades are never started while the Goblin Builder or Goblin Researcher shows.",
-        "The Dashboard says what Start will do, and why the bot stopped (and when).",
-        "History lists the newest attacks first.",
-        "Alerts on your phone moved to Advanced → Alerts; Advanced shows only your emulator's settings.",
-        "Rarely changed attack settings (speeds, ability timing, when exactly to leave) are folded under "
-        "their own rows on Home village → Attacking.",
-        "LDPlayer: sign-in is noticed, and an emulator holding COCFARM's port is closed by itself.",
+        ("New", "Donations by Clan Castle level",
+         "Each request gets troops that fit the requester's Clan Castle. Choose them in Home village → Clan → "
+         "Armies by Clan Castle level."),
+        ("Improved", "Donations fill what's on screen",
+         "Only the requests you can see in chat are filled, and Fill the rest uses up the space left."),
+        ("Improved", "The Dashboard explains itself", "It says what Start will do, and why and when the bot stopped."),
+        ("Improved", "History shows the newest attacks first", ""),
+        ("Improved", "Some settings moved",
+         "Phone alerts are under Advanced → Alerts, and rarely used attack settings are folded away on "
+         "Home village → Attacking."),
+        ("Fixed", "No upgrades during Goblin events",
+         "Nothing is upgraded while the Goblin Builder or Goblin Researcher is in the village."),
+        ("Fixed", "LDPlayer sign-in and ports",
+         "The sign-in screen is noticed, and another emulator using COCFARM's port is closed for you."),
     ],
     "0.9.5": [
-        "Clan Capital raids (beta), on their own Raid Weekend tab.",
-        "Zooming out knows when the view is already zoomed out.",
+        ("New", "Clan Capital raids (beta)", "Raid on its own Raid Weekend tab."),
+        ("Fixed", "Zooming out", "The bot no longer zooms out when the view already is."),
     ],
     "0.9.4": [
-        "Super troops can be boosted with dark elixir (never a Super Potion or gems).",
-        "Gravestones are cleared, and loot minimums left at the defaults are set from your storages.",
-        "Discord stop messages sum up the run.",
+        ("New", "Super troop boosts", "Boost super troops with dark elixir. Never with a Super Potion or gems."),
+        ("New", "Gravestones are cleared", ""),
+        ("Improved", "Loot minimums", "Minimums left at their defaults are set from your storage sizes."),
+        ("Improved", "Discord stop messages", "They sum up the run."),
     ],
 }
 
 
-def unseen(state_path: Path | None = None, current: str = __version__, first_run: bool = False) -> list[tuple[str, list[str]]]:
+def unseen(state_path: Path | None = None, current: str = __version__,
+           first_run: bool = False) -> list[tuple[str, list[tuple[str, str, str]]]]:
     """The notes of the versions since the one last shown, newest first, and
     remember this one as shown. A new player (``first_run``) gets none:
     everything is new to them."""
@@ -68,7 +98,7 @@ def unseen(state_path: Path | None = None, current: str = __version__, first_run
     return [(version, lines) for version, lines in NOTES.items() if since < parse_version(version) <= now]
 
 
-def latest(current: str = __version__) -> list[tuple[str, list[str]]]:
+def latest(current: str = __version__) -> list[tuple[str, list[tuple[str, str, str]]]]:
     """The newest notes up to this version (Advanced → Updates → What's new)."""
     now = parse_version(current)
     return [(version, lines) for version, lines in NOTES.items() if parse_version(version) <= now][:1]

@@ -13,6 +13,7 @@ import numpy as np
 
 from farmbot.device import Device
 from farmbot.geometry import Rect
+from farmbot.text import TextStyle
 from farmbot.vision import Match, Vision, _resized, best_scale, match_template
 
 log = logging.getLogger(__name__)
@@ -440,8 +441,8 @@ class Game:
                        best_scale(screen, image, list(ANY_SIZES))[1] if name in ANY_SIZE else 0.0)
                    for _, image in self.vision.library.get(name))
 
-    def read_number(self, region: Rect, font: str) -> int | None:
-        return self.vision.read_number(self._current(), region, font)
+    def read_number(self, region: Rect, font: str, style: TextStyle = TextStyle()) -> int | None:
+        return self.vision.read_number(self._current(), region, font, style)
 
     # -- input ----------------------------------------------------------
     def check_in_front(self) -> None:

@@ -54,6 +54,9 @@ MAX_TAPS = 60  # taps on one request at most, whatever happens
 ROOM_X = {"troops": (-321, -241), "spells": (-206, -146), "siege": (-126, -71)}  # from the button's centre
 ROOM_Y = (-14, 12)
 ROOM_TEXT = TextStyle(max_saturation=50, min_value=100, min_area=4)
+# Then brighter only: on LDPlayer the text is sharper and brighter, and at
+# 100 its edges join the "0" and "/" of "0/50".
+ROOM_TEXT_BRIGHT = TextStyle(max_saturation=50, min_value=170, min_area=4)
 ROOM_HEIGHT = 14  # px: taller pieces are the icons, not text
 ROOM_GAP = 4  # px: a wider gap ends a word; the number is the last one
 ROOM_SCORE = 0.72  # a digit not learned yet scores about 0.65 against the nearest one
@@ -165,6 +168,15 @@ def choose(cards: list[DonateCard], main: list[str], fill: bool) -> DonateCard |
     return None
 
 
+def names_units(*groups: list[DonateCard]) -> bool:
+    """True if the open request names the units it wants: those lead the
+    troops' and spells' cards in colour (column by column), the rest grey.
+    A request that doesn't has every card you can give in colour."""
+    shown = [[c.available for c in sorted(cards, key=lambda c: (c.x, c.y))] for cards in groups]
+    return (any(any(s) for s in shown) and not all(all(s) for s in shown)
+            and all(s == sorted(s, reverse=True) for s in shown))
+
+
 def _siege(card: DonateCard) -> bool:
     return card.name in BY_NAME and BY_NAME[card.name].kind == "siege"
 
@@ -180,9 +192,17 @@ def read_room(screen: np.ndarray, font, button: tuple[int, int], kind: str) -> i
     can't be read."""
     (x0, x1), (y0, y1) = ROOM_X[kind], ROOM_Y
     region = Rect(button[0] + x0, button[1] + y0, x1 - x0, y1 - y0)
+    for style in (ROOM_TEXT, ROOM_TEXT_BRIGHT):
+        room = _room(screen, font, region, style)
+        if room is not None:
+            return room
+    return None
+
+
+def _room(screen: np.ndarray, font, region: Rect, style: TextStyle) -> int | None:
     word: list[np.ndarray] = []
     end = None
-    for x, mask in pieces(screen, region, ROOM_TEXT):
+    for x, mask in pieces(screen, region, style):
         if mask.shape[0] > ROOM_HEIGHT:
             continue
         if end is not None and x - end > ROOM_GAP:
@@ -265,7 +285,8 @@ def donate_open_window(game: Game, cfg: ClanConfig, request: np.ndarray | None =
         return 0
     pictures = _pictures(str(Path(game.vision.library.root) / T.DONATE_ITEM_DIR))
     screen = game.refresh()
-    if pays_with_gems(screen, read_cards(screen, TROOP_ROWS + SPELL_ROWS, pictures, dy)):
+    troops, spell_cards = read_cards(screen, TROOP_ROWS, pictures, dy), read_cards(screen, SPELL_ROWS, pictures, dy)
+    if pays_with_gems(screen, troops + spell_cards):
         log.warning("The donate window is set to pay with gems: not donating (switch it back to elixir)")
         return 0
     limit = MAX_TAPS
@@ -284,7 +305,10 @@ def donate_open_window(game: Game, cfg: ClanConfig, request: np.ndarray | None =
         # Siege machines sit at the end of the troop rows: only the ones picked.
         given += _give(game, TROOP_ROWS, siege, False, pictures, limit - given, None if cfg.donate_siege else plan)
     spells = of("spell", cfg.donate_spells)
-    if spells and _title_dy(game) is not None and given < limit:
-        # Spells: only the ones picked (filling is for troops).
-        given += _give(game, SPELL_ROWS, spells, False, pictures, limit - given, None if cfg.donate_spells else plan)
+    # Spells: the ones picked; filling them too only when the request names
+    # its units (then what's in colour is what it asked for).
+    fill_spells = cfg.donate_fill and names_units(troops, spell_cards)
+    if (spells or fill_spells) and _title_dy(game) is not None and given < limit:
+        given += _give(game, SPELL_ROWS, spells, fill_spells, pictures, limit - given,
+                       None if cfg.donate_spells else plan)
     return given
