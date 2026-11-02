@@ -172,9 +172,18 @@ def cmd_gui(args: argparse.Namespace) -> int:
     from farmbot import splash  # Qt is only needed here
 
     splash.show()  # while the rest loads
+    from farmbot import installed
     from farmbot.gui import run_gui
 
+    installed.ensure()  # in the Start menu and Installed apps
+
     return run_gui(args.config or "farmbot.toml", args.serial)
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    from farmbot import installed
+
+    return installed.uninstall()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -186,6 +195,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("gui", help="open the control window")
     p.set_defaults(func=cmd_gui)
+
+    p = sub.add_parser("uninstall", help="remove COCFARM (the built exe's folder), after asking")
+    p.set_defaults(func=cmd_uninstall)
 
     p = sub.add_parser("run", help="start farming without the GUI (Ctrl+C to stop)")
     p.add_argument("--max-attacks", type=int, default=None)

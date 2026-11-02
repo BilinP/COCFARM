@@ -16,7 +16,7 @@ from farmbot.game import Game, T
 from farmbot.geometry import Rect
 from farmbot.tasks.build_list import (LIST_BOTTOM_FROM_BOTTOM, LIST_PAGE, LIST_STEP, LIST_SWIPE_FROM_BOTTOM,
                                       LIST_SWIPE_TO_Y, LIST_SWIPE_X, LIST_TOP, MAX_SORTED_SCROLLS, SLOW_SWIPE_MS,
-                                      asks_for_gems, green_confirm, set_filter, shows_gems)
+                                      asks_for_gems, free_builders, green_confirm, set_filter, shows_gems)
 from farmbot.tasks.search import Loot
 
 log = logging.getLogger(__name__)
@@ -371,6 +371,12 @@ def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Lo
     zoomed in on). Returns how many walls were upgraded."""
     needed = (T.BUILD, T.WALL_SUGGESTION, T.UPGRADE, T.UPGRADE_CONFIRM, T.CLOSE)
     if not cfg.enabled or not all(game.has(n) for n in needed):
+        return 0
+    # A wall needs a free builder: with the counter above Build at "0/7",
+    # or "1/7" under a goblin (the Goblin Builder, for gems), opening the list
+    # would only end in an upgrade that doesn't go through.
+    if free_builders(game) == 0:
+        log.info("Walls: no free builder")
         return 0
     known = {} if known is None else known
     # Selecting a wall zooms in on it, and over busy buildings the resource

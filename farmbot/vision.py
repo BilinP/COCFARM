@@ -197,6 +197,9 @@ class Vision:
         self.scales: dict[str, float] = {}
         self.fixed_scales: set[str] = set()  # set in the config: never second-guessed
         self._rest: dict[str, int] = {}  # template name -> misses left before its next fine size search
+        # Pictures (or directories) shown at both sizes, such as the Okay of a
+        # small window and of a big one: on a miss the other size is always tried.
+        self.two_sizes: set[str] = set()
 
     def font(self, name: str) -> Font:
         if name not in self._fonts:
@@ -228,16 +231,27 @@ class Vision:
                 found = match_template(screen, image, threshold, region, tname)
                 if found:
                     self.scales[tname] = 1.0
-            if not found and self.adaptive and tname not in self.scales and self.window_scale != 1.0 \
-                    and self._ready(tname) \
-                    and match_template(screen, _resized(image, self.window_scale), threshold - ADAPTIVE_NEAR, region):
-                # Most misses are buttons that simply aren't on screen: one
-                # look at the window size rules them out before the fine search.
-                scale, score = best_scale(screen, image, [1.0, self.window_scale], region)
-                if score >= threshold:
-                    self.scales[tname] = scale
-                    found = match_template(screen, _resized(image, scale), threshold, region, tname)
-                else:
+            if not found and self.scales.get(tname) == 1.0 and self.window_scale != 1.0 and self._two_sizes(tname):
+                found = match_template(screen, _resized(image, self.window_scale), threshold, region, tname)
+                if found:
+                    self.scales[tname] = self.window_scale
+            # Seen at its own size once, it may still really be the window size: a
+            # button that only just passes at its own size (the Next button on an
+            # 860 x 672 screen, popping in) mustn't lock that size in. Looked at
+            # again now and then (each look costs a match).
+            relook = self.scales.get(tname) == 1.0 and tname not in self.fixed_scales
+            if not found and self.adaptive and (tname not in self.scales or relook) and self.window_scale != 1.0 \
+                    and self._ready(tname):
+                if match_template(screen, _resized(image, self.window_scale), threshold - ADAPTIVE_NEAR, region):
+                    # Most misses are buttons that simply aren't on screen: one
+                    # look at the window size rules them out before the fine search.
+                    scale, score = best_scale(screen, image, [1.0, self.window_scale], region)
+                    if score >= threshold:
+                        self.scales[tname] = scale
+                        found = match_template(screen, _resized(image, scale), threshold, region, tname)
+                    else:
+                        self._rest[tname] = ADAPTIVE_REST
+                elif relook:
                     self._rest[tname] = ADAPTIVE_REST
             matches.extend(found)
         return sorted(matches, key=lambda m: -m.score)
@@ -245,6 +259,9 @@ class Vision:
     def likeness(self, screen: np.ndarray, image: np.ndarray) -> float:
         """Best score of ``image`` at its own size or the window's."""
         return max(_score(screen, _resized(image, s)) for s in {1.0, self.window_scale})
+
+    def _two_sizes(self, tname: str) -> bool:
+        return any(tname == n or tname.startswith(n + "/") for n in self.two_sizes)
 
     def _ready(self, tname: str) -> bool:
         """Whether a fine size search for ``tname`` may run now (after one

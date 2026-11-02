@@ -32,7 +32,7 @@ import numpy as np
 from farmbot.config import BuilderConfig, Config
 from farmbot.game import Game, T
 from farmbot.tasks.build_list import (BUILDER, HOME, HUD_SHIFT_PX, BuildList, Row, busy, first_affordable,
-                                      free_builders, open_tab, rows, set_filter, tab_free, upgrade_row)
+                                      free_builders, goblins, open_tab, rows, set_filter, tab_free, upgrade_row)
 from farmbot.tasks.builder import restore_view
 from farmbot.tasks.search import Loot
 from farmbot.tasks.village import _close_windows, deselect
@@ -83,6 +83,9 @@ def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], las
         return 0
     kinds = plan(ucfg.order, {"pets": ucfg.pets, "hero": ucfg.heroes, "research": ucfg.lab,
                               "building": ucfg.buildings})
+    if "research" in kinds and "lab" in goblins(game):
+        log.info("Upgrades: the laboratory is busy (only the Goblin Researcher, for gems)")
+        kinds = [k for k in kinds if k != "research"]
     builders = _spare(free_builders(game), cfg.walls.enabled) if {"hero", "building"} & set(kinds) else 0
     done = 0
     try:

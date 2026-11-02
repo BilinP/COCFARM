@@ -22,6 +22,7 @@ import numpy as np
 from farmbot.game import Game, T
 from farmbot.geometry import Rect
 from farmbot.text import pieces
+from farmbot.vision import Match
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +74,9 @@ CONFIRM_TIMEOUT = 3
 # The builder counter ("3/5": free of all) above the Build button, in Build
 # text heights from its middle.
 BUILDERS = (-3.0, -6.8, 2.75, 1.2)  # x, y, width, height
+# Where a goblin shows over the counters, in Build text heights from its
+# middle: the builders' left of it, the laboratory's right.
+GOBLINS = (-4.0, 4.0, -9.0, -5.5)  # x from, to; y from, to
 SEPARATOR_SCORE = 0.65  # the "/" reads as a poor digit
 # A tab's own counter ("1/2": free of all) under its picture: x either side
 # of the tab's middle, y from the bottom (top, height).
@@ -369,14 +373,38 @@ def upgrade_row(game: Game, row: Row, lst: BuildList = HOME) -> bool:
 
 
 def free_builders(game: Game) -> int | None:
-    """Free builders, from the counter above the Build button ("3/5": 3)."""
+    """Free builders, from the counter above the Build button ("3/5": 3).
+    With every builder busy the game offers its Goblin Builder (a goblin over
+    the counter, "1/7"), who costs gems: 0."""
+    if not game.has(T.BUILD):
+        return None
     game.refresh()
     build = game.find(T.BUILD)
     if build is None:
         return None
+    if "builder" in goblins(game, build):
+        return 0
     h = build.h
     x, y, width, height = BUILDERS
     return _read_free(game, Rect(build.x + round(x * h), build.y + round(y * h), round(width * h), round(height * h)))
+
+
+def goblins(game: Game, build: Match | None = None) -> set[str]:
+    """The counters above the Build button that show a goblin ("builder",
+    "lab"): the Goblin Builder or Goblin Researcher, offered for gems once
+    the real ones are busy."""
+    if not game.has(T.GOBLIN):
+        return set()
+    build = build or game.find(T.BUILD)
+    if build is None:
+        return set()
+    h = build.h
+    x0, x1, y0, y1 = GOBLINS
+    found = set()
+    for goblin in game.vision.find_all(game._current(), T.GOBLIN, region=Rect(
+            build.x + round(x0 * h), build.y + round(y0 * h), round((x1 - x0) * h), round((y1 - y0) * h))):
+        found.add("builder" if goblin.x < build.x else "lab")
+    return found
 
 
 def tab_free(game: Game, tab: str, lst: BuildList = HOME) -> int | None:

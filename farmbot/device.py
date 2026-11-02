@@ -57,6 +57,12 @@ def _run(cmd: list[str]) -> bytes:
     return result.stdout
 
 
+# COCFARM's own adb server, away from the usual 5037: every emulator ships
+# its own adb, and an adb of another version finding the shared server
+# restarts it, dropping every connection ("device 'emulator-5554' not
+# found"). On its own port, no other adb ever talks to COCFARM's server.
+SERVER_PORT = 15037
+
 RAW_FORMATS = {1, 2}  # RGBA_8888, RGBX_8888
 
 
@@ -259,9 +265,12 @@ INPUT_TAPS_PER_SHELL = 40  # keeps the fallback command short enough for old adb
 class AdbDevice:
     """A device reachable as ``serial`` (e.g. ``127.0.0.1:5555``)."""
 
-    def __init__(self, serial: str, adb_path: str = "adb", runner: Runner = _run):
+    def __init__(self, serial: str, adb_path: str = "adb", runner: Runner = _run,
+                 server_port: int | None = None):
         self.serial = serial
         self.adb_path = adb_path
+        server_port = SERVER_PORT if server_port is None else server_port  # 0: the usual shared server
+        self._server = ["-P", str(server_port)] if server_port else []
         self._run = runner
         self._raw_screencap = True  # until the device sends something we can't decode
         self._touch: TouchScreen | None | bool = None  # None: not looked for yet; False: none usable
@@ -269,17 +278,18 @@ class AdbDevice:
         self._size: tuple[int, int] | None = None  # screen size, from the last screenshot
 
     def _adb(self, *args: str) -> bytes:
+        command = [self.adb_path, *self._server, "-s", self.serial, *args]
         try:
-            return self._run([self.adb_path, "-s", self.serial, *args])
+            return self._run(command)
         except DeviceError as exc:
-            # Another emulator's adb (a different version) restarting the
-            # adb server drops our connection: reconnect once and retry.
-            if ":" not in self.serial or not any(s in str(exc) for s in ("not found", "offline", "closed")):
+            # The connection dropped (the emulator restarting its network, or an
+            # adb server started afresh still finding it): reconnect once and retry.
+            if not any(s in str(exc) for s in ("not found", "offline", "closed")):
                 raise
             log.info("Lost the connection to %s; reconnecting", self.serial)
-            time.sleep(1)
+            time.sleep(1 if ":" in self.serial else 3)  # an emulator-NNNN serial is found again by itself
             self.connect()
-            return self._run([self.adb_path, "-s", self.serial, *args])
+            return self._run(command)
 
     def shell(self, *args: str) -> str:
         return self._adb("shell", *args).decode(errors="replace")
@@ -287,7 +297,7 @@ class AdbDevice:
     def connect(self) -> None:
         """``adb connect`` for TCP serials; a no-op for USB serials."""
         if ":" in self.serial:
-            out = self._run([self.adb_path, "connect", self.serial]).decode(errors="replace")
+            out = self._run([self.adb_path, *self._server, "connect", self.serial]).decode(errors="replace")
             if "connected" not in out:
                 raise DeviceError(f"could not connect to {self.serial}: {out.strip()}")
         log.info("Using device %s", self.serial)

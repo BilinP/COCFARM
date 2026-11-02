@@ -18,7 +18,7 @@ SIDE_LABELS = {"nw": "Top-left (NW)", "ne": "Top-right (NE)", "sw": "Bottom-left
 @dataclass(frozen=True)
 class Field:
     path: str  # e.g. "search.min_gold"
-    kind: str  # amount | int | float | percent | bool | text | sides | resources | hours | units | order
+    kind: str  # amount | int | float | percent | bool | text | sides | resources | hours | units | order | presets
     low: float | None = None
     high: float | None = None
 
@@ -123,7 +123,7 @@ FIELDS = [
     Field("clan.donate_siege", "units"),
     Field("clan.donate_spells", "units"),
     Field("clan.donate_fill", "bool"),
-    Field("clan.max_donations_per_request", "int", 1, 50),
+    Field("clan.donate_presets", "presets"),
     Field("clan.request_troops", "bool"),
     Field("capital.raid", "bool"),
     Field("capital.miner_heal_at", "percent", 10, 95),
@@ -200,6 +200,8 @@ def _display(field: Field, value: Any) -> Any:
         return f"{value:,}"
     if field.kind in ("sides", "resources", "hours", "units", "order"):
         return list(value)
+    if field.kind == "presets":  # {"13": ["1 Ice Golem", ...]} → {"13": "1 Ice Golem, ..."}
+        return {level: ", ".join(entries) for level, entries in value.items()}
     if field.kind == "float":
         return f"{value:g}"
     if field.kind == "percent":  # stored as a share, shown as 0-100
@@ -232,6 +234,17 @@ def _parse(field: Field, raw: Any) -> Any:
         return [name for name in dict.fromkeys(raw) if name in BY_NAME]  # in the order given
     if field.kind == "order":
         return list(dict.fromkeys(str(k) for k in raw))  # first to last
+    if field.kind == "presets":
+        from farmbot.castle import parse_entry
+
+        out = {}
+        for level, text in raw.items():
+            entries = [e.strip() for e in str(text).split(",") if e.strip()]
+            unknown = [e for e in entries if parse_entry(e) is None]
+            if unknown:
+                raise ValueError(f"level {level}: no unit called '{unknown[0]}' (write it like '2 Valkyrie')")
+            out[str(level)] = entries
+        return out
     if field.kind == "hours":
         hours = sorted({int(h) for h in raw})
         if any(not 0 <= h <= 23 for h in hours):
@@ -288,3 +301,37 @@ def apply_form(config: Config, form: dict[str, Any]) -> None:
             continue
         _set(config, path, value)
     config.validate()
+
+
+def plan_summary(values: dict[str, Any]) -> str:
+    """One line on what the bot will do with these (validated) settings,
+    for the Dashboard before Start."""
+    def short(amount: int) -> str:
+        return f"{amount / 1_000_000:g}M" if amount >= 1_000_000 else f"{amount // 1_000}k" if amount >= 1_000 \
+            else str(amount)
+
+    village = {"home": "the home village", "builder": "the builder base"}.get(values.get("bot.mode"))
+    if village is None:  # auto
+        first = "builder base" if values.get("bot.auto_first") == "builder" else "home village"
+        village = f"the {first}, then the other once its storages are full"
+    parts = []
+    if values.get("bot.mode") != "builder":
+        if values.get("search.maintain_only"):
+            parts.append("no attacks")
+        else:
+            wants = [f"{short(values[f'search.min_{k}'])} {name}" for k, name in
+                     (("gold", "gold"), ("elixir", "elixir"), ("dark", "dark"))
+                     if values.get(f"search.min_{k}")]
+            joiner = " or " if values.get("search.match_any") else " and "
+            parts.append(f"attacks bases with {joiner.join(wants)}" if wants else "attacks any base")
+        for path, what in (("bot.collect_resources", "collects"), ("walls.enabled", "walls"),
+                           ("upgrade.enabled", "upgrades"), ("clan.donate", "donates"),
+                           ("clan.request_troops", "requests troops"), ("capital.raid", "raids")):
+            if values.get(path):
+                parts.append(what)
+    if values.get("schedule.enabled"):
+        parts.append("only in its hours")
+    full = values.get("bot.stop_when_full") or []
+    if full:
+        parts.append("stops when its " + " and ".join(full) + " storages are full")
+    return f"Plays {village}: " + ", ".join(parts) + ". Press Start (F5)."

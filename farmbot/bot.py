@@ -26,6 +26,7 @@ ERROR_SCREENS_KEPT = 200  # newest failed-round screens kept; older ones are del
 MAX_GAME_RESTARTS = 1  # game restarts without a good round before the emulator is restarted
 STORAGE_MAX_TRIES = 3  # readings a day of what a village's storages hold, until one works
 IDLE_WAIT = 60.0  # seconds between village rounds when not attacking
+STAR_BONUS_WAIT = 4.0  # seconds, after an attack, for the Star Bonus window to open over the village
 STARTUP_TIMEOUT = 90  # seconds to wait for the home village after starting the game
 # An emulator answers ADB before Android has finished starting up, and a game
 # started then is closed again: start it once Android has been up this long.
@@ -52,6 +53,7 @@ class Bot:
     ):
         self.game = game
         self.config = config
+        game.package = config.device.package  # taps stop if the game crashes to the emulator's home screen
         self.attacks = 0
         self.searched = 0
         self.errors = 0
@@ -708,6 +710,9 @@ class Bot:
         # Read the gain as soon as we're home, so the last attack of a run
         # is logged with it too.
         if self.game.wait_for(T.BATTLE, timeout=20, interval=1):
+            # The Star Bonus window opens a moment after the village shows.
+            if self.game.has(T.OKAY):
+                self.game.wait_for(T.OKAY, timeout=STAR_BONUS_WAIT, interval=1)
             village.clear_popups(self.game)
             after = self.read_resources()
             if after is not None:  # otherwise the next round's reading settles it
@@ -753,6 +758,10 @@ class Bot:
                         break
                 except Stopped:
                     raise
+                except screens.NotLoggedIn as exc:  # logging in is up to the player
+                    log.error("%s: stopping", exc)
+                    self._save_error_screen()
+                    raise
                 except Exception as exc:  # keep farming through recoverable failures
                     self.errors += 1
                     log.error("Cycle failed (%d in a row): %s", self.errors, exc)
@@ -785,7 +794,7 @@ class Bot:
             except Exception as exc:  # the bot is stopping anyway
                 log.info("Couldn't sail home: %s", exc)
         if not self.storage_full:
-            self.status("Stopped")
+            self.status(f"Stopped: all {limit} attacks played" if limit and self.attacks >= limit else "Stopped")
         log.info("Finished after %d attack(s)", self.attacks)
         if not self.storage_full:
             g = self.gained

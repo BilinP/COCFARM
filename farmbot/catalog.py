@@ -124,6 +124,8 @@ PICTURES: list[Picture] = [
     Picture(T.BB_UPGRADE_TITLE, "Upgrade to level", "Builder base upgrade window: the words \"Upgrade to\".",
             "Builder base walls"),
     Picture(T.BUILD, "Build", "Home village, bottom right: the word \"Build\" on the hammer button.", "Upgrading walls"),
+    Picture(T.GOBLIN, "Goblin Builder", "Home village, over the builder counter above Build: the goblin's face "
+            "(shown when only the Goblin Builder, for gems, is left).", "Not paying gems for the Goblin Builder or Researcher"),
     Picture(T.WALL_SUGGESTION, "Wall in Buildings & Heroes", "Build list: the words \"Wall x\" (leave out the "
             "number).", "Upgrading walls"),
     Picture(T.UPGRADE, "Upgrade", "A selected wall: the word \"Upgrade\" under the hammer.", "Upgrading walls"),
@@ -197,6 +199,8 @@ PICTURES: list[Picture] = [
     Picture(T.CAPITAL_RESULT_MAP, "Raid result: Map", "Raid result screen: the word \"Map\".", CAPITAL),
     Picture(T.TRY_AGAIN, "Try Again", "Connection lost popup: \"Try Again\".", "Recovering from disconnects"),
     Picture(T.RELOAD, "Reload", "\"Another device is connected\" popup: \"Reload\".", "Recovering from disconnects"),
+    Picture(T.LOGIN, "Not logged in", "The game's start screen with no account logged in: \"Log in with Supercell ID\".",
+            "Stopping when the game isn't logged in"),
 ]
 BY_NAME = {p.name: p for p in PICTURES}
 

@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from farmbot.castle import PRESETS
 from farmbot.geometry import Rect
 
 SIDES = ("nw", "ne", "sw", "se")
@@ -47,7 +48,7 @@ class DeviceConfig:
     # least the game runs well on, leaving the rest of the PC free.
     set_resources: bool = True
     cpus: int = 2
-    memory: int = 2048
+    memory: int = 4096
     serial: str = "127.0.0.1:5555"
     adb_path: str = "adb"  # "adb" = BlueStacks' own HD-Adb.exe when available
     package: str = "com.supercell.clashofclans"
@@ -280,7 +281,9 @@ class ClanConfig:
     donate_siege: list[str] = field(default_factory=list)
     donate_spells: list[str] = field(default_factory=list)
     donate_fill: bool = True
-    max_donations_per_request: int = 15  # units given to one request at most
+    # With no main troops picked, a request gets its Clan Castle level's
+    # preset (see farmbot/castle.py), then the same filling.
+    donate_presets: dict[str, list[str]] = field(default_factory=lambda: {k: list(v) for k, v in PRESETS.items()})
 
 
 @dataclass
@@ -603,6 +606,8 @@ class Config:
 REMOVED_SETTINGS = {"bot.quick_train", "bot.army_recipe", "clan.request_text", "search.dead_base",
                     "search.dead_base_collectors", "attack.use_cc",
                     "search.min_total", "search.dark_weight",
+                    # A request is given what fits its room (the window closes when it's full).
+                    "clan.max_donations_per_request",
                     # Storages are judged full from what they hold (read in the game), not
                     # the bars' colour; amounts to keep became shares of what they hold.
                     "regions.full_gold", "regions.full_elixir", "regions.full_dark",

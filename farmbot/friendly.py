@@ -96,6 +96,9 @@ def describe_status(text: str, now: datetime | None = None) -> Status:
     if m := re.match(r"Stopped: storage full \((.+)\)", text):
         return Status("stopped", "Storage full", f"Your {m.group(1)} storage is full, so it stopped. "
                       "Spend some loot, then press Start.")
+    if m := re.match(r"Stopped: all (\d+) attacks played", text):
+        return Status("stopped", f"All {m.group(1)} attacks played", "It played the attacks it was asked for, "
+                      "then stopped. Press Start for more.")
     if text in ("Stopped", "Stopped. Press Start to go again."):
         return Status("stopped", "Stopped", "Press Start to go again.")
     if m := re.match(r"Attack (\d+) done", text):
@@ -123,6 +126,10 @@ RULES = [
      "BlueStacks is in LDPlayer's way",
      "Both emulators use the same connection (port 5555), so with BlueStacks open COCFARM reaches it instead of "
      "LDPlayer. Close BlueStacks, or pick BlueStacks in Setup.", "setup", "Open Setup"),
+    (r"is using port|still holds port",
+     "Another program is using {emulator}'s connection",
+     "COCFARM closes other emulators in the way by itself, but couldn't close this one. Close it, then try again.",
+     "retry", "Try again"),
     (r"instance .* not found|has no instance",
      "The emulator instance picked in Setup doesn't exist",
      "COCFARM doesn't know which emulator window to play in.", "setup", "Open Setup"),
@@ -150,6 +157,10 @@ RULES = [
     (r"screencap|could not capture|pixels|has no size|minimised",
      "Can't see the emulator's screen",
      "The bot needs to see the game. Make sure the emulator window isn't minimised.", "retry", "Try again"),
+    (r"isn't logged in",
+     "Clash of Clans isn't logged in",
+     "The game is on its login screen, so there's no village to play. Log in to your account in the emulator, "
+     "then press Start.", "retry", "Try again"),
     (r"couldn't get back to a village",
      "The game is stuck on a screen COCFARM doesn't recognise",
      "It needs the village showing to carry on. Close whatever is open in the game, then try again.",

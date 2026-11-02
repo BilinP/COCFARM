@@ -109,6 +109,7 @@ class T:
     # Home village (optional)
     CLOSE = "buttons/close"
     BUILD = "buttons/build"  # home village, bottom right: opens Buildings & Heroes
+    GOBLIN = "buttons/goblin"  # over the builder/lab counter: the Goblin Builder/Researcher (gems)
     WALL_SUGGESTION = "buttons/wall_suggestion"  # "Wall x N" in that list
     UPGRADE = "buttons/upgrade"  # under a selected building (gold and elixir versions look alike)
     UPGRADE_CONFIRM = "buttons/upgrade_confirm"  # "Confirm" in the upgrade window
@@ -175,6 +176,7 @@ class T:
     COLLECT_DARK = "collectors/dark"
     TRY_AGAIN = "buttons/try_again"
     RELOAD = "buttons/reload"
+    LOGIN = "buttons/login"  # the game's start screen with no account logged in: "Log in with Supercell ID"
     OKAY = "buttons/okay"
     # Clan (optional)
     REQUEST = "buttons/request"
@@ -249,6 +251,14 @@ class Stopped(Exception):
     """Raised inside long waits when the bot is asked to stop."""
 
 
+class GameNotInFront(RuntimeError):
+    """Another app is in front of the game (it crashed or closed): taps
+    would land in that app instead."""
+
+
+FRONT_CHECK = 3.0  # seconds between checks that the game is still the app in front, before tapping
+
+
 # Matching two pictures of the map by features (they only need to overlap
 # in part): how far the camera moved between them.
 VIEW_AREA = (150, 240, 1000, 760)  # x0, y0, x1, y1: the map, clear of the buttons, trophies and resource bars
@@ -308,6 +318,7 @@ class Game:
         self.picture_scales = dict(picture_scales or {})
         vision.scales.update(self.picture_scales)
         vision.fixed_scales = set(self.picture_scales)
+        vision.two_sizes = {T.OKAY}  # the surrender Okay and the Star Bonus window's
         self.raw: np.ndarray | None = None
         self.screen: np.ndarray | None = None
         # When each anchor last failed to give the UI scale. Measuring takes about a second, so while
@@ -319,6 +330,9 @@ class Game:
         # Finds on the screenshot in ``_seen_on``: (name, threshold, region) -> matches.
         self._seen_on: np.ndarray | None = None
         self._seen: dict[tuple, list[Match]] = {}
+        # The game's package, set by the bot: taps stop if another app comes in front.
+        self.package = ""
+        self._front_checked = -FRONT_CHECK
 
     # -- timing ---------------------------------------------------------
     def wait(self, seconds: float) -> None:
@@ -430,7 +444,20 @@ class Game:
         return self.vision.read_number(self._current(), region, font)
 
     # -- input ----------------------------------------------------------
+    def check_in_front(self) -> None:
+        """Raise ``GameNotInFront`` if another app has come in front of the
+        game (a crash drops to the emulator's home screen, whose icons and
+        ads the next taps would open). Looked at every FRONT_CHECK seconds."""
+        if not self.package or self.clock() - self._front_checked < FRONT_CHECK:
+            return
+        front = self.device.foreground_package()
+        if front and front != self.package:
+            self._front_checked = -FRONT_CHECK  # look again before the next tap
+            raise GameNotInFront(f"{front} is in front instead of the game (it crashed or closed); not tapping")
+        self._front_checked = self.clock()
+
     def tap(self, x: int, y: int, jitter: int = 0) -> None:
+        self.check_in_front()
         if jitter:
             x += self.rng.randint(-jitter, jitter)
             y += self.rng.randint(-jitter, jitter)
@@ -441,6 +468,7 @@ class Game:
         support it, single taps ``pause`` seconds apart otherwise."""
         if self.stop_event.is_set():
             raise Stopped
+        self.check_in_front()
         scaled = []
         for x, y in points:
             if jitter:
@@ -472,6 +500,7 @@ class Game:
         pinch = getattr(self.device, "zoom_out", None)
         if pinch is None:
             return False
+        self.check_in_front()
         if self._still_zoomed_out(self.refresh()):
             # The view the last zoom-out ended on, unmoved: still all the
             # way out. Another pinch would only make the map spring back.
@@ -557,6 +586,7 @@ class Game:
         return True
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 500) -> None:
+        self.check_in_front()
         s = self.scale
         self.device.swipe(round(x1 * s), round(y1 * s), round(x2 * s), round(y2 * s), duration_ms)
         self.screen = None
