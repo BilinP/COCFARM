@@ -1,0 +1,86 @@
+name: "Bug report: Android app"
+description: Something in COCFARM for Android (the app playing on your phone or tablet) isn't working.
+labels: ["bug", "android"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The more specific you are, the faster it can be fixed.
+        Please fill in every field. (A problem with COCFARM.exe on Windows? Use the
+        Windows app's bug report instead.)
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of COCFARM?
+      options:
+        - General (setup, permissions, the floating button, the app's screens, alerts, updates)
+        - Home village
+        - Builder base
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Phone or tablet
+      description: Its make and model (Settings → About phone).
+      placeholder: e.g. Samsung Galaxy S23, Pixel 8, Xiaomi Pad 6
+    validations:
+      required: true
+
+  - type: input
+    id: android-version
+    attributes:
+      label: Android version
+      description: Settings → About phone → Software information (or Android version).
+      placeholder: e.g. Android 14
+    validations:
+      required: true
+
+  - type: input
+    id: cocfarm-version
+    attributes:
+      label: COCFARM version
+      description: Shown on the app's home screen, at the top right of the status card (e.g. v0.9.7).
+      placeholder: e.g. 0.9.7
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the issue
+      description: What happened, and what did you expect to happen instead?
+      placeholder: e.g. It taps the troop cards but never places a troop; heroes are placed fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did, step by step, until the problem showed up.
+      placeholder: |
+        1. Pressed Start
+        2. It opened Clash of Clans and found a base
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log
+      description: |
+        In the app, open the Log tab and press **Share the log file**, then attach the file
+        here (or paste the lines around the problem; pasted text is formatted automatically).
+      render: text
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: |
+        Optional: drag in screenshots of the problem. They show other players' bases and
+        names, so crop them if you like.
