@@ -1,0 +1,36 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share your results and the settings behind them, so others can learn from them.
+        Screenshots show other players' bases and names, so crop them if you like.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Village
+      options:
+        - Home village
+        - Builder base
+        - Both (Auto switch)
+    validations:
+      required: true
+
+  - type: input
+    id: town-hall
+    attributes:
+      label: Town Hall / Builder Hall level
+      placeholder: e.g. TH 13, BH 9
+
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      description: Loot per hour, attacks per day, anything you're proud of. A History page screenshot is great.
+    validations:
+      required: true
+
+  - type: textarea
+    id: settings
+    attributes:
+      label: Settings and army
+      description: "Loot minimums, army, spells and schedule: whatever made the difference."

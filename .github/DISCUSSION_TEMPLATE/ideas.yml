@@ -1,0 +1,30 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Suggest a feature or a change. Others can upvote ideas they want too.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of COCFARM?
+      options:
+        - General (setup, the window, schedule, alerts)
+        - Home village
+        - Builder base
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What should COCFARM do, and why would it help?
+      placeholder: e.g. Let me pick a different army for each village.
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: How you manage today
+      description: Optional. What you do now without it.

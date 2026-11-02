@@ -1,0 +1,53 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask anything about using COCFARM. Mark the reply that helped as the answer.
+  - type: markdown
+    attributes:
+      value: |
+        Something clearly broken (a crash, an error, a button it never presses)?
+        Please [open a bug report](https://github.com/BilinP/COCFARM/issues/new/choose) instead.
+
+  - type: dropdown
+    id: emulator
+    attributes:
+      label: Emulator
+      options:
+        - BlueStacks 5
+        - LDPlayer 9
+        - LDPlayer 14
+        - MuMu Player
+        - Other (say which below)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: COCFARM version
+      description: Shown in COCFARM's title bar, next to the logo.
+      placeholder: e.g. 0.9.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What are you trying to do, and what happens?
+      placeholder: e.g. How do I make it skip bases with less than 500k gold?
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you've tried
+      description: Settings you changed, anything you looked at already.
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log or screenshots
+      description: Optional. Lines from `logs/farmbot.log` (pasted as text), or drag in screenshots.

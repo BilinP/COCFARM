@@ -1,12 +1,13 @@
-name: Bug report
-description: Something in COCFARM isn't working.
+name: "Bug report: Windows app"
+description: Something in COCFARM for Windows (COCFARM.exe, playing on an emulator) isn't working.
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
         Thanks for reporting! The more specific you are, the faster it can be fixed.
-        Please fill in every field.
+        Please fill in every field. (A problem with the Android app on your phone? Use the
+        Android app's bug report instead.)
 
   - type: dropdown
     id: area
@@ -27,6 +28,7 @@ body:
         - BlueStacks 5
         - LDPlayer 9
         - LDPlayer 14
+        - MuMu Player
         - Other (say which below)
     validations:
       required: true
@@ -37,8 +39,8 @@ body:
       label: Emulator version
       description: |
         BlueStacks: Settings → About. LDPlayer: Settings → About (or the title bar).
-        For another emulator, give its name and version.
-      placeholder: e.g. BlueStacks 5.22.110.1028 (Pie 64-bit) or LDPlayer 14.0.29.2
+        MuMu Player: its About page. For another emulator, give its name and version.
+      placeholder: e.g. BlueStacks 5.22.110.1028 (Pie 64-bit), LDPlayer 14.0.29.2 or MuMu Player 12
     validations:
       required: true
 
@@ -49,7 +51,7 @@ body:
       description: |
         Shown in COCFARM's title bar, next to the logo (also under Advanced → Settings → Updates,
         and on the first line of `logs/farmbot.log` each time it starts).
-      placeholder: e.g. 0.5.0
+      placeholder: e.g. 0.9.7
     validations:
       required: true
 
