@@ -18,6 +18,31 @@ from farmbot.update import STATE, _load, _save, parse_version
 KINDS = ["New", "Improved", "Fixed"]
 
 NOTES: dict[str, list[tuple[str, str, str]]] = {
+    "1.0.0": [
+        ("New", "Farm several accounts at once (beta)",
+         "Switch on a farm for each emulator instance on the Farms page (LDPlayer, MuMu Player or BlueStacks, "
+         "mixed as you like) and start them all together. Each farm keeps to the account signed in there."),
+        ("New", "Make and delete emulator instances",
+         "New instance copies one on LDPlayer or MuMu Player, and the bin on a row deletes one, after asking."),
+        ("New", "Each farm in the main window or its own",
+         "View shows a farm in the main window while the others keep farming; the small button opens it in a "
+         "window of its own."),
+        ("New", "Stops on Clash of Clans' maintenance break",
+         "When the game is down for maintenance, the bot stops and says why instead of retrying."),
+        ("Fixed", "Google Play's \"Rate Clash of Clans\" box is closed",
+         "It could sit over the game after a battle and stop the bot; COCFARM now answers Never."),
+        ("Fixed", "Buttons found on every farm",
+         "A farm added from the Farms page could look for buttons at the wrong size and stop with \"find-a-match "
+         "button did not appear\"."),
+        ("Fixed", "MuMu Player stays connected",
+         "A dropped MuMu Player connection no longer loops on \"Lost the connection; reconnecting\"."),
+        ("Fixed", "LDPlayer 14 starts with LDPlayer 9 installed",
+         "COCFARM no longer mistakes LDPlayer 14 for LDPlayer 9 and stops with \"LDPlayer 9 did not close\"."),
+        ("Improved", "Faster tabs and start-up",
+         "Switching to the Farms page and opening COCFARM with several farms no longer lag."),
+        ("Improved", "Clearer wall messages",
+         "When a wall costs more than you have, the log says so instead of \"couldn't read the price\"."),
+    ],
     "0.9.9": [
         ("Fixed", "LDPlayer connects every time",
          "LDPlayer's own background helper could take the connection away, so the bot stopped with \"did not "

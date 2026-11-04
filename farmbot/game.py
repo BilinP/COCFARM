@@ -178,6 +178,9 @@ class T:
     TRY_AGAIN = "buttons/try_again"
     RELOAD = "buttons/reload"
     LOGIN = "buttons/login"  # the game's start screen with no account logged in: "Log in with Supercell ID"
+    RATE_TITLE = "buttons/rate_title"  # Google Play's "Rate Clash of Clans" dialog, over the game
+    RATE_NEVER = "buttons/rate_never"  # its NEVER: it isn't asked again
+    MAINTENANCE = "buttons/maintenance"  # the "Maintenance break" banner: the game can't be played meanwhile
     OKAY = "buttons/okay"
     # Clan (optional)
     REQUEST = "buttons/request"
@@ -218,6 +221,12 @@ class T:
 # used to work out the UI scale. (Windows such as the army screen are sized
 # differently; Vision finds their buttons' sizes on its own.)
 ANCHORS = [T.BATTLE, T.NEXT, T.END_BATTLE]
+
+# Window buttons that give the windows' size when it isn't the HUD's: MuMu
+# draws the game's windows (the battle menu, the army screen) about 0.95x the
+# size the HUD buttons work out to, where the other emulators draw them alike.
+WINDOW_ANCHORS = [T.FIND_MATCH]
+WINDOW_SIZES = (0.9, 0.95, 1.05, 1.1)  # each looked at give or take 0.03
 
 # The buttons under a selected building change size with the layout: with
 # the Buildings & Heroes list open they move into two rows, drawn about 1.3x
@@ -377,6 +386,30 @@ class Game:
         self._rescale()
         return True
 
+    def _calibrate_window(self, screen: np.ndarray, name: str, threshold: float | None,
+                          region: Rect | None) -> bool:
+        """Work out the windows' size from ``name`` when it isn't on screen at
+        the size the HUD gives (and none is set in the config)."""
+        if self.window_scale or not self.has(name):
+            return False
+        key = "window:" + name
+        if self.clock() - self._calibration_tried.get(key, -CALIBRATE_RETRY) < CALIBRATE_RETRY:
+            return False
+        self._calibration_tried[key] = self.clock()
+        threshold = self.vision.default_threshold if threshold is None else threshold
+        now = self.vision.window_scale
+        for tname, image in self.vision.library.get(name):
+            size, score = best_scale(screen, image, list(WINDOW_SIZES), region)
+            if score >= threshold and abs(size - now) >= 0.02:
+                log.info("Windows on this screen are %.2fx the pictures' size; looking for their buttons at it", size)
+                self.window_scale = size
+                self.vision.scales.clear()  # sizes found before were relative to the old one
+                self.vision.scales.update(self.picture_scales)
+                self.vision.scales.setdefault(tname, size)
+                self._rescale()
+                return True
+        return False
+
     def _current(self) -> np.ndarray:
         return self.screen if self.screen is not None else self.refresh()
 
@@ -410,6 +443,8 @@ class Game:
             found = self.vision.find_all(screen, name, threshold, region)
             if not found and name in ANY_SIZE:
                 found = self._find_any_size(screen, name, threshold, region)
+            if not found and name in WINDOW_ANCHORS and self._calibrate_window(screen, name, threshold, region):
+                found = self.vision.find_all(self.screen, name, threshold, region)
             self._seen[key] = found
         return list(self._seen[key])
 

@@ -136,11 +136,12 @@ def _post(url: str, payload: dict, files: dict) -> None:
 
 
 def message(title: str, text: str, kind: str = "info", fields: list[tuple[str, str]] = (),
-            image: bool = False, now: datetime | None = None) -> dict:
+            image: bool = False, now: datetime | None = None, who: str = "") -> dict:
     """The Discord message for one notification: a single embed. Each field
-    gets its own line; ``image`` shows the attached loot card."""
+    gets its own line; ``image`` shows the attached loot card; ``who``
+    (the account's profile) says which account, with several farming."""
     embed = {
-        "author": {"name": "COCFARM", "icon_url": f"attachment://{LOGO_NAME}"},
+        "author": {"name": f"COCFARM · {who}" if who else "COCFARM", "icon_url": f"attachment://{LOGO_NAME}"},
         "title": title,
         "description": text,
         "color": COLOURS.get(kind, COLOURS["info"]),
@@ -173,6 +174,7 @@ class Notifier:
         self.cfg = cfg
         self._post = post
         self._background = background
+        self.who = ""  # the account being farmed (its profile), shown on each message
 
     @property
     def configured(self) -> bool:
@@ -187,7 +189,7 @@ class Notifier:
             return
         lines, files = loot_parts(attacks, loot)
         fields = lines + list(fields)
-        payload = message(title, text, kind, fields, image=bool(files))
+        payload = message(title, text, kind, fields, image=bool(files), who=self.who)
         if self._background:
             threading.Thread(target=self._send, args=(payload, files), daemon=True).start()
         else:

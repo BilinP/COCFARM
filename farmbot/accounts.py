@@ -133,7 +133,10 @@ class Profiles:
 
     @classmethod
     def beside(cls, config_path: str | Path) -> Profiles:
-        return cls(Path(config_path).resolve().parent / "profiles")
+        folder = Path(config_path).resolve().parent
+        if folder.parent.name == "instances":  # another window's (farmbot/instances.py): they're shared
+            folder = folder.parent.parent
+        return cls(folder / "profiles")
 
     def names(self) -> list[str]:
         if not self.folder.is_dir():

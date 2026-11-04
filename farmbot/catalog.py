@@ -67,7 +67,7 @@ PICTURES: list[Picture] = [
     Picture(T.LOOT_CART, "Loot cart label", "Home village, zoomed out: the word \"Collect\" over the loot cart.",
             "Collecting the loot cart"),
     Picture(T.LOOT_CART_COLLECT, "Loot cart Collect", "After tapping the loot cart: the word \"Collect\" on "
-            "the button under it.", "Collecting the loot cart"),
+            "the button under it.", "Collecting the loot cart", folder=True),
     Picture(T.GRAVESTONE, "Gravestone", "Home village, zoomed out, after someone attacked you: one grey "
             "gravestone, tight around the stone.", "Clearing gravestones"),
     Picture(T.SUPER_ACTIVATE, "Activate (super troop)", "Army screen after Find a Match, with a super troop that "
@@ -201,6 +201,12 @@ PICTURES: list[Picture] = [
     Picture(T.RELOAD, "Reload", "\"Another device is connected\" popup: \"Reload\".", "Recovering from disconnects"),
     Picture(T.LOGIN, "Not logged in", "The game's start screen with no account logged in: \"Log in with Supercell ID\".",
             "Stopping when the game isn't logged in"),
+    Picture(T.RATE_TITLE, "Rate Clash of Clans", "The title of Google Play's \"Rate Clash of Clans\" dialog, "
+            "which can pop up over the game.", "Closing the rate-the-game dialog"),
+    Picture(T.RATE_NEVER, "Rate dialog: Never", "NEVER, at the bottom of Google Play's \"Rate Clash of Clans\" "
+            "dialog.", "Closing the rate-the-game dialog"),
+    Picture(T.MAINTENANCE, "Maintenance break", "The yellow \"Maintenance break\" banner at the top of the "
+            "news screen the game shows during a maintenance break.", "Stopping during a maintenance break"),
 ]
 BY_NAME = {p.name: p for p in PICTURES}
 

@@ -150,7 +150,19 @@ def cmd_pictures(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    cfg = _config(args)
+    from farmbot import instances
+
+    if args.farm > 1:  # another farm's settings (the Farms page adds them)
+        instances.mend_sizes()
+        path = instances.config_path(args.farm)
+        if not path.is_file():
+            print(f"error: there's no farm {args.farm} (add it on the Farms page)", file=sys.stderr)
+            return 1
+        cfg = load_active(path)
+        cfg.home = path.parent
+        instances.mark(args.farm)
+    else:
+        cfg = _config(args)
     if args.max_attacks is not None:
         cfg.bot.max_attacks = args.max_attacks
     missing = [] if cfg.search.maintain_only else catalog.missing(TemplateLibrary(cfg.bot.templates), required_only=True)
@@ -202,6 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("run", help="start farming without the GUI (Ctrl+C to stop)")
     p.add_argument("--max-attacks", type=int, default=None)
+    p.add_argument("--farm", type=int, default=1, help="which farm's settings (the GUI's Farms page adds them)")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("devices", help="list BlueStacks instances and their ADB ports")
@@ -257,8 +270,17 @@ def log_to_file(path: str) -> None:
     except OSError as exc:
         logging.getLogger(__name__).warning("Not logging to %s: %s", path, exc)
         return
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+    handler.addFilter(_farm_tag)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(farm_tag)s%(name)s: %(message)s"))
     logging.getLogger().addHandler(handler)
+
+
+def _farm_tag(record: logging.LogRecord) -> bool:
+    """Marks the lines of farm 2 and up with their farm (see farmbot/instances.py)."""
+    if not hasattr(record, "farm_tag"):
+        farm = getattr(record, "farm", 0)
+        record.farm_tag = f"[farm {farm}] " if farm > 1 else ""
+    return True
 
 
 def gui_main() -> int:

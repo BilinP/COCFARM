@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -37,9 +38,16 @@ ADB_BASE_PORT, ADB_PORT_STEP = 16384, 32  # instance N: 127.0.0.1:16384 + 32 N (
 Runner = Callable[[list[str]], str]
 
 
+def _clean_env() -> dict[str, str]:
+    """This process's environment without Qt's settings: MuMuManager is a Qt
+    program too, and COCFARM's (say, QT_QPA_PLATFORM=offscreen) stop it starting."""
+    return {k: v for k, v in os.environ.items() if not k.upper().startswith("QT_")}
+
+
 def _run(cmd: list[str]) -> str:
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=120, check=False, creationflags=NO_WINDOW)
+        result = subprocess.run(cmd, capture_output=True, timeout=120, check=False, creationflags=NO_WINDOW,
+                                env=_clean_env())
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise DeviceError(f"MuMuManager failed: {exc}") from exc
     return result.stdout.decode("utf-8", errors="replace")
@@ -222,8 +230,8 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
     found = instances(install, run)
     inst = next((i for i in found if i.index == cfg.mumu_index), None)
     if inst is None:
-        raise DeviceError(f"{install.name} has no instance {cfg.mumu_index} "
-                          f"(have: {', '.join(str(i.index) for i in found) or 'none'}).")
+        raise DeviceError(f"{install.name} has no instance {cfg.mumu_index + 1} "
+                          f"(have: {', '.join(str(i.index + 1) for i in found) or 'none'}).")
     changes = setup_needed(read_settings(install, inst.index, run), cfg)
     if changes:
         log.warning("Setting up %s: %s (restarts it)", install.name, "; ".join(changes))
@@ -232,7 +240,7 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
     if not inst.started:
         if not cfg.launch_emulator:
             raise DeviceError(f"{install.name} is not running. Start it, or turn on 'Start the emulator automatically'.")
-        log.info("Starting %s (instance %d)", install.name, inst.index)
+        log.info("Starting %s (instance %d)", install.name, inst.index + 1)
         run([str(install.manager), "control", "-v", str(inst.index), "launch"])
     deadline = clock() + cfg.launch_timeout
     last_error: Exception | None = None
@@ -258,5 +266,5 @@ def quit_instance(cfg: DeviceConfig, run: Runner = _run) -> None:
     install = find_install()
     if install is None:
         raise DeviceError("MuMu Player was not found")
-    log.warning("Closing %s (instance %d) to start it again", install.name, cfg.mumu_index)
+    log.warning("Closing %s (instance %d) to start it again", install.name, cfg.mumu_index + 1)
     run([str(install.manager), "control", "-v", str(cfg.mumu_index), "shutdown"])

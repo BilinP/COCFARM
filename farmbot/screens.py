@@ -25,6 +25,7 @@ class Screen(enum.Enum):
     REWARD = "reward picker"
     POPUP = "popup"
     LOGIN = "login screen"  # no account logged in: the bot can't play
+    MAINTENANCE = "maintenance break"  # Supercell's: nothing can be played until it's over
     UNKNOWN = "unknown screen"  # loading, an animation, or something new
 
 
@@ -47,6 +48,10 @@ def identify(game: Game, refresh: bool = True) -> Screen:
 
     if refresh:
         game.refresh()
+    if _seen(game, T.MAINTENANCE):  # over everything
+        return Screen.MAINTENANCE
+    if _seen(game, T.RATE_TITLE):  # Google Play's, over the game
+        return Screen.POPUP
     if _seen(game, T.PICK_REWARD):
         return Screen.REWARD
     if _seen(game, T.EVENT_CHEST):
@@ -78,6 +83,14 @@ class NotLoggedIn(RuntimeError):
         super().__init__("Clash of Clans isn't logged in (it shows \"Log in with Supercell ID\")")
 
 
+class MaintenanceBreak(RuntimeError):
+    """The game is on its maintenance break: nothing can be played until
+    Supercell ends it, so the bot stops."""
+
+    def __init__(self) -> None:
+        super().__init__("Clash of Clans is on a maintenance break")
+
+
 SETTLE_STEPS = 10
 UNKNOWN_WAIT = 3.0  # seconds: loading screens and animations pass by themselves
 
@@ -98,6 +111,8 @@ def settle(game: Game, steps: int | None = None) -> Screen:
             return screen
         if screen is Screen.LOGIN:
             raise NotLoggedIn()
+        if screen is Screen.MAINTENANCE:
+            raise MaintenanceBreak()
         seen.append(screen)
         if screen is Screen.REWARD:
             village.pick_reward(game)

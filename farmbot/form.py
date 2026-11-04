@@ -18,7 +18,7 @@ SIDE_LABELS = {"nw": "Top-left (NW)", "ne": "Top-right (NE)", "sw": "Bottom-left
 @dataclass(frozen=True)
 class Field:
     path: str  # e.g. "search.min_gold"
-    kind: str  # amount | int | float | percent | bool | text | sides | resources | hours | units | order | presets
+    kind: str  # amount | int | instance | float | percent | bool | text | sides | resources | hours | units | order | presets
     low: float | None = None
     high: float | None = None
 
@@ -157,8 +157,8 @@ FIELDS = [
     Field("device.cpus", "int", 2, 4),
     Field("device.memory", "int", 2048, 8192),
     Field("device.ldplayer", "text"),
-    Field("device.ldplayer_index", "int", 0, 99),
-    Field("device.mumu_index", "int", 0, 99),
+    Field("device.ldplayer_index", "instance", 1, 100),  # shown from 1, stored from 0 as the emulators count
+    Field("device.mumu_index", "instance", 1, 100),
     Field("device.serial", "text"),
     Field("device.adb_path", "text"),
 ]
@@ -206,6 +206,8 @@ def _display(field: Field, value: Any) -> Any:
         return f"{value:g}"
     if field.kind == "percent":  # stored as a share, shown as 0-100
         return f"{value * 100:g}"
+    if field.kind == "instance":  # the emulators count from 0, people from 1
+        return value + 1
     return value
 
 
@@ -254,12 +256,14 @@ def _parse(field: Field, raw: Any) -> Any:
         raw = str(raw).strip().rstrip("%")
     try:
         # Whole numbers may be grouped (1,000); in a decimal a comma could be the point, so it stays an error.
-        value = int(str(raw).strip().replace(",", "").replace(" ", "")) if field.kind == "int" \
+        value = int(str(raw).strip().replace(",", "").replace(" ", "")) if field.kind in ("int", "instance") \
             else float(str(raw).strip())
     except ValueError:
-        raise ValueError("enter a whole number" if field.kind == "int" else "enter a number") from None
+        raise ValueError("enter a whole number" if field.kind in ("int", "instance") else "enter a number") from None
     if field.low is not None and value < field.low or field.high is not None and value > field.high:
         raise ValueError(f"use {field.low:g} to {field.high:g}")
+    if field.kind == "instance":
+        return value - 1
     return round(value / 100, 4) if field.kind == "percent" else value
 
 

@@ -16,6 +16,7 @@ Tab between controls, Enter presses the focused button.
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import logging
 import queue
@@ -37,15 +38,15 @@ with contextlib.redirect_stdout(io.StringIO()):
     import qfluentwidgets  # noqa: F401
 from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox, ElevatedCardWidget, ExpandSettingCard,
                             Action, FluentIcon as FIF, FluentWindow, InfoBadge, InfoBadgePosition, InfoBar, InfoBarIcon, InfoBarPosition, LineEdit, ListWidget, MessageBox, MessageBoxBase,
-                            NavigationAvatarWidget, NavigationItemPosition, PlainTextEdit, PrimaryPushButton, ProgressBar, PushButton,
+                            NavigationAvatarWidget, NavigationItemPosition, PlainTextEdit, PrimaryDropDownPushButton, PrimaryPushButton, ProgressBar, PushButton,
                             IconWidget, RoundMenu, SegmentedWidget,
                             SettingCard, SettingCardGroup, SimpleCardWidget, Slider, SmoothScrollArea,
                             StrongBodyLabel, SubtitleLabel, SwitchButton, Theme, TitleLabel, TogglePushButton,
                             TransparentPushButton, TransparentToolButton, themeColor,
                             isDarkTheme, qconfig, setCustomStyleSheet, setTheme, setThemeColor)
 
-from farmbot import __version__, accounts, catalog, icons, splash
-from farmbot.config import EMULATORS, Config, ensure_config, load_config, unreachable_minimums, unreachable_note
+from farmbot import __version__, accounts, catalog, icons, instances, splash
+from farmbot.config import EMULATORS, Config, DeviceConfig, ensure_config, load_config, save_config, unreachable_minimums, unreachable_note
 from farmbot.form import BY_PATH, apply_form, form_values, parse_amount, plan_summary, validate
 from farmbot.friendly import Problem, Status, describe_status, explain
 from farmbot.geometry import Rect
@@ -143,13 +144,19 @@ PAGES = ("Dashboard", "Home village", "Builder base", "When to play", "History",
 
 
 class _QueueLogHandler(logging.Handler):
-    def __init__(self, events: queue.Queue):
+    """A window's log: its farm's lines (farm 1's window also shows the lines
+    of no farm in particular)."""
+
+    def __init__(self, events: queue.Queue, farm: int = 1):
         super().__init__()
         self.events = events
+        self.farm = farm
         self.setFormatter(logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S"))
 
     def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, "file_only", False):  # details for farmbot.log, not the window
+            return
+        if (getattr(record, "farm", 0) or 1) != self.farm:  # another farm's
             return
         self.events.put(("log", (record.levelno, self.format(record))))
 
@@ -332,7 +339,7 @@ class Page(SmoothScrollArea):
     """A scrolling page of setting groups. Without a title it's the body of
     a tab (the tabbed page above it shows the title)."""
 
-    def __init__(self, name: str, title: str = "", subtitle: str = ""):
+    def __init__(self, name: str, title: str = "", subtitle: str = "", badge: str = ""):
         super().__init__()
         self.setObjectName(name)
         self.setWidgetResizable(True)
@@ -343,7 +350,17 @@ class Page(SmoothScrollArea):
         self.layout_.setContentsMargins(*((36, 28, 36, 28) if title else (36, 8, 36, 28)))
         self.layout_.setSpacing(20)
         self.layout_.setAlignment(Qt.AlignTop)
-        if title:
+        if title and badge:  # e.g. "Beta", in a pill after the title
+            head = QHBoxLayout()
+            head.setSpacing(12)
+            head.addWidget(TitleLabel(title))
+            self.badge = QLabel(badge)
+            self.badge.setStyleSheet(f"color: white; background: {ACCENT}; border-radius: 9px; padding: 2px 12px; "
+                                     "font-size: 14px; font-weight: 600;")
+            head.addWidget(self.badge, 0, Qt.AlignVCenter)
+            head.addStretch(1)
+            self.layout_.addLayout(head)
+        elif title:
             self.layout_.addWidget(TitleLabel(title))
         if subtitle:
             self.layout_.addWidget(_subtitle(subtitle))
@@ -859,71 +876,68 @@ class WhatsNewDialog(BelowTitleBar, MessageBoxBase):
         self.widget.setMaximumWidth(620)
 
 
-class AccountsDialog(BelowTitleBar, MessageBoxBase):
-    """The account manager: every profile, the one in use and the starred
-    one (new accounts start from its settings); switch to one, copy one's
-    settings to another, rename or delete one."""
+class AccountsPanel(QWidget):
+    """Every account's profile, on the Farms page: which farms use it, the
+    starred one (new accounts start from its settings); copy one's settings
+    to another, rename or delete one. Each farm keeps to its own account."""
 
-    def __init__(self, window: FarmbotWindow):
-        super().__init__(window)
-        self.main = window  # (not self.window: QWidget.window() is taken)
-        header = QHBoxLayout()
-        header.addWidget(SubtitleLabel("Accounts"))
-        header.addStretch(1)
-        close = TransparentToolButton(FIF.CLOSE)
-        close.setToolTip("Close")
-        close.clicked.connect(self.reject)
-        header.addWidget(close)
-        self.viewLayout.addLayout(header)
-        note = CaptionLabel("Each Clash of Clans account gets its own profile of settings. The bot picks it by the "
-                            "player name it sees in the game.")
-        note.setWordWrap(True)
-        tint(note, MUTED)
-        self.viewLayout.addWidget(note)
+    def __init__(self, hub: FarmbotWindow):
+        super().__init__()
+        self.main = hub  # farm 1's window (not self.window: QWidget.window() is taken)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
         self.list = QWidget()
         self.rows = QVBoxLayout(self.list)
-        self.rows.setContentsMargins(0, 8, 0, 0)
+        self.rows.setContentsMargins(0, 0, 0, 0)
         self.rows.setSpacing(8)
-        self.viewLayout.addWidget(self.list)
+        layout.addWidget(self.list)
         self.footer = CaptionLabel()
         self.footer.setWordWrap(True)
         tint(self.footer, MUTED)
-        self.viewLayout.addWidget(self.footer)
-        self.buttonGroup.hide()  # the close button is at the top; a click outside closes it too
-        self.setClosableOnMaskClicked(True)
-        self.widget.setMinimumWidth(600)
-        self.refresh()
+        layout.addWidget(self.footer)
+        self._shown: tuple | None = None
 
-    def refresh(self) -> None:
+    def refresh(self, force: bool = True) -> None:
+        names = sorted(self.main.profiles.names())
+        users = {name: self.main.farms_using(name) for name in names}
+        running = {n for n in instances.numbers() if self.main.farm_running(n)}
+        shown = (tuple(names), tuple((k, tuple(v)) for k, v in users.items()), tuple(sorted(running)),
+                 self.main.config.profiles.default)
+        if not force and shown == self._shown:
+            return
+        self._shown = shown
         while self.rows.count():
             widget = self.rows.takeAt(0).widget()
             if widget is not None:
+                widget.hide()  # gone now, not when Qt gets round to deleting it
                 widget.deleteLater()
-        active = self.main.config.profiles.active
-        names = sorted(self.main.profiles.names(), key=lambda n: n != active)  # the one in use first
+        names.sort(key=lambda n: not users[n])  # the ones in use first
         if not names:
             empty = BodyLabel("No profiles yet: one is made for each account the bot sees in the game.")
             empty.setWordWrap(True)
             self.rows.addWidget(empty)
         for name in names:
-            self.rows.addWidget(self._row(name, names))
-        footer = f"{STAR_ON} Star a profile and new accounts start from its settings."
-        if self.main._running():
-            footer = "The bot is running and picks the profile itself: stop it to switch. " + footer
-        self.footer.setText(footer)
+            self.rows.addWidget(self._row(name, names, users[name], running))
+        self.footer.setText(f"{STAR_ON} Star a profile and new accounts start from its settings. A running "
+                            "farm's profile can't be renamed or deleted.")
 
-    def _row(self, name: str, names: list[str]) -> QWidget:
-        config = self.main.config
-        active, starred = name == config.profiles.active, name == config.profiles.default
-        running = self.main._running()
+    def _busy(self, name: str, running: set[int] | None = None) -> bool:
+        """A running farm plays with this profile's settings."""
+        running = running if running is not None else {n for n in instances.numbers() if self.main.farm_running(n)}
+        return any(n in running for n in self.main.farms_using(name))
+
+    def _row(self, name: str, names: list[str], users: list[int], running: set[int]) -> QWidget:
+        starred = name == self.main.config.profiles.default
+        busy = any(n in running for n in users)
         card = SimpleCardWidget()
         row = QHBoxLayout(card)
         row.setContentsMargins(0, 10, 8, 10)
-        card.setMinimumHeight(66)  # the same with or without a Switch button
+        card.setMinimumHeight(66)
         row.setSpacing(12)
-        bar = QWidget()  # the account in use: an accent bar down its left edge
+        bar = QWidget()  # a profile in use: an accent bar down its left edge
         bar.setFixedWidth(4)
-        bar.setStyleSheet(f"background: {themeColor().name() if active else 'transparent'}; border-radius: 2px;")
+        bar.setStyleSheet(f"background: {themeColor().name() if users else 'transparent'}; border-radius: 2px;")
         row.addWidget(bar)
         row.addWidget(avatar(name))
         about = QVBoxLayout()
@@ -933,8 +947,8 @@ class AccountsDialog(BelowTitleBar, MessageBoxBase):
         title = StrongBodyLabel(name)
         title.setStyleSheet("font-size: 15px;")
         top.addWidget(title)
-        if active:
-            top.addWidget(pill("In use", GOOD, "rgba(16,124,16,0.16)"))
+        for n in users:
+            top.addWidget(pill(f"Farm {n}", GOOD, "rgba(16,124,16,0.16)"))
         if starred:
             top.addWidget(pill(f"{STAR_ON} Default", STAR, "rgba(245,197,66,0.18)"))
         top.addStretch(1)
@@ -957,15 +971,9 @@ class AccountsDialog(BelowTitleBar, MessageBoxBase):
                         else "Star: new accounts start from this profile's settings")
         star.clicked.connect(lambda _=False: self._star("" if starred else name))
         row.addWidget(star)
-        if not active:
-            use = PrimaryPushButton(FIF.SYNC, "Switch")
-            use.setEnabled(not running)
-            use.setToolTip("Use this profile's settings" if not running else "Stop the bot to switch")
-            use.clicked.connect(lambda _=False: self._use(name))
-            row.addWidget(use)
         more = TransparentToolButton(FIF.MORE)
         more.setToolTip("Copy, rename, delete")
-        more.clicked.connect(lambda _=False, b=more: self._more(name, names, b))
+        more.clicked.connect(lambda _=False, b=more: self._more(name, names, b, busy))
         row.addWidget(more)
         return card
 
@@ -985,16 +993,14 @@ class AccountsDialog(BelowTitleBar, MessageBoxBase):
         picture.setToolTip("The name the bot looks for in the game")
         return picture
 
-    def _more(self, name: str, names: list[str], button: QWidget) -> None:
-        active = name == self.main.config.profiles.active
-        running = self.main._running()
+    def _more(self, name: str, names: list[str], button: QWidget, busy: bool) -> None:
         menu = RoundMenu(parent=self)
         copy_to = RoundMenu(f"Copy {name}'s settings to", self)
         copy_to.setIcon(FIF.COPY)
         others = [n for n in names if n != name]
         for other in others:
             action = Action(FIF.PEOPLE, other)
-            action.setEnabled(not (running and other == self.main.config.profiles.active))
+            action.setEnabled(not self._busy(other))
             action.triggered.connect(lambda _=False, o=other: self._copy(name, o))
             copy_to.addAction(action)
         if others:
@@ -1004,94 +1010,475 @@ class AccountsDialog(BelowTitleBar, MessageBoxBase):
             none.setEnabled(False)
             menu.addAction(none)
         rename = Action(FIF.EDIT, "Rename")
-        rename.setEnabled(not (running and active))
+        rename.setEnabled(not busy)
         rename.triggered.connect(lambda _=False: self._rename(name))
         menu.addAction(rename)
         menu.addSeparator()
         delete = Action(FIF.DELETE, "Delete")
-        delete.setEnabled(not (running and active))
+        delete.setEnabled(not busy)
         delete.triggered.connect(lambda _=False: self._delete(name))
         menu.addAction(delete)
         menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
 
-    def _use(self, name: str) -> None:
-        self.main._use_profile(name)
-        self.refresh()
+    def _done(self) -> None:
+        self.main.refresh_farm_pages()
 
     def _star(self, name: str) -> None:
-        self.main._flush_save()
-        self.main.config.profiles.default = name
-        accounts.save_active(self.main.config, self.main.config_path)
-        self.refresh()
+        for n in instances.numbers():  # each farm's file has the star: new accounts there start from it too
+            self.main.edit_farm(n, lambda c: setattr(c.profiles, "default", name))
+        self._done()
 
     def _copy(self, source: str, target: str) -> None:
         box = Confirm(f"Copy {source}'s settings to {target}?",
-                         f"{target}'s settings are replaced with {source}'s. What the bot read of {target}'s "
-                         "account (its storage sizes) stays.", self)
+                      f"{target}'s settings are replaced with {source}'s. What the bot read of {target}'s "
+                      "account (its storage sizes) stays.", self.main)
         box.yesButton.setText("Copy")
         if not box.exec():
             return
         main = self.main
-        main._flush_save()
+        for window in main.farm_windows().values():
+            window._flush_save()
         try:
             main.profiles.copy(source, target, load_config(main.config_path))
         except (OSError, ValueError) as exc:
             notice(InfoBarIcon.ERROR, "Couldn't copy", str(exc), duration=6000, parent=main)
             return
-        if target == main.config.profiles.active:
-            main._use_profile(target)  # show its new settings
-        notice(InfoBarIcon.SUCCESS, "Copied", f"{target} now has {source}'s settings.", duration=4000,
-               parent=main)
-        self.refresh()
+        for n in main.farms_using(target):
+            window = main.farm_window(n, create=False)
+            if window is not None:
+                window._use_profile(target)  # show its new settings
+        notice(InfoBarIcon.SUCCESS, "Copied", f"{target} now has {source}'s settings.", duration=4000, parent=main)
+        self._done()
 
     def _rename(self, name: str) -> None:
-        box = NameDialog(f"Rename {name}", name, self)
+        box = NameDialog(f"Rename {name}", name, self.main)
         if not box.exec() or box.edit.text().strip() == name:
             return
         main = self.main
-        main._flush_save()
+        for window in main.farm_windows().values():
+            window._flush_save()
         try:
             new = main.profiles.rename(name, box.edit.text())
         except (OSError, ValueError) as exc:
             notice(InfoBarIcon.ERROR, "Couldn't rename", str(exc), duration=6000, parent=main)
             return
-        profiles = main.config.profiles
-        if profiles.active == name:
-            profiles.active = new
-        if profiles.default == name:
-            profiles.default = new
-        accounts.save_active(main.config, main.config_path)
-        main._show_profiles()
-        self.refresh()
+
+        def renamed(config: Config) -> None:
+            if config.profiles.active == name:
+                config.profiles.active = new
+            if config.profiles.default == name:
+                config.profiles.default = new
+
+        for n in instances.numbers():
+            main.edit_farm(n, renamed)
+        self._done()
 
     def _delete(self, name: str) -> None:
         box = Confirm(f"Delete {name}?", "Its settings go. If the bot sees that account again, it makes a new "
-                         "profile for it from the starred profile's settings.", self)
+                      "profile for it from the starred profile's settings.", self.main)
         box.yesButton.setText("Delete")
         if not box.exec():
             return
         main = self.main
-        if name == main.config.profiles.active:
-            main._use_profile("")
-        if main.config.profiles.default == name:
-            main.config.profiles.default = ""
-            accounts.save_active(main.config, main.config_path)
+        for n in main.farms_using(name):
+            window = main.farm_window(n, create=False)
+            if window is not None:
+                window._use_profile("")
+            else:
+                main.edit_farm(n, lambda c: setattr(c.profiles, "active", ""))
+        for n in instances.numbers():
+            main.edit_farm(n, lambda c: setattr(c.profiles, "default", "") if c.profiles.default == name else None)
         main.profiles.delete(name)
-        main._show_profiles()
+        self._done()
+
+
+class FarmRow(SimpleCardWidget):
+    """One farm on the Farms page: its emulator instance and account, what
+    it's doing, its on/off switch; show it in this window or one of its own."""
+
+    def __init__(self, page: FarmsPage, n: int):
+        super().__init__()
+        self.page, self.hub, self.n = page, page.hub, n
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 10, 10, 10)
+        row.setSpacing(12)
+        self.setMinimumHeight(72)
+        row.addWidget(avatar(str(n)))
+        about = QVBoxLayout()
+        about.setSpacing(4)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        self.title = StrongBodyLabel(f"Farm {n}")
+        self.title.setStyleSheet("font-size: 15px;")
+        top.addWidget(self.title)
+        self.chip = QLabel()
+        top.addWidget(self.chip)
+        top.addStretch(1)
+        about.addLayout(top)
+        self.what = tint(CaptionLabel(), MUTED)
+        about.addWidget(self.what)
+        self.doing = CaptionLabel()
+        self.doing.setWordWrap(True)
+        about.addWidget(self.doing)
+        row.addLayout(about, 1)
+        self.switch = SwitchButton()
+        self.switch.setOnText("")
+        self.switch.setOffText("")
+        self.switch.setToolTip("Picked: Start farms it")
+        self.switch.checkedChanged.connect(self._switched)
+        row.addWidget(self.switch)
+        self.view_button = PushButton(FIF.VIEW, "View")
+        self.view_button.setMinimumWidth(110)
+        self.view_button.clicked.connect(lambda: self.hub.view_farm(self.n, self.page.owner))
+        row.addWidget(self.view_button)
+        self.own_button = TransparentToolButton(FIF.FULL_SCREEN)
+        self.own_button.setToolTip("Open in a window of its own (closing that window switches the farm off)")
+        self.own_button.clicked.connect(lambda: self.hub.open_separately(self.n))
+        row.addWidget(self.own_button)
+        self.remove_button = TransparentToolButton(FIF.DELETE)
+        self.remove_button.setToolTip("Remove this farm (its attack history is kept)")
+        self.remove_button.clicked.connect(self._remove)
+        row.addWidget(self.remove_button)
+        if n == 1:  # COCFARM's own: never removed (its place kept, so the rows line up)
+            policy = self.remove_button.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            self.remove_button.setSizePolicy(policy)
+            self.remove_button.hide()
         self.refresh()
+
+    def _window(self, create: bool = False):
+        return self.hub.farm_window(self.n, create=create)
+
+    def refresh(self) -> None:
+        window = self._window()
+        running = window is not None and window._running()
+        account = self.hub.farm_profile(self.n)
+        self.title.setText(f"Farm {self.n} · {account}" if account else f"Farm {self.n}")
+        try:
+            device = window.config.device if window is not None else instances.device_of(self.n)
+            self.what.setText(instances.describe(device) + ("" if account else " · its account is found when it "
+                                                                                 "first plays"))
+        except (OSError, ValueError) as exc:
+            self.what.setText(f"Its settings can't be read: {exc}")
+        if window is not None and (running or window.status_now.state == "problem"):
+            status = window.status_now
+            fg, bg = STATES[status.state]
+            word = ("Switching off" if window.switching_off() else
+                    "Paused" if running and window.pause_event.is_set() else status.word)
+            self.chip.setText(f"{status.symbol}  {word}")
+            attacks = window.stats["attacks"]
+            self.doing.setText(status.headline + (f" · {attacks} attack{'s' * (attacks != 1)}" if attacks else ""))
+        else:
+            fg, bg = STATES["stopped"]
+            self.chip.setText("Off")
+            attacks = window.stats["attacks"] if window is not None else 0
+            self.doing.setText(f"{attacks} attack{'s' * (attacks != 1)} this session" if attacks else "")
+        self.chip.setStyleSheet(f"color: {fg}; background: {bg}; border-radius: 9px; padding: 1px 10px; "
+                                "font-weight: 600;")
+        self.doing.setVisible(bool(self.doing.text()))
+        stopping = running and window.switching_off()
+        if running and not stopping and self.n not in self.page.picked:  # started from its own window
+            instances.pick(self.n)
+            self.page.picked.append(self.n)
+        self.switch.blockSignals(True)
+        self.switch.setChecked(self.n in self.page.picked)
+        self.switch.blockSignals(False)
+        here = self.page.owner.farm == self.n
+        self.view_button.setText("Showing" if here else "View")
+        self.view_button.setEnabled(not here)
+        self.view_button.setToolTip("This window shows this farm" if here else "Show this farm in this window")
+        separate = window is not None and window.separate and window.isVisible()
+        self.own_button.setEnabled(not here and not separate)
+        self.remove_button.setEnabled(not running)
+
+    def _switched(self, on: bool) -> None:
+        """Picks the farm for Start; while farms are farming, it starts or stops this one too."""
+        instances.pick(self.n, on)
+        self.page.picked = instances.picked()
+        if self.page.farming():
+            window = self._window()
+            if on and not (window is not None and window._running()):
+                self.hub.start_farm(self.n)
+            elif not on and window is not None and window._running():
+                window.stop_soon()
+        self.page.refresh()
+
+    def _remove(self) -> None:
+        box = Confirm(f"Remove farm {self.n}?", "COCFARM stops using that emulator instance (the instance itself "
+                      "stays in the emulator). Its attack history is kept in the instances folder.", self.page.owner)
+        box.yesButton.setText("Remove")
+        if box.exec():
+            self.hub.remove_farm(self.n)
+
+
+class SpareRow(SimpleCardWidget):
+    """An emulator instance on this PC that no farm plays yet. Switching it
+    on makes it a farm (with the last farm's settings), picked."""
+
+    def __init__(self, page: FarmsPage, choice: instances.Choice):
+        super().__init__()
+        self.page, self.hub, self.choice = page, page.hub, choice
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 10, 10, 10)
+        row.setSpacing(12)
+        self.setMinimumHeight(72)
+        icon = IconWidget(FIF.APPLICATION)
+        icon.setFixedSize(32, 32)
+        row.addWidget(icon)
+        about = QVBoxLayout()
+        about.setSpacing(4)
+        self.title = StrongBodyLabel(_instance_name(choice))
+        self.title.setStyleSheet("font-size: 15px;")
+        about.addWidget(self.title)
+        about.addWidget(tint(CaptionLabel(f"{choice.emulator} · not a farm yet: switch it on to farm with it"),
+                             MUTED))
+        row.addLayout(about, 1)
+        self.switch = SwitchButton()
+        self.switch.setOnText("")
+        self.switch.setOffText("")
+        self.switch.setToolTip("Make it a farm, picked for Start")
+        self.switch.checkedChanged.connect(self._switched)
+        row.addWidget(self.switch)
+        self.delete_button = TransparentToolButton(FIF.DELETE)
+        if instances.can_delete(choice):
+            self.delete_button.setToolTip("Delete this emulator instance (it asks first)")
+            self.delete_button.clicked.connect(lambda: self.hub.delete_instance(self.choice))
+        elif choice.mode == "bluestacks":
+            self.delete_button.setToolTip("Delete it in BlueStacks' Multi-Instance Manager")
+            self.delete_button.clicked.connect(self.hub.open_bluestacks_manager)
+        else:  # the emulator's first instance: its own
+            self.delete_button.setEnabled(False)
+            self.delete_button.setToolTip("The emulator's first instance can't be deleted")
+        row.addWidget(self.delete_button)
+
+    def _switched(self, on: bool) -> None:
+        if not on:
+            return
+        farming = self.page.farming()
+        n = self.hub.add_farm(self.choice.device(), quiet=True)
+        if n is None:
+            self.switch.blockSignals(True)
+            self.switch.setChecked(False)
+            self.switch.blockSignals(False)
+        elif farming:  # farms are running: this one joins them
+            self.hub.start_farm(n)
+
+
+class FarmsPage(Page):
+    """Several accounts at once (``farmbot/instances.py``): every farm, each
+    switched on or off here, and every account's profile. Each farm's window
+    has this page; ``owner`` is the window it's in."""
+
+    def __init__(self, owner: FarmbotWindow):
+        super().__init__("Farms", "Farms", "Farm several accounts at once: each farm plays one emulator instance "
+                         "and the account signed in there. Pick farms with their switches, then press Start. View shows a farm in this "
+                         "window; the square button opens it in a window of its own (closing that window switches "
+                         "the farm off). Every emulator instance on this PC is listed: switch one on to farm with "
+                         "it. This page opens from the account at the bottom left.", badge="Beta")
+        self.owner = owner
+        self.hub = owner.hub or owner
+        top = QWidget()
+        top.setStyleSheet("background: transparent;")
+        head = QHBoxLayout(top)
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(12)
+        self.summary = StrongBodyLabel()
+        head.addWidget(self.summary)
+        head.addStretch(1)
+        self.all_button = PrimaryPushButton(FIF.PLAY, "Start")
+        self.all_button.setMinimumWidth(130)
+        self.all_button.clicked.connect(self._start_or_stop_all)
+        head.addWidget(self.all_button)
+        self.add(top)
+        self.list = QWidget()
+        self.list.setStyleSheet("background: transparent;")
+        self.rows_layout = QVBoxLayout(self.list)
+        self.rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.rows_layout.setSpacing(8)
+        self.add(self.list)
+        bar = QWidget()
+        bar.setStyleSheet("background: transparent;")
+        line = QHBoxLayout(bar)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(8)
+        self.add_button = PrimaryDropDownPushButton(FIF.ADD, "New instance")
+        self.add_button.setToolTip("Make a new emulator instance, a copy of one with the game, and a farm for it")
+        self.add_menu = RoundMenu(parent=self.add_button)
+        self.add_button.setMenu(self.add_menu)
+        line.addWidget(self.add_button)
+        rescan = TransparentToolButton(FIF.SYNC)
+        rescan.setToolTip("Look again for emulator instances (made in an emulator's own manager, say)")
+        rescan.clicked.connect(lambda: self.hub.scan_emulators())
+        line.addWidget(rescan)
+        line.addStretch(1)
+        self.add(bar)
+        self.footer = tint(CaptionLabel(), MUTED)
+        self.footer.setWordWrap(True)
+        self.add(self.footer)
+        self.add(SubtitleLabel("Accounts"))
+        self.add(_subtitle("Each Clash of Clans account has its own profile of settings. A farm finds its account "
+                           "by the player name the game shows, the first time it plays."))
+        self.accounts = AccountsPanel(self.hub)
+        self.add(self.accounts)
+        self.rows: dict[int, FarmRow] = {}
+        self.spares: list[SpareRow] = []
+        self.picked: list[int] = instances.picked()
+        self._choices: list = []
+        self.timer = QTimer(self, interval=1000, timeout=self.tick)
+        self.timer.start()
+
+    def rebuild(self) -> None:
+        """The farms there are, and the instances that could be farms."""
+        for row in [*self.rows.values(), *self.spares]:
+            row.hide()
+            row.deleteLater()
+        self.rows, self.spares = {}, []
+        numbers = instances.numbers()
+        self.picked = instances.picked()
+        for n in numbers:
+            self.rows[n] = FarmRow(self, n)
+            self.rows_layout.addWidget(self.rows[n])
+        self._show_all()
+        self._fill_choices(numbers)
+        self.accounts.refresh()
+
+    def _fill_choices(self, numbers: list[int]) -> None:
+        """The instances no farm plays yet (a row each, after the farms), and
+        New instance's menu: one per emulator."""
+        devices = self.hub.farm_devices()
+        self._choices = [c for c in self.hub.found
+                         if not any(instances.same_instance(d, c.device(d)) for d in devices.values())]
+        if len(numbers) < instances.MOST:
+            for choice in self._choices:
+                spare = SpareRow(self, choice)
+                self.spares.append(spare)
+                self.rows_layout.addWidget(spare)
+        self.add_menu.clear()
+        for emulator in self.hub.found_emulators:
+            if emulator.mode == "bluestacks":
+                text = "BlueStacks: in its Multi-Instance Manager…"
+            else:
+                source = instances.source_for(emulator, devices, self.hub.found)
+                named = next((c for c in self.hub.found if c.mode == emulator.mode and c.install == emulator.install
+                              and instances.same_instance(c.device(source), source)), None)
+                text = (f"{emulator.name}: a copy of "
+                        f"{_instance_name(named) if named else instances.describe(source)}")
+            new = Action(FIF.COPY, text)
+            new.setEnabled(not self.hub.creating)
+            new.triggered.connect(lambda _=False, e=emulator: self.hub.create_farm(e))
+            self.add_menu.addAction(new)
+        room = len(numbers) < instances.MOST
+        busy = self.hub.creating
+        self.add_button.setEnabled(room and bool(self.hub.found_emulators))
+        if busy:
+            self.footer.setText(busy)
+        elif not self.hub.found_emulators:
+            self.footer.setText("No emulator found: install BlueStacks, LDPlayer or MuMu Player (Setup, step 1).")
+        elif not room:
+            self.footer.setText(f"COCFARM runs {instances.MOST} farms at most.")
+        else:
+            self.footer.setText("Farms can mix emulators. A new instance is a copy, signed in to the same account: "
+                                "switch it to another account once (Supercell ID) and it stays on it. Each instance "
+                                "needs about 2 CPU cores and 4 GB of memory.")
+
+    def refresh(self) -> None:
+        if list(self.rows) != instances.numbers():
+            self.rebuild()
+            return
+        self.picked = instances.picked()
+        for row in self.rows.values():
+            row.refresh()
+        self._show_all()
+        self.accounts.refresh(force=False)
+
+    def tick(self) -> None:
+        if self.isVisible():
+            self.refresh()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.refresh()
+
+    def farming(self) -> list[int]:
+        """The farms farming (not those switching off)."""
+        on = []
+        for n in self.rows:
+            window = self.hub.farm_window(n, create=False)
+            if window is not None and window._running() and not window.switching_off():
+                on.append(n)
+        return on
+
+    def _show_all(self) -> None:
+        on, picked = len(self.farming()), len([n for n in self.picked if n in self.rows])
+        if on:
+            self.summary.setText(f"{on} farm{'s' * (on != 1)} farming")
+        else:
+            self.summary.setText(f"{picked} of {len(self.rows)} farms picked" if len(self.rows) > 1 else "")
+        self.all_button.setText("Stop" if on else "Start")
+        self.all_button.setIcon(FIF.PAUSE if on else FIF.PLAY)
+        self.all_button.setEnabled(bool(on or picked))
+        self.all_button.setToolTip("Switch every farm off, each after its current step" if on else
+                                   "Farm with every farm picked" if picked else "Pick a farm with its switch first")
+
+    def _start_or_stop_all(self) -> None:
+        on = self.farming()
+        if on:
+            for n in on:
+                self.hub.farm_window(n).stop_soon()
+        else:
+            for n in self.picked:
+                if n in self.rows:
+                    self.hub.start_farm(n)
+        self.refresh()
+
+    def _add(self, choice: instances.Choice) -> None:
+        self.hub.add_farm(choice.device())
+
+
+def _instance_name(choice: instances.Choice) -> str:
+    """An instance as its emulator's manager names it, e.g. "LDPlayer-1 (instance 1)"."""
+    if choice.mode == "bluestacks":
+        return choice.label
+    number, _, name = choice.label.partition(": ")
+    return f"{name or number} (instance {int(choice.key) + 1})"
 
 
 class FarmbotWindow(FluentWindow):
-    def __init__(self, config_path: str, serial: str | None = None):
+    """A farm's window. Farm 1's is the hub, which keeps the others (made
+    hidden, soon after COCFARM opens). One window at a time is COCFARM's main
+    one: View on the Farms page puts another farm's window in its place.
+    A farm can also be opened in a window of its own (``separate``):
+    closing that one switches the farm off."""
+
+    def __init__(self, config_path: str, serial: str | None = None, farm: int = 1,
+                 hub: FarmbotWindow | None = None):
         super().__init__()
+        self.farm, self.hub = farm, hub
+        self.children: dict[int, FarmbotWindow] = {}  # the hub's: the other farms' windows
+        self._closing = False
+        self.separate = False  # opened in a window of its own, beside the main one
+        self.main_view = 1  # the hub's: the farm in COCFARM's main window
+        self.found: list[instances.Choice] = []  # the hub's: every emulator instance on this PC
+        self.found_emulators: list[instances.Emulator] = []
+        self.creating = ""  # the hub's: what Create new instance is doing
+        self.last_input = time.monotonic()  # the hub's: when the mouse or keyboard was last used
+        self._prebuilding = False  # the hub's: _prebuild has a turn coming
+        self._stop_when_paused = False  # switched off: stops at the next safe point
+        self._profile_cache: dict[int, tuple[float, str]] = {}
         self.config_path = Path(config_path)
+        if farm == 1:  # the other farms' folders are beside its file
+            instances.ROOT = self.config_path.resolve().parent
         self.first_run = ensure_config(self.config_path)
+        if farm == 1:
+            instances.mend_sizes()  # farms added before 0.9.10 had none of farm 1's button sizes
         if self.first_run:
             log.info("First run: created %s with the settings for BlueStacks at 860 x 672", self.config_path)
         self.profiles = accounts.Profiles.beside(self.config_path)
         self.config = accounts.load_active(self.config_path)  # with its profile's settings, if one is in use
         if serial:
             self.config.device.serial = serial
+        if farm > 1:
+            self.config.home = self.config_path.parent  # its attack history and error screens
         self.events: queue.Queue = queue.Queue()
         self.stop_event: threading.Event | None = None
         self.pause_event = threading.Event()  # Pause: the bot waits at its next safe point
@@ -1113,7 +1500,9 @@ class FarmbotWindow(FluentWindow):
         self.update_busy = False
         self.update_bar: InfoBar | None = None
 
-        self.setWindowTitle(f"{APP_NAME} {__version__}")  # the version is in every bug report screenshot
+        # The version is in every bug report screenshot; the window's number, with several open.
+        self.setWindowTitle(f"{APP_NAME} {__version__}" + (f" · Farm {farm}" if farm > 1 or len(instances.numbers()) > 1
+                                                           else ""))
         self.setWindowIcon(QIcon(str(LOGO)))
         self._sharp_title_icon()
         # Keep page names visible next to the icons (recognition over recall).
@@ -1123,7 +1512,9 @@ class FarmbotWindow(FluentWindow):
         self.setMinimumSize(980, 640)
         # Theme first: set once every widget exists, it would restyle them all again (seconds).
         self._theme = None
-        if self.config.bot.theme in THEMES:
+        if hub is not None and hub._theme == self.config.bot.theme:  # set already: restyling every window takes seconds
+            self._theme = hub._theme
+        elif self.config.bot.theme in THEMES:
             self._apply_theme(self.config.bot.theme)
         self._build_title_bar()
         self.pages: dict[str, QWidget] = {}
@@ -1146,13 +1537,19 @@ class FarmbotWindow(FluentWindow):
         self._add_page(self._builder_base(), FIF.GAME, "Builder base")
         self._add_page(self._when_to_play(), FIF.DATE_TIME, "When to play")
         self._add_page(self._history(), FIF.HISTORY, "History")
+        self.farms_page = FarmsPage(self)  # every farm, and every account's profile: opened by the account
+        self.farms_page.setObjectName("profile")  # (bottom left), which shows as picked while it's open
+        # As addSubInterface marks its pages: unmarked, every switch to or from it restyles the whole window.
+        self.farms_page.setProperty("isStackedTransparent", False)
+        self.stackedWidget.addWidget(self.farms_page)
+        self.pages["Farms"] = self.farms_page
         self._add_page(self._setup(), FIF.CHECKBOX if hasattr(FIF, "CHECKBOX") else FIF.ACCEPT, "Setup",
                        NavigationItemPosition.BOTTOM)
         self._add_page(self._advanced(), FIF.SETTING, "Advanced", NavigationItemPosition.BOTTOM)
-        # The account's profile: picked by the player name in the game, or by hand here.
+        # This farm's account; a click opens the Farms page: every farm and every account.
         self.profile_nav = NavigationAvatarWidget("")
-        self.navigationInterface.addWidget("profile", self.profile_nav, self._show_accounts,
-                                           NavigationItemPosition.BOTTOM, tooltip="Accounts: each one's settings")
+        self.navigationInterface.addWidget("profile", self.profile_nav, lambda: self.show_page("Farms"),
+                                           NavigationItemPosition.BOTTOM, tooltip="Farms and accounts (beta)")
         self._show_profiles()
         self._find_bluestacks()  # fills both Setup and Advanced
         self.navigationInterface.expand(useAni=False)
@@ -1166,7 +1563,7 @@ class FarmbotWindow(FluentWindow):
                           if self.first_run else
                           Status("ready", "Ready to farm", plan_summary(validate(self.collect())[0])))
 
-        self.log_handler = _QueueLogHandler(self.events)
+        self.log_handler = _QueueLogHandler(self.events, farm)
         logging.getLogger().addHandler(self.log_handler)
         logging.getLogger().setLevel(logging.INFO)
         self.poll_timer = QTimer(self, interval=100, timeout=self._poll)
@@ -1174,25 +1571,37 @@ class FarmbotWindow(FluentWindow):
         self.clock_timer = QTimer(self, interval=1000, timeout=self._tick)
         self.clock_timer.start()
         QShortcut(QKeySequence("F5"), self, activated=self.start)
-        if self.first_run:
-            QTimer.singleShot(300, self._welcome)
-        self.update_timer = QTimer(self, interval=600_000, timeout=self._check_for_update)  # GitHub is asked hourly at most
-        self.update_timer.start()
-        QTimer.singleShot(1500, self._after_update)
-        QTimer.singleShot(600, self._whats_new)
-        self._check_for_update()
+        if farm == 1:  # the main window looks for updates and tells what's new, for every farm
+            if self.first_run:
+                QTimer.singleShot(300, self._welcome)
+            self.update_timer = QTimer(self, interval=600_000, timeout=self._check_for_update)  # hourly at most
+            self.update_timer.start()
+            QTimer.singleShot(1500, self._after_update)
+            QTimer.singleShot(600, self._whats_new)
+            self._check_for_update()
+            self.scan_emulators()
+            self.farms_page.rebuild()
+            QTimer.singleShot(1500, self._prebuild)  # the other farms' windows, so they show at once
+        else:
+            self.farms_page.rebuild()
         QShortcut(QKeySequence("Esc"), self, activated=self.stop)
         for i, name in enumerate(PAGES, start=1):
             QShortcut(QKeySequence(f"Ctrl+{i}"), self, activated=lambda n=name: self.show_page(n))
         qconfig.themeChanged.connect(self._theme_signal)
-        QApplication.instance().installEventFilter(self)  # Enter presses the focused button
+        if farm == 1:  # one filter for every farm's window: each event passes through all of them
+            QApplication.instance().installEventFilter(self)  # Enter presses the focused button
+
+    _INPUT = (QEvent.KeyPress, QEvent.MouseButtonPress, QEvent.MouseMove, QEvent.Wheel)
 
     def eventFilter(self, obj, event) -> bool:
-        if (event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Return, Qt.Key_Enter)
-                and obj is QApplication.focusWidget() and isinstance(obj, QAbstractButton) and obj.isEnabled()
-                and obj.window() is self):
-            obj.animateClick()
-            return True
+        kind = event.type()
+        if kind in self._INPUT:
+            self.last_input = time.monotonic()
+            if (kind == QEvent.KeyPress and event.key() in (Qt.Key_Return, Qt.Key_Enter)
+                    and obj is QApplication.focusWidget() and isinstance(obj, QAbstractButton) and obj.isEnabled()
+                    and isinstance(obj.window(), FarmbotWindow)):
+                obj.animateClick()
+                return True
         return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------ chrome
@@ -1476,13 +1885,393 @@ class FarmbotWindow(FluentWindow):
         return card
 
     def _show_profiles(self) -> None:
-        """The profile in use, at the bottom of the side bar."""
+        """The farm's account, at the bottom of the side bar (click: switch farms)."""
         active = self.config.profiles.active
-        self.profile_nav.setName(active or "No profile yet")
+        several = len(instances.numbers()) > 1
+        self.profile_nav.setName(f"Farm {self.farm} · {active}" if several and active else
+                                 active or (f"Farm {self.farm}" if several else "No account yet"))
 
-    def _show_accounts(self) -> None:
-        """Click on the profile: the account manager."""
-        AccountsDialog(self).exec()
+    # ------------------------------------------------------------ farms (the main window's)
+    def farm_window(self, n: int, create: bool = True) -> FarmbotWindow | None:
+        """Farm ``n``'s window, made (hidden) when first needed with ``create``."""
+        hub = self.hub or self
+        if n == 1:
+            return hub
+        window = hub.children.get(n)
+        if window is None and create:
+            QApplication.setOverrideCursor(Qt.WaitCursor)  # a second or two: not built yet
+            try:
+                window = FarmbotWindow(str(instances.config_path(n)), farm=n, hub=hub)
+            finally:
+                QApplication.restoreOverrideCursor()
+            hub.children[n] = window
+        return window
+
+    def farm_windows(self) -> dict[int, FarmbotWindow]:
+        hub = self.hub or self
+        return {1: hub, **hub.children}
+
+    def farm_devices(self) -> dict[int, DeviceConfig]:
+        """Each farm's emulator instance."""
+        found = {}
+        for n in instances.numbers():
+            window = self.farm_window(n, create=False)
+            try:
+                found[n] = window.config.device if window is not None else instances.device_of(n)
+            except (OSError, ValueError) as exc:
+                log.warning("Farm %d's settings can't be read: %s", n, exc)
+        return found
+
+    IDLE_BEFORE_PREBUILD = 6.0  # s without the mouse or keyboard
+
+    def _prebuild(self) -> None:
+        """Make the farms' windows one by one while nobody uses COCFARM, so
+        View and the own-window button show them at once. Building one holds
+        COCFARM up for a second or two, so not while it's being used."""
+        if self._prebuilding or self._closing:
+            return
+        missing = [n for n in instances.numbers() if n > 1 and n not in self.children]
+        if not missing:
+            return
+        self._prebuilding = True
+        idle = time.monotonic() - self.last_input
+        if idle >= self.IDLE_BEFORE_PREBUILD:
+            self.farm_window(missing[0])
+            self.last_input = time.monotonic() - self.IDLE_BEFORE_PREBUILD  # the next one after a short break
+            wait = 300
+        else:
+            wait = int((self.IDLE_BEFORE_PREBUILD - idle) * 1000) + 100
+        QTimer.singleShot(wait, self._prebuild_again)
+
+    def _prebuild_again(self) -> None:
+        self._prebuilding = False
+        self._prebuild()
+
+    def scan_emulators(self, background: bool = True) -> None:
+        """Every emulator instance on this PC. It asks the emulators' own
+        tools (MuMu's can take a while), so not on the window's thread."""
+        hub = self.hub or self
+
+        def work() -> None:
+            try:
+                found_emulators, found = instances.emulators(), instances.choices()
+            except Exception as exc:  # an emulator's own tool failed: say so rather than break the page
+                log.warning("Couldn't list the emulators' instances: %s", exc)
+                return
+            if background:
+                hub.events.put(("call", lambda: hub._scanned(found_emulators, found)))
+            else:
+                hub._scanned(found_emulators, found)
+
+        if background:
+            hub._spawn(work)
+        else:
+            work()
+
+    def _scanned(self, found_emulators: list[instances.Emulator], found: list[instances.Choice]) -> None:
+        self.found_emulators, self.found = found_emulators, found
+        self.rebuild_farm_pages()
+
+    def rebuild_farm_pages(self) -> None:
+        for window in self.farm_windows().values():
+            window.farms_page.rebuild()
+        self._retitle()
+
+    def refresh_farm_pages(self) -> None:
+        for window in self.farm_windows().values():
+            window.farms_page.refresh()
+
+    def _retitle(self) -> None:
+        several = len(instances.numbers()) > 1
+        for n, window in self.farm_windows().items():
+            window.setWindowTitle(f"{APP_NAME} {__version__}" + (f" · Farm {n}" if several or n > 1 else ""))
+
+    def view_farm(self, n: int, here: FarmbotWindow | None = None) -> None:
+        """Show farm ``n`` in COCFARM's main window: its window takes the
+        place of the one showing there, on the same page."""
+        hub = self.hub or self
+        target = hub.farm_window(n)
+        main = hub.farm_window(hub.main_view, create=False) or hub
+        place = main if main.isVisible() else (here or main)
+        if target is place:
+            return
+        page = next((key for key, widget in place.pages.items() if widget is place.stackedWidget.currentWidget()),
+                    "Dashboard")
+        maximized = place.isMaximized()
+        target.separate = False
+        target.setGeometry(place.geometry())
+        target.show_page(page)
+        target.showMaximized() if maximized else target.showNormal()
+        target.raise_()
+        target.activateWindow()
+        if not place.separate:
+            place.hide()
+        hub.main_view = n
+        hub.refresh_farm_pages()
+
+    def open_separately(self, n: int) -> None:
+        """Farm ``n`` in a window of its own, beside the main one."""
+        hub = self.hub or self
+        if n == hub.main_view:
+            return
+        window = hub.farm_window(n)
+        if not window.isVisible():
+            main = hub.farm_window(hub.main_view, create=False) or hub
+            window.separate = True
+            window.setGeometry(main.geometry().translated(40, 40))
+            window.showNormal()
+        window.raise_()
+        window.activateWindow()
+        hub.refresh_farm_pages()
+
+    def add_farm(self, device: DeviceConfig, quiet: bool = False) -> int | None:
+        """A farm for this emulator instance, with the last farm's settings."""
+        hub = self.hub or self
+        source = instances.numbers()[-1]
+        window = hub.farm_window(source, create=False)
+        if window is not None:
+            window._flush_save()  # the new farm starts from its settings
+        others = hub.farm_devices()
+        try:
+            n = instances.add(device, source)
+        except (OSError, ValueError) as exc:
+            notice(InfoBarIcon.ERROR, "Couldn't add it", str(exc), duration=6000, parent=self._shown())
+            return None
+        hub.rebuild_farm_pages()
+        clash = instances.port_clash(device, others, hub.found)
+        if clash is not None:
+            notice(InfoBarIcon.WARNING, f"Added farm {n}, but…", f"Its emulator instance has the same connection "
+                   f"port as farm {clash}'s, so the two can't play at the same time. Give one of them another "
+                   "instance (or another port in the emulator's settings).", duration=12000, parent=self._shown())
+        elif not quiet:
+            notice(InfoBarIcon.SUCCESS, f"Added farm {n}", "It's picked: Start farms it.", duration=5000,
+                   parent=self._shown())
+        QTimer.singleShot(500, hub._prebuild)
+        return n
+
+    def _shown(self) -> FarmbotWindow:
+        """The window to tell things in: COCFARM's main one."""
+        hub = self.hub or self
+        main = hub.farm_window(hub.main_view, create=False)
+        return main if main is not None and main.isVisible() else self
+
+    def create_farm(self, emulator: instances.Emulator, close: bool = False) -> None:
+        """Create new instance: a copy of one of ``emulator``'s instances (the
+        last farm's on it, with the game set up), and a farm for it."""
+        hub = self.hub or self
+        if emulator.mode == "bluestacks":
+            hub._create_in_bluestacks()
+            return
+        devices = hub.farm_devices()
+        device = instances.source_for(emulator, devices, hub.found)
+        playing = next((n for n, d in devices.items() if instances.same_instance(d, device) and hub.farm_running(n)),
+                       None)
+        if playing is not None:
+            notice(InfoBarIcon.WARNING, f"Switch farm {playing} off first", "Its emulator instance is the one "
+                   "copied, and a running one can't be.", duration=6000, parent=self._shown())
+            return
+        hub.creating = f"Copying {instances.describe(device)}… copying the game takes a minute or two."
+        hub.rebuild_farm_pages()
+        events = hub.events
+
+        def work() -> None:
+            try:
+                key = instances.create_instance(device, close=close)
+            except instances.StillOpen as exc:
+                events.put(("call", lambda name=str(exc): hub._created(emulator, None, still_open=name)))
+            except Exception as exc:
+                events.put(("call", lambda message=str(exc): hub._created(emulator, None, error=message)))
+            else:
+                made = copy.deepcopy(device)
+                instances.set_key(made, key)
+                events.put(("call", lambda: hub._created(emulator, made)))
+
+        hub._spawn(work)
+
+    def _created(self, emulator: instances.Emulator, device: DeviceConfig | None, still_open: str = "",
+                 error: str = "") -> None:
+        self.creating = ""
+        self.scan_emulators()  # the new instance
+        self.rebuild_farm_pages()
+        shown = self._shown()
+        if still_open:
+            box = Confirm(f"Close {still_open} to copy it?", "A running emulator instance can't be copied. COCFARM "
+                          "closes it, makes the copy, and it can be opened again after.", shown)
+            box.yesButton.setText("Close and copy")
+            if box.exec():
+                self.create_farm(emulator, close=True)
+            return
+        if error:
+            notice(InfoBarIcon.ERROR, "Couldn't make the instance", error, duration=8000, parent=shown)
+            return
+        n = self.add_farm(device)
+        if n is not None:
+            notice(InfoBarIcon.SUCCESS, f"Made farm {n}'s instance", "It's a copy, signed in to the same account: "
+                   "open it once and sign in to another account with Supercell ID. Then switch its farm on.",
+                   duration=15000, parent=shown)
+
+    def delete_instance(self, choice: instances.Choice, close: bool = False) -> None:
+        """Delete an emulator instance no farm plays, after asking."""
+        hub = self.hub or self
+        shown = hub._shown()
+        name = f"{choice.emulator}'s {_instance_name(choice)}"
+        if not close:
+            box = Confirm(f"Delete {name}?", "The emulator instance is deleted, with everything in it: the game "
+                          "and its files. It can't be undone. The Clash of Clans account itself is safe (it's kept "
+                          "by Supercell, not in the emulator).", shown)
+            box.yesButton.setText("Delete")
+            if not box.exec():
+                return
+        device = choice.device()
+        events = hub.events
+
+        def work() -> None:
+            try:
+                instances.delete_instance(device, close=close)
+            except instances.StillOpen:
+                events.put(("call", lambda: hub._deleted(choice, still_open=True)))
+            except Exception as exc:
+                events.put(("call", lambda message=str(exc): hub._deleted(choice, error=message)))
+            else:
+                events.put(("call", lambda: hub._deleted(choice)))
+
+        hub._spawn(work)
+
+    def _deleted(self, choice: instances.Choice, still_open: bool = False, error: str = "") -> None:
+        shown = self._shown()
+        if still_open:
+            box = Confirm(f"Close {_instance_name(choice)} to delete it?", "It's open in the emulator. COCFARM "
+                          "closes it, then deletes it.", shown)
+            box.yesButton.setText("Close and delete")
+            if box.exec():
+                self.delete_instance(choice, close=True)
+            return
+        if error:
+            notice(InfoBarIcon.ERROR, "Couldn't delete it", error, duration=8000, parent=shown)
+        else:
+            notice(InfoBarIcon.SUCCESS, "Deleted", f"{choice.emulator}'s {_instance_name(choice)} is gone.",
+                   duration=5000, parent=shown)
+        self.scan_emulators()
+
+    def open_bluestacks_manager(self) -> bool:
+        import subprocess
+
+        manager = instances.bluestacks_manager()
+        try:
+            if manager is None:
+                raise OSError("it wasn't found in the BlueStacks folder")
+            subprocess.Popen([str(manager)])
+            return True
+        except OSError as exc:
+            notice(InfoBarIcon.ERROR, "Couldn't open BlueStacks' Multi-Instance Manager", str(exc), duration=6000,
+                   parent=self._shown())
+            return False
+
+    def _create_in_bluestacks(self) -> None:
+        """BlueStacks makes instances only in its Multi-Instance Manager: open
+        it, and add a farm for the instance made there once it shows up."""
+        import subprocess
+
+        manager = instances.bluestacks_manager()
+        if manager is None:
+            notice(InfoBarIcon.ERROR, "BlueStacks' Multi-Instance Manager wasn't found",
+                   "Open it from the BlueStacks folder, make an instance, then press the refresh button here.",
+                   duration=8000, parent=self._shown())
+            return
+        before = {c.key for c in instances.choices(DeviceConfig(mode="bluestacks"))}
+        try:
+            subprocess.Popen([str(manager)])
+        except OSError as exc:
+            notice(InfoBarIcon.ERROR, "Couldn't open it", str(exc), duration=6000, parent=self._shown())
+            return
+        self.creating = ("Waiting for the new BlueStacks instance: in the Multi-Instance Manager, press Instance, "
+                         "then Clone, and clone the instance with the game.")
+        self.rebuild_farm_pages()
+        tries = {"left": 200}  # 10 minutes
+
+        def look() -> None:
+            tries["left"] -= 1
+            made = [c for c in instances.choices(DeviceConfig(mode="bluestacks")) if c.key not in before]
+            if made or tries["left"] <= 0:
+                timer.stop()
+                self.creating = ""
+                self.scan_emulators()
+                self.rebuild_farm_pages()
+                if made:
+                    self.add_farm(made[0].device())
+
+        timer = QTimer(self, interval=3000, timeout=look)
+        timer.start()
+
+    def farm_running(self, n: int) -> bool:
+        window = self.farm_window(n, create=False)
+        return window is not None and window._running()
+
+    def farm_profile(self, n: int) -> str:
+        """The profile farm ``n`` plays with ("": none yet)."""
+        window = self.farm_window(n, create=False)
+        if window is not None:
+            return window.config.profiles.active
+        path = instances.config_path(n)
+        try:
+            stamp = path.stat().st_mtime
+            cached = self._profile_cache.get(n)
+            if cached is None or cached[0] != stamp:
+                cached = (stamp, load_config(path).profiles.active)
+                self._profile_cache[n] = cached
+            return cached[1]
+        except (OSError, ValueError):
+            return ""
+
+    def farms_using(self, name: str) -> list[int]:
+        return [n for n in instances.numbers() if name and self.farm_profile(n) == name]
+
+    def edit_farm(self, n: int, change: Callable[[Config], Any]) -> None:
+        """Change farm ``n``'s settings file (its window's settings, if it has one)."""
+        window = self.farm_window(n, create=False)
+        if window is not None:
+            window._flush_save()
+            change(window.config)
+            accounts.save_active(window.config, window.config_path)
+            window._show_profiles()
+            return
+        path = instances.config_path(n)
+        config = load_config(path)
+        change(config)
+        save_config(config, path)
+
+    def start_farm(self, n: int) -> None:
+        window = self.farm_window(n)
+        window.start(show=False)
+        if not window._running() and not window.isVisible():  # it says why in its own window
+            self.view_farm(n)
+
+    def remove_farm(self, n: int) -> None:
+        hub = self.hub or self
+        window = hub.children.pop(n, None)
+        if window is not None:
+            window.stop_now()
+            window._closing = True
+            window.close()
+            window.deleteLater()
+        if hub.main_view == n:
+            hub.main_view = 1
+            hub.showNormal()
+        try:
+            instances.remove(n)
+        except (OSError, ValueError) as exc:
+            notice(InfoBarIcon.ERROR, "Couldn't remove it", str(exc), duration=6000, parent=hub)
+        hub.rebuild_farm_pages()
+
+    def _spawn(self, target: Callable, *args) -> threading.Thread:
+        """A worker thread, its log lines marked as this window's farm's."""
+        def run() -> None:
+            instances.mark(self.farm)
+            target(*args)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread
 
     def _flush_save(self) -> None:
         """Save edits still waiting to be (they belong to the profile in use)."""
@@ -1530,7 +2319,7 @@ class FarmbotWindow(FluentWindow):
             known = starred and self.profiles.path(starred).is_file()
             source = f"{starred}'s settings" if known else "the settings in use"
             notice(InfoBarIcon.SUCCESS, "New account", f"Made the profile {name} for it, from {source}. "
-                   "Click it at the bottom left to manage accounts.", duration=8000,
+                   "Manage accounts on the Farms page.", duration=8000,
                    parent=self)
         if name != self.config.profiles.active:
             self._use_profile(name)
@@ -1772,7 +2561,7 @@ class FarmbotWindow(FluentWindow):
         from farmbot import history
         from farmbot.tasks.search import Loot
 
-        path = self.config.bot.history
+        path = instances.resolve(self.config, self.config.bot.history) if self.config.bot.history else None
         rows = history.read_all(path) if path else []
         days = history.daily_totals(rows)
         today = date.today()
@@ -1869,7 +2658,7 @@ class FarmbotWindow(FluentWindow):
     def _open_history_file(self) -> None:
         import os
 
-        path = Path(self.config.bot.history) if self.config.bot.history else None
+        path = instances.resolve(self.config, self.config.bot.history) if self.config.bot.history else None
         if not path or not path.is_file():
             notice(InfoBarIcon.WARNING, "No history yet", "The file appears after the first attack.", duration=4000,
                    parent=self)
@@ -2535,7 +3324,7 @@ class FarmbotWindow(FluentWindow):
             except Exception as exc:
                 self.events.put(("screen", str(exc)))
 
-        threading.Thread(target=work, daemon=True).start()
+        self._spawn(work)
 
     def _open_screen(self) -> None:
         import cv2
@@ -2797,10 +3586,10 @@ class FarmbotWindow(FluentWindow):
         self._card(emulator, "device.ldplayer", FIF.APPLICATION, "LDPlayer version",
                    "Which LDPlayer to use (9 or newer). Empty uses the newest one installed.", self.ldplayer_box)
         self.number(emulator, "device.ldplayer_index", FIF.TILES, "LDPlayer instance number",
-                    "0 is the first instance in LDMultiPlayer.")
+                    "1 is the first instance in LDMultiPlayer.")
         self.depends("device.mode", "device.ldplayer", "device.ldplayer_index", when="ldplayer")
         self.number(emulator, "device.mumu_index", FIF.TILES, "MuMu instance number",
-                    "0 is the first instance in MuMu Multi-instance.")
+                    "1 is the first instance in MuMu Multi-instance.")
         self.depends("device.mode", "device.mumu_index", when="mumu")
         self.text(emulator, "device.serial", FIF.CONNECT if hasattr(FIF, "CONNECT") else FIF.WIFI, "Device address",
                   "For Emulator = Other: the ADB address of any emulator or phone, e.g. 127.0.0.1:5555.", width=200)
@@ -2871,6 +3660,8 @@ class FarmbotWindow(FluentWindow):
         """Ask GitHub for a newer COCFARM in the background (see farmbot/update.py
         for how often it really asks)."""
         repo = self.config.bot.update_repo
+        if self.farm > 1:  # the main window looks for updates for every farm
+            return
         if not repo or self.update_busy or not (force or self.config.bot.check_updates):
             return
         if force:
@@ -2882,7 +3673,7 @@ class FarmbotWindow(FluentWindow):
 
             self.events.put(("update", (update.check(repo, force=force), force)))
 
-        threading.Thread(target=work, daemon=True).start()
+        self._spawn(work)
 
     def _show_update(self, check, force: bool) -> None:
         from farmbot.update import can_install
@@ -2957,7 +3748,7 @@ class FarmbotWindow(FluentWindow):
                 log.exception("Update failed")
                 self.events.put(("update_failed", f"Something went wrong: {exc}"))
 
-        threading.Thread(target=work, daemon=True).start()
+        self._spawn(work)
 
     def _show_update_progress(self, done: int, total: int) -> None:
         if total:
@@ -2990,6 +3781,13 @@ class FarmbotWindow(FluentWindow):
             self.stop()
             QTimer.singleShot(500, self._restart_to_update)
             return
+        others = [n for n in self.children if self.farm_running(n)]
+        if others:  # the update restarts COCFARM: every farm stops
+            notice(InfoBarIcon.WARNING, "Switch the other farms off first",
+                   "Updating restarts COCFARM. Switch farm " + ", ".join(map(str, others))
+                   + " off on the Farms page, then press Restart again.", duration=8000, parent=self)
+            self.update_button.setEnabled(True)
+            return
         from farmbot import update
 
         try:
@@ -3016,6 +3814,8 @@ class FarmbotWindow(FluentWindow):
         """Once after an update (or on request): what changed, in a player's words."""
         from farmbot import whatsnew
 
+        if self.farm > 1 and not force:  # the main window tells: once is enough
+            return
         notes = (whatsnew.latest() if force
                  else whatsnew.unseen(self.config_path.with_name("update.json"), first_run=self.first_run))
         if notes:
@@ -3036,7 +3836,7 @@ class FarmbotWindow(FluentWindow):
             ok = notifier.test()
             self.events.put(("notify", ok))
 
-        threading.Thread(target=work, daemon=True).start()
+        self._spawn(work)
 
     def _inspect_screen(self) -> None:
         if not self._autosave():
@@ -3058,7 +3858,7 @@ class FarmbotWindow(FluentWindow):
             except Exception as exc:
                 self.events.put(("seen", str(exc)))
 
-        threading.Thread(target=work, daemon=True).start()
+        self._spawn(work)
 
     def _show_seen(self, result) -> None:
         self.see_button.setEnabled(True)
@@ -3253,7 +4053,7 @@ class FarmbotWindow(FluentWindow):
     def _running(self) -> bool:
         return self.thread is not None and self.thread.is_alive()
 
-    def start(self) -> None:
+    def start(self, *_, show: bool = True) -> None:
         self.save_timer.stop()
         if self._running():
             if self.pause_event.is_set():  # Resume
@@ -3276,11 +4076,11 @@ class FarmbotWindow(FluentWindow):
             self._pictures_bar(InfoBarIcon.INFORMATION, "Tip", "Without the Return Home and Okay pictures the bot closes "
                                "the game to leave each battle, which takes about 30 s longer.")
         self.stop_event = threading.Event()
+        self._stop_when_paused = False
         self.pause_event.clear()
         self._show_pause_button()
         self.session_start = time.monotonic()
-        self.thread = threading.Thread(target=self._run_bot, args=(self.stop_event,), daemon=True)
-        self.thread.start()
+        self.thread = self._spawn(self._run_bot, self.stop_event)
         self.problem = None
         self.auto_village = None
         self.run_from, self.stopped_by_you = self.stats["attacks"], False
@@ -3289,7 +4089,32 @@ class FarmbotWindow(FluentWindow):
         self.stop_button.setEnabled(True)
         self._changed(save=False)
         self._show_profiles()  # picked by the bot while it runs
-        self.show_page("Dashboard")
+        if show:
+            self.show_page("Dashboard")
+
+    def stop_soon(self) -> None:
+        """Switch off (the Farms page's switch, closing a farm's window): stop
+        once the current action is done, never in the middle of a battle."""
+        if self.stop_event is None or not self._running() or self.stop_event.is_set():
+            return
+        if self.pause_event.is_set() and self.status_now.state == "paused":  # waiting at a safe point already
+            self.stop()
+            return
+        self._stop_when_paused = True
+        if not self.pause_event.is_set():
+            self.stop()
+        self._show_status(describe_status("Switching off after the current action…"))
+
+    def switching_off(self) -> bool:
+        return self._running() and (self._stop_when_paused or bool(self.stop_event and self.stop_event.is_set()))
+
+    def stop_now(self) -> None:
+        """Stop straight away (the Farms page's switch, closing a farm's window)."""
+        if self.stop_event is None or not self._running() or self.stop_event.is_set():
+            return
+        if not self.pause_event.is_set():
+            self.stop()
+        self.stop()
 
     def stop(self) -> None:
         """First press: pause once the current action is done. Second
@@ -3342,6 +4167,7 @@ class FarmbotWindow(FluentWindow):
         from farmbot.game import Game
         from farmbot.vision import TemplateLibrary, Vision
 
+        instances.active[self.farm] = self.config.device  # other farms leave its emulator alone
         try:
             self.events.put(("status", "Connecting to the device…"))
             device = open_device_retrying(self.config.device)
@@ -3365,6 +4191,7 @@ class FarmbotWindow(FluentWindow):
             log.error("Bot stopped: %s", exc)
             self.events.put(("error", str(exc)))
         finally:
+            instances.active.pop(self.farm, None)
             self.events.put(("finished", None))
 
     def _test_connection(self) -> None:
@@ -3402,7 +4229,7 @@ class FarmbotWindow(FluentWindow):
                         window_scale=self.config.device.window_scale, picture_scales=self.config.device.picture_scales)
             self.events.put(("game", (True, gamecheck.logged_in(game, package))))
 
-        threading.Thread(target=work, daemon=True).start()
+        self._spawn(work)
 
     def _emulator_name(self) -> str:
         return {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "mumu": "MuMu Player"}.get(
@@ -3579,6 +4406,8 @@ class FarmbotWindow(FluentWindow):
                     if data.startswith("Attacking (builder base): base"):
                         self._bb_stage("Second base" if data.endswith("2") else "First base")
                     status = describe_status(data)
+                    if self._stop_when_paused and data.startswith("Paused by you"):  # at a safe point: off now
+                        self.stop()
                     if data.startswith("Storage full: switching to the "):
                         self.auto_village = "builder" if data.endswith("builder base") else "home"
                         self._changed(save=False)  # the Dashboard shows that village's panel
@@ -3641,9 +4470,13 @@ class FarmbotWindow(FluentWindow):
                         box["name"] = self._account_seen(mask)
                     finally:
                         done.set()
+                elif kind == "call":  # a worker's result, handled on the window's thread
+                    data()
                 elif kind == "error":
                     self._show_problem(explain(data, self._emulator_name()))
                 elif kind == "finished":
+                    self._stop_when_paused = False
+                    QTimer.singleShot(0, self.refresh_farm_pages)  # its row says it's off
                     if self.status_now.state != "problem":
                         self._show_status(self._stopped_status())
                     self.stop_button.setEnabled(False)
@@ -3716,7 +4549,7 @@ class FarmbotWindow(FluentWindow):
             for label in self.gained_today.values():
                 label.setText("")
             return
-        count, gained = history.totals_for(self.config.bot.history, date.today())
+        count, gained = history.totals_for(instances.resolve(self.config, self.config.bot.history), date.today())
         self.stat_note["attacks"].setText(f"Today: {count}")
         self.stat_note["attacks"].setToolTip(f"Every attack is logged to {self.config.bot.history}")
         for key, label in self.gained_today.items():
@@ -3737,6 +4570,23 @@ class FarmbotWindow(FluentWindow):
         self._theme_changed()
 
     def closeEvent(self, event) -> None:
+        hub = self.hub or self
+        if not self._closing and self.separate:  # a farm in a window of its own: switch it off
+            instances.pick(self.farm, False)
+            self.stop_soon()
+            self._flush_save()
+            self.separate = False
+            self.hide()
+            event.ignore()
+            hub.refresh_farm_pages()
+            return
+        if not self._closing:  # COCFARM's main window: COCFARM closes, and every farm stops
+            self._closing = True
+            for window in list(hub.farm_windows().values()):
+                if window is not self:
+                    window._closing = True
+                    window.stop_now()
+                    window.close()
         QApplication.instance().removeEventFilter(self)
         # Let go of the app-wide hooks, so a closed window can be freed.
         logging.getLogger().removeHandler(self.log_handler)

@@ -234,6 +234,20 @@ def _quit(install: Install, inst: Instance, run: Runner, sleep: Callable[[float]
             return
 
 
+def _in_box(path: Path, installs: list[Install]) -> bool:
+    """Whether ``path`` is in a virtual machine folder (ldplayer9box), not an LDPlayer's own."""
+    text = str(path).lower().replace("/", "\\")
+    return bool(re.search(r"ldplayer\d+box", text)) and not any(
+        text.startswith(str(i.path).lower().replace("/", "\\").rstrip("\\") + "\\") for i in installs)
+
+
+def _running(install: Install, index: int, run: Runner) -> bool:
+    try:
+        return any(i.index == index and i.running for i in instances(install, run))
+    except Exception:  # noqa: BLE001 - a console that can't list: not known to be running
+        return False
+
+
 def emulator_of(path: Path, installs: list[Install]) -> tuple[str, Install | None]:
     """Which emulator a program belongs to: ("ldplayer", its install),
     ("bluestacks", None), ("mumu", None) or ("other", None)."""
@@ -265,8 +279,24 @@ def clear_port(install: Install, inst: Instance, installs: list[Install], run: R
     if path is None:
         return False
     kind, other = emulator_of(path, installs)
+    if kind == "ldplayer" and _in_box(path, installs):
+        # The virtual machine folder (ldplayer9box) is shared by LDPlayer 9
+        # and 14: which one holds the port is which one has an instance running.
+        others = [o for o in installs if o.path != install.path and _running(o, inst.index, run)]
+        if not others and _running(install, inst.index, run):
+            return False  # this LDPlayer's own
+        other = others[0] if others else other  # none listed as running: the folder's own LDPlayer
     if kind == "ldplayer" and (other is None or other.path == install.path or other.version == install.version):
         return False  # this LDPlayer's own
+    if kind in ("ldplayer", "bluestacks", "mumu"):
+        from farmbot import instances as farms
+
+        farm = farms.farm_playing(kind)
+        if farm is not None:  # never close another farm's emulator
+            holder = other.name if other else farms.EMULATOR_NAMES[kind]
+            raise DeviceError(f"farm {farm}'s {holder} is using port {inst.port}, which {install.name} instance "
+                              f"{inst.index + 1} needs. Only one of the two can play: give one of them another "
+                              "instance on the Farms page.")
     if kind == "ldplayer":
         name = other.name
         log.warning("Closing %s: it is using port %d, which %s needs", name, inst.port, install.name)
@@ -321,8 +351,8 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
     found = instances(install, run)
     inst = next((i for i in found if i.index == cfg.ldplayer_index), None)
     if inst is None:
-        raise DeviceError(f"{install.name} has no instance {cfg.ldplayer_index} "
-                          f"(have: {', '.join(str(i.index) for i in found) or 'none'}).")
+        raise DeviceError(f"{install.name} has no instance {cfg.ldplayer_index + 1} "
+                          f"(have: {', '.join(str(i.index + 1) for i in found) or 'none'}).")
     changes = setup_needed(inst, read_settings(install, inst.index), cfg)
     if changes:
         log.warning("Setting up %s: %s (restarts it)", install.name, "; ".join(changes))
@@ -336,7 +366,7 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
     if not inst.running:
         if not cfg.launch_emulator:
             raise DeviceError(f"{install.name} is not running. Start it, or turn on 'Start the emulator automatically'.")
-        log.info("Starting %s (instance %d)", install.name, inst.index)
+        log.info("Starting %s (instance %d)", install.name, inst.index + 1)
         run([str(install.console), "launch", "--index", str(inst.index)])
     deadline = clock() + cfg.launch_timeout
     last_error: Exception | None = None
@@ -371,5 +401,5 @@ def quit_instance(cfg: DeviceConfig, run: Runner = _run) -> None:
     install = pick_install(cfg, find_installs())
     if install is None:
         raise DeviceError("LDPlayer was not found")
-    log.warning("Closing %s (instance %d) to start it again", install.name, cfg.ldplayer_index)
+    log.warning("Closing %s (instance %d) to start it again", install.name, cfg.ldplayer_index + 1)
     run([str(install.console), "quit", "--index", str(cfg.ldplayer_index)])

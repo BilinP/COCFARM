@@ -138,17 +138,61 @@ def find_install(registry: Callable[[str], tuple[Path, Path] | None] = _registry
     return None
 
 
-def is_running() -> bool:
+def players(listing: str | None = None) -> list[tuple[int, str]]:
+    """The BlueStacks windows open: (process id, the instance it shows).
+    Each is an HD-Player.exe started with ``--instance <name>``; one
+    without (an old shortcut) shows the main instance, given as ""."""
+    if listing is None:
+        if sys.platform != "win32":
+            return []
+        command = (f"Get-CimInstance Win32_Process -Filter \"Name='{PLAYER_EXE}'\" | "
+                   "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }")
+        try:
+            listing = subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True,
+                                     text=True, timeout=30, check=False, creationflags=NO_WINDOW).stdout
+        except (OSError, subprocess.SubprocessError):
+            return []
+    found = []
+    for line in listing.splitlines():
+        pid, _, command_line = line.strip().partition("\t")
+        if pid.isdigit():
+            match = re.search(r"--instance[\s=]+\"?([\w.\-]+)", command_line)
+            found.append((int(pid), match.group(1) if match else ""))
+    return found
+
+
+def _shows(shown: str, instance: str, main: str) -> bool:
+    return (shown or main).lower() == (instance or main).lower()
+
+
+def is_running(instance: str = "", main: str = "") -> bool:
+    """Is BlueStacks open? With ``instance`` (an internal name; ``main``,
+    the main instance's), is that instance's window open: with several
+    windows of COCFARM, each plays its own."""
     if sys.platform != "win32":
         return False
+    if instance:
+        found = players()
+        if found:
+            return any(_shows(shown, instance, main) for _, shown in found)
     out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {PLAYER_EXE}", "/NH"],
                          capture_output=True, text=True, check=False, creationflags=NO_WINDOW).stdout
-    return PLAYER_EXE.lower() in out.lower()
+    return PLAYER_EXE.lower() in out.lower() and not instance  # the listing failed: an instance's can't be told
 
 
-def stop_player(sleep: Callable[[float], None] = time.sleep, running: Callable[[], bool] = is_running) -> None:
-    """Close every BlueStacks window and wait for it to exit."""
-    subprocess.run(["taskkill", "/IM", PLAYER_EXE, "/F"], capture_output=True, check=False, creationflags=NO_WINDOW)
+def stop_player(sleep: Callable[[float], None] = time.sleep, running: Callable[[], bool] | None = None,
+                instance: str = "", main: str = "") -> None:
+    """Close every BlueStacks window, or just ``instance``'s, and wait for it to exit."""
+    if instance:
+        for pid, shown in players():
+            if _shows(shown, instance, main):
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, check=False,
+                               creationflags=NO_WINDOW)
+        running = running or (lambda: is_running(instance, main))
+    else:
+        subprocess.run(["taskkill", "/IM", PLAYER_EXE, "/F"], capture_output=True, check=False,
+                       creationflags=NO_WINDOW)
+        running = running or is_running
     for _ in range(30):
         if not running():
             return
@@ -220,17 +264,20 @@ def settings_to_change(install: Install, instance: Instance, cfg: DeviceConfig) 
 
 
 def set_display(install: Install, instance: Instance, width: int, height: int, dpi: int,
-                sleep: Callable[[float], None] = time.sleep, running: Callable[[], bool] = is_running,
-                stop: Callable[..., None] = stop_player) -> None:
+                sleep: Callable[[float], None] = time.sleep, running: Callable[[], bool] | None = None,
+                stop: Callable[..., None] | None = None) -> None:
     """Give the instance a custom resolution and DPI (Settings > Display)."""
     apply_settings(install, instance, {"fb_width": width, "fb_height": height, "dpi": dpi}, sleep, running, stop)
 
 
 def apply_settings(install: Install, instance: Instance, values: dict[str, int],
-                   sleep: Callable[[float], None] = time.sleep, running: Callable[[], bool] = is_running,
-                   stop: Callable[..., None] = stop_player) -> None:
-    """Write instance settings into ``bluestacks.conf`` while BlueStacks is
-    closed (it reads the file when it starts and writes it when it exits)."""
+                   sleep: Callable[[float], None] = time.sleep, running: Callable[[], bool] | None = None,
+                   stop: Callable[..., None] | None = None) -> None:
+    """Write instance settings into ``bluestacks.conf`` while the instance
+    is closed (it reads the file when it starts and writes it when it exits)."""
+    main = install.instances[0].name if install.instances else ""
+    running = running or (lambda: is_running(instance.name, main))
+    stop = stop or (lambda sleep, running: stop_player(sleep, running, instance.name, main))
     log.warning("Setting up BlueStacks: %s (restarts BlueStacks)", ", ".join(f"{k}={v}" for k, v in values.items()))
     if running():
         stop(sleep, running)
@@ -264,7 +311,7 @@ def adb_program(cfg: DeviceConfig, install: Install | None) -> str:
 
 def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
                 find: Callable[[], Install | None] = find_install,
-                running: Callable[[], bool] = is_running,
+                running: Callable[[], bool] | None = None,
                 start: Callable[[Install, Instance], None] = launch,
                 make: Callable[[str, str], AdbDevice] = AdbDevice,
                 enable: Callable[[Install], None] = turn_on_adb,
@@ -298,6 +345,10 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
     if instance is None:
         names = ", ".join(i.display_name for i in install.instances) or "none"
         raise DeviceError(f"BlueStacks instance {cfg.bluestacks_instance!r} not found (have: {names}).")
+
+    if running is None:  # this instance's window: other COCFARM windows may play other instances
+        main = install.instances[0].name if install.instances else ""
+        running = lambda: is_running(instance.name, main)  # noqa: E731
 
     changes = settings_to_change(install, instance, cfg)
     if changes:
@@ -371,8 +422,13 @@ def close_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.slee
 
         mumu.quit_instance(cfg)
     elif cfg.mode == "bluestacks":
+        install = find_install()
+        instance = install.instance(cfg.bluestacks_instance) if install else None
         log.warning("Closing BlueStacks to start it again")
-        stop_player(sleep)
+        if instance is None:
+            stop_player(sleep)
+        else:  # just this instance: other COCFARM windows may be playing the others
+            stop_player(sleep, instance=instance.name, main=install.instances[0].name)
     else:
         raise DeviceError("can't restart a device given by its ADB address")
     sleep(5)

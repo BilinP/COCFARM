@@ -70,6 +70,9 @@ def describe_status(text: str, now: datetime | None = None) -> Status:
         return Status("paused", "Paused by you", "Press Resume to carry on, or Stop now to end.")
     if text.startswith("Pausing"):
         return Status("paused", "Pausing after this step", "It finishes what it's doing first. Stop now ends at once.")
+    if text.startswith("Switching off"):
+        return Status("paused", "Switching off after this step", "It finishes what it's doing first, "
+                      "never stopping in the middle of a battle.")
     if text.startswith("Stopping"):
         return Status("paused", "Stopping now", "")
     if m := re.match(r"Paused: outside active hours(?: \(resumes (\d\d:\d\d)\))?", text):
@@ -170,6 +173,10 @@ RULES = [
      "Clash of Clans isn't logged in",
      "The game is on its login screen, so there's no village to play. Log in to your account in the emulator, "
      "then press Start.", "retry", "Try again"),
+    (r"maintenance break",
+     "Clash of Clans is on a maintenance break",
+     "Supercell is updating the game, so nothing can be played for now (usually under an hour). The bot "
+     "stopped; press Start once the game is back.", "retry", "Try again"),
     (r"couldn't get back to a village",
      "The game is stuck on a screen COCFARM doesn't recognise",
      "It needs the village showing to carry on. Close whatever is open in the game, then try again.",

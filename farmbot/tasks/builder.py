@@ -514,7 +514,7 @@ def _upgrade_walls(game: Game, loot: Loot, budget: list[str], keep: dict[str, in
     many walls were selected and paid for, at what price, and the
     resources left after (as paid)."""
     from farmbot.tasks.village import (MAX_WALLS, WALL_SCREENS, _cost_kind, _keep_screen, _select_more,
-                                       _select_wall, _wall_price, find_wall_entry)
+                                       _select_wall, _wall_price, find_wall_entry, price_is_red)
 
     # The list doesn't stay open after an upgrade, as it does at home.
     _close_windows(game)
@@ -528,6 +528,7 @@ def _upgrade_walls(game: Game, loot: Loot, budget: list[str], keep: dict[str, in
         log.info("No builder base wall to upgrade in the list")
         return 0, None, loot
     price = _wall_price(game, entry)
+    red = not price and price_is_red(game, entry)
     if price:
         known["price"] = price
     if not _select_wall(game, entry, T.BB_UPGRADE):
@@ -547,7 +548,8 @@ def _upgrade_walls(game: Game, loot: Loot, budget: list[str], keep: dict[str, in
         # paid for (short of loot, the game offers to make it up in gems).
         price = known.get("price")
         if not price:
-            log.info("Builder walls: couldn't read the price; trying again next round")
+            log.info("Builder walls: %s", "not enough to pay for one (its price shows red)" if red
+                     else "couldn't read the price; trying again next round")
             return 0, None, loot
         log.info("Builder walls: couldn't read the price; it was %s", f"{price:,}")
     count = min(MAX_WALLS, spare // price)

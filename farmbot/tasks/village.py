@@ -166,12 +166,27 @@ def _confirm_is_free(game: Game) -> bool:
     return True
 
 
+def close_rate_dialog(game: Game) -> bool:
+    """Google Play's "Rate Clash of Clans" dialog covers the game, whose
+    buttons don't answer while it's open: NEVER closes it for good."""
+    if not (game.has(T.RATE_TITLE) and game.has(T.RATE_NEVER) and game.find(T.RATE_TITLE)):
+        return False
+    if not game.click(T.RATE_NEVER):
+        return False
+    log.info("Closed Google Play's \"Rate Clash of Clans\" dialog (Never)")
+    game.wait(1)
+    return True
+
+
 def clear_popups(game: Game, rounds: int = 5) -> int:
     """Press any known dismiss/reconnect button until none is visible."""
     pressed = 0
     for _ in range(rounds):
         game.refresh()
         if pick_reward(game):
+            pressed += 1
+            continue
+        if close_rate_dialog(game):
             pressed += 1
             continue
         if game.has(T.EVENT_CHEST) and game.find(T.EVENT_CHEST):
@@ -347,11 +362,28 @@ def first_wall(game: Game):
     return None
 
 
+def _price_rect(entry) -> Rect:
+    h = entry.h
+    return Rect(entry.x + round(PRICE_X * h), entry.y + round(PRICE_Y * h), round(PRICE_W * h), round(PRICE_H * h))
+
+
 def _wall_price(game: Game, entry) -> int | None:
     """The price on a "Wall x N" row of the list (right of it, a little lower)."""
-    h = entry.h
-    return game.read_number(Rect(entry.x + round(PRICE_X * h), entry.y + round(PRICE_Y * h),
-                                 round(PRICE_W * h), round(PRICE_H * h)), T.LOOT_FONT)
+    return game.read_number(_price_rect(entry), T.LOOT_FONT)
+
+
+RED_PRICE_SHARE = 0.05  # of the price's box in red digits: more than there is to pay with
+
+
+def price_is_red(game: Game, entry) -> bool:
+    """True if the row's price shows in the game's red: there isn't enough
+    to pay it (the digits are white when there is)."""
+    r = _price_rect(entry)
+    box = game.screen[max(r.y, 0):r.y + r.h, max(r.x, 0):r.x + r.w].astype(np.int16)
+    if box.size == 0:
+        return False
+    b, g, red = box[..., 0], box[..., 1], box[..., 2]
+    return float(((red > 200) & (red - g > 80) & (red - b > 80)).mean()) > RED_PRICE_SHARE
 
 
 def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Loot | None],
@@ -489,6 +521,7 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, loot: Loot, budget: list[str], 
         log.info("No wall to upgrade in the list")
         return 0, None, loot, in_list
     price = _wall_price(game, entry)
+    red = not price and price_is_red(game, entry)
     if price:
         known["price"] = price
     if not _select_wall(game, entry):
@@ -508,7 +541,8 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, loot: Loot, budget: list[str], 
         # paid for (short of loot, the game offers to make it up in gems).
         price = known.get("price")
         if not price:
-            log.info("Walls: couldn't read the price; trying again next round")
+            log.info("Walls: %s", "not enough to pay for one (its price shows red)" if red
+                     else "couldn't read the price; trying again next round")
             return 0, None, loot, False
         log.info("Walls: couldn't read the price; it was %s", f"{price:,}")
     count = min(MAX_WALLS, spare // price)

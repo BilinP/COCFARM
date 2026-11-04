@@ -7,10 +7,9 @@ import threading
 from collections import Counter
 from dataclasses import replace
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from typing import Callable
 
-from farmbot import accounts, history, screens
+from farmbot import accounts, history, instances, screens
 from farmbot.notify import Notifier
 from farmbot.config import Config, search_minimums_for, unreachable_minimums, unreachable_note
 from farmbot.device import DeviceError, GaveUp
@@ -97,6 +96,8 @@ class Bot:
         # (or ADB itself fails), the emulator is closed and opened again.
         self._reopen_device = reopen_device
         self.notifier = notifier or Notifier(config.notify)
+        if not self.notifier.who and config.profiles.active:
+            self.notifier.who = config.profiles.active
         self._since_break = 0  # attacks since the last break
         self._walls_known: dict = {}  # what the wall upgrades learnt (the price), per account
         self._builder_walls_known: dict = {}
@@ -134,6 +135,7 @@ class Bot:
             return False
         first, self._account = self._account is None, name
         log.info("Account: profile %s", name)
+        self.notifier.who = name
         self.status(f"Playing with profile {name}")
         if not first:  # what the bot learnt about the last account
             self.resources = None
@@ -265,7 +267,7 @@ class Bot:
     def _daily_summary(self, day: date) -> None:
         if not self.config.bot.history:
             return
-        count, gained = history.totals_for(self.config.bot.history, day)
+        count, gained = history.totals_for(instances.resolve(self.config, self.config.bot.history), day)
         text = "What COCFARM farmed yesterday." if count else "No attacks yesterday."
         self.notifier.send(f"Daily summary · {day:%a %d %b}", text, "daily_summary", "summary",
                            attacks=count, loot=gained)
@@ -394,7 +396,7 @@ class Bot:
             log.info("Gained gold %s, elixir %s, dark %s", f"{g.gold:+,}", f"{g.elixir:+,}", f"{g.dark:+,}")
         if self.config.bot.history:
             try:
-                history.append(self.config.bot.history, record)
+                history.append(instances.resolve(self.config, self.config.bot.history), record)
             except OSError as exc:
                 log.warning("Could not write %s: %s", self.config.bot.history, exc)
         if self._on_attack:
@@ -732,7 +734,7 @@ class Bot:
             return
         import cv2
 
-        path = Path(folder) / f"{self._now():%Y%m%d-%H%M%S}.png"
+        path = instances.resolve(self.config, folder) / f"{self._now():%Y%m%d-%H%M%S}.png"
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             old = sorted(path.parent.glob("[0-9]" * 8 + "-" + "[0-9]" * 6 + ".png"))  # only the bot's own
@@ -762,7 +764,7 @@ class Bot:
                         break
                 except Stopped:
                     raise
-                except screens.NotLoggedIn as exc:  # logging in is up to the player
+                except (screens.NotLoggedIn, screens.MaintenanceBreak) as exc:  # restarting the game won't help
                     log.error("%s: stopping", exc)
                     self._save_error_screen()
                     raise

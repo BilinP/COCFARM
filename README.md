@@ -30,6 +30,7 @@ looks after your village, in **both the home village and the builder base**.
 - 📊 **Tracks your loot.** The History page shows every attack and what you gained.
 - ⬆️ **Updates itself** from GitHub releases, in one click.
 - 🔔 **Sends Discord alerts.** You'll hear when storage is full, when it stops, and get a daily summary.
+- 👥 **Farms several accounts at once (beta).** Switch on a farm for each emulator instance (LDPlayer, MuMu or BlueStacks, mixed as you like), all from one page.
 
 ## Get started
 
@@ -62,6 +63,27 @@ Other versions will likely work too. If yours doesn't, please
 [report it](https://github.com/BilinP/COCFARM/issues/new/choose) with the emulator and its version.
 Run one emulator at a time: BlueStacks and LDPlayer use the same connection port.
 COCFARM sets the emulator's screen (860 × 672), CPU cores and memory by itself; you can turn that off under **Advanced**.
+
+### Several accounts at once (beta)
+
+Each farm plays one emulator instance and keeps to the account signed in there. Farms can mix
+emulators: LDPlayer, MuMu Player and BlueStacks side by side. All of them run from the **Farms** page, which
+opens from the account at the bottom left of the side bar:
+
+1. **Farms** lists every emulator instance on this PC. Switch one on and it becomes a farm. To make another
+   instance, press **New instance** and pick an emulator. On LDPlayer and MuMu, it copies the last farm's
+   instance, game included. On BlueStacks, COCFARM opens the **Multi-Instance Manager**: clone an instance
+   there, and COCFARM adds the farm once it appears. The bin on an instance's row deletes it from the
+   emulator, after asking (an emulator's first instance is never deleted).
+2. The copy is signed in to the same account. Open it once and switch to another account with Supercell ID.
+   It stays on that account from then on.
+3. Pick the farms to run with their switches, then press **Start**. **Stop** switches them all off, each after
+   its current step. While farms run, a switch starts or stops its own farm too. A farm finds its account's
+   profile by the player name it sees.
+
+**View** shows a farm in the main window. Every farm keeps farming while another one is shown. The small
+square button opens a farm in a window of its own; closing that window switches the farm off. Each instance
+needs about 2 CPU cores and 4 GB of memory.
 
 ## A quick look
 

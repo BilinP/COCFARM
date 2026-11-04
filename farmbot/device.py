@@ -7,12 +7,14 @@ that exposes ADB (BlueStacks 5, LDPlayer, MEmu, Nox, a real phone) works.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
 import struct
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, replace
 from typing import Callable, Protocol
@@ -71,6 +73,22 @@ def _run(cmd: list[str]) -> bytes:
 # restarts it, dropping every connection ("device 'emulator-5554' not
 # found"). On its own port, no other adb ever talks to COCFARM's server.
 SERVER_PORT = 15037
+_announced: set[str] = set()  # the serials "Using device" was logged for
+_ports: dict[str, int] = {}
+_ports_lock = threading.Lock()
+
+
+def server_port_for(adb_path: str) -> int:
+    """COCFARM's adb server for this adb: 15037 for the first, the next port
+    for each other one (farms on two emulators run two adbs of their own
+    versions, which mustn't share a server either)."""
+    if not SERVER_PORT:  # the usual shared server
+        return 0
+    key = os.path.normcase(os.path.abspath(adb_path)) if os.path.dirname(adb_path) else adb_path.lower()
+    with _ports_lock:
+        if key not in _ports:
+            _ports[key] = SERVER_PORT + len(_ports)
+        return _ports[key]
 
 RAW_FORMATS = {1, 2}  # RGBA_8888, RGBX_8888
 
@@ -278,7 +296,7 @@ class AdbDevice:
                  server_port: int | None = None):
         self.serial = serial
         self.adb_path = adb_path
-        server_port = SERVER_PORT if server_port is None else server_port  # 0: the usual shared server
+        server_port = server_port_for(adb_path) if server_port is None else server_port  # 0: the usual shared one
         self._server = ["-P", str(server_port)] if server_port else []
         self._run = runner
         self._raw_screencap = True  # until the device sends something we can't decode
@@ -297,19 +315,26 @@ class AdbDevice:
                 raise
             log.info("Lost the connection to %s; reconnecting", self.serial)
             time.sleep(1 if ":" in self.serial else 3)  # an emulator-NNNN serial is found again by itself
-            self.connect()
+            self.connect(afresh="offline" in str(exc))
             return self._run(command)
 
     def shell(self, *args: str) -> str:
         return self._adb("shell", *args).decode(errors="replace")
 
-    def connect(self) -> None:
-        """``adb connect`` for TCP serials; a no-op for USB serials."""
+    def connect(self, afresh: bool = False) -> None:
+        """``adb connect`` for TCP serials; a no-op for USB serials. With
+        ``afresh``, the old connection is dropped first: one adb thinks is
+        offline stays so ("already connected") until it's disconnected."""
         if ":" in self.serial:
+            if afresh:
+                with contextlib.suppress(DeviceError):
+                    self._run([self.adb_path, *self._server, "disconnect", self.serial])
             out = self._run([self.adb_path, *self._server, "connect", self.serial]).decode(errors="replace")
             if "connected" not in out:
                 raise DeviceError(f"could not connect to {self.serial}: {out.strip()}")
-        log.info("Using device %s", self.serial)
+        if self.serial not in _announced:  # not again on every try while an emulator starts
+            _announced.add(self.serial)
+            log.info("Using device %s", self.serial)
 
     def screenshot(self) -> np.ndarray:
         image = self._screencap()
