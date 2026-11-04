@@ -5,8 +5,8 @@ player. With it we can list the instances, change an instance's screen
 (``modify --resolution w,h,dpi``), CPU cores and memory, and launch it.
 ADB is the "Local ADB connection" setting, ``basicSettings.adbDebug`` in the
 instance's ``vms/config/leidian<N>.config``, which we switch on while the
-instance is stopped. Instance N listens for ADB as ``emulator-<5554 + 2N>``
-on LDPlayer's own ``adb.exe``.
+instance is stopped. Instance N listens for ADB on ``127.0.0.1:<5555 + 2N>``,
+reached with LDPlayer's own ``adb.exe``.
 
     ldconsole list2  ->  index,title,top_hwnd,bind_hwnd,started,pid,vbox_pid,width,height,dpi
 """
@@ -25,7 +25,7 @@ from typing import Callable
 
 from farmbot import ports
 from farmbot.config import DeviceConfig
-from farmbot.device import NO_WINDOW, AdbDevice, DeviceError
+from farmbot.device import NO_WINDOW, AdbDevice, DeviceError, NoAnswer
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +57,11 @@ class Instance:
 
     @property
     def serial(self) -> str:
-        return f"emulator-{5554 + 2 * self.index}"
+        # By address, not as emulator-5554: LDPlayer starts an adb server of
+        # its own on 5037, which takes the emulator-NNNN device for itself,
+        # and COCFARM's server then can't see it ("device 'emulator-5554' not
+        # found"). A connection by address works beside it.
+        return f"127.0.0.1:{self.port}"
 
     @property
     def port(self) -> int:
@@ -356,7 +360,7 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
         except DeviceError as exc:
             last_error = exc
         if clock() >= deadline:
-            raise DeviceError(f"{install.name} did not answer over ADB within {cfg.launch_timeout:.0f}s"
+            raise NoAnswer(f"{install.name} did not answer over ADB within {cfg.launch_timeout:.0f}s"
                               + (f": {last_error}" if last_error else ""))
         sleep(3)
 

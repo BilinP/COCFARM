@@ -18,6 +18,20 @@ from farmbot.update import STATE, _load, _save, parse_version
 KINDS = ["New", "Improved", "Fixed"]
 
 NOTES: dict[str, list[tuple[str, str, str]]] = {
+    "0.9.9": [
+        ("Fixed", "LDPlayer connects every time",
+         "LDPlayer's own background helper could take the connection away, so the bot stopped with \"did not "
+         "answer over ADB\"."),
+        ("New", "A stuck emulator is restarted",
+         "If the emulator doesn't answer, COCFARM closes it and starts it again, up to three times, before "
+         "stopping."),
+        ("Improved", "The game is restarted after a failed round",
+         "Something over the game (like an emulator's ad) is cleared by closing the game and opening it again. "
+         "After three failed rounds in a row the bot stops and tells you why."),
+        ("Fixed", "Messages fit in the window",
+         "A long message, like a stop with its reason, no longer runs off the edge of the COCFARM window."),
+        ("Improved", "A tidier log", "Technical details only the log file needs no longer show in the window."),
+    ],
     "0.9.8": [
         ("Fixed", "Every hero goes out again",
          "The trees behind the troop bar could look like a hero's health bar, so a hero (often the Royal Champion) "

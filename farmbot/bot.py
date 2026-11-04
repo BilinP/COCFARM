@@ -13,7 +13,7 @@ from typing import Callable
 from farmbot import accounts, history, screens
 from farmbot.notify import Notifier
 from farmbot.config import Config, search_minimums_for, unreachable_minimums, unreachable_note
-from farmbot.device import DeviceError
+from farmbot.device import DeviceError, GaveUp
 from farmbot.game import Game, Stopped, T
 from farmbot.history import AttackRecord
 from farmbot.tasks import attack, builder, capital, clan, search, super_troops, upgrade, village
@@ -21,9 +21,8 @@ from farmbot.tasks.search import Loot
 
 log = logging.getLogger(__name__)
 
-MAX_CONSECUTIVE_ERRORS = 3
+MAX_CONSECUTIVE_ERRORS = 3  # failed rounds in a row, the game restarted after each, before the bot stops
 ERROR_SCREENS_KEPT = 200  # newest failed-round screens kept; older ones are deleted
-MAX_GAME_RESTARTS = 1  # game restarts without a good round before the emulator is restarted
 STORAGE_MAX_TRIES = 3  # readings a day of what a village's storages hold, until one works
 IDLE_WAIT = 60.0  # seconds between village rounds when not attacking
 STAR_BONUS_WAIT = 4.0  # seconds, after an attack, for the Star Bonus window to open over the village
@@ -32,6 +31,10 @@ STARTUP_TIMEOUT = 90  # seconds to wait for the home village after starting the 
 # started then is closed again: start it once Android has been up this long.
 BOOT_SETTLE = 20.0
 START_TRIES = 3  # starts of the game, if it closes while loading
+
+
+class RoundsFailed(RuntimeError):
+    """Rounds kept failing though the game was restarted after each: the bot stops."""
 
 
 class Bot:
@@ -93,7 +96,6 @@ class Bot:
         # Watchdog: restarting the game is tried first; if the errors carry on
         # (or ADB itself fails), the emulator is closed and opened again.
         self._reopen_device = reopen_device
-        self._game_restarts = 0  # game restarts since the last good round
         self.notifier = notifier or Notifier(config.notify)
         self._since_break = 0  # attacks since the last break
         self._walls_known: dict = {}  # what the wall upgrades learnt (the price), per account
@@ -286,25 +288,23 @@ class Bot:
         self._rest(minutes * 60)
 
     def restart_game(self) -> None:
-        log.warning("Restarting the game after repeated errors")
+        log.warning("Restarting the game after a failed round")
         self.game.device.stop_app(self.config.device.package)
         self.game.wait(3)
         self.ensure_game_running()
 
     def recover(self) -> None:
-        """After repeated failed rounds: restart the game, or, if that was
-        already tried (or the device doesn't answer), the emulator."""
-        if self._game_restarts < MAX_GAME_RESTARTS:
-            self._game_restarts += 1
-            try:
-                self.restart_game()
-                return
-            except Stopped:
-                raise
-            except Exception as exc:  # ADB gone, say: the emulator needs restarting
-                log.error("Couldn't restart the game: %s", exc)
+        """After a failed round: close the game and start it again, or, if
+        that can't be done (the device doesn't answer), the emulator."""
+        try:
+            self.restart_game()
+            return
+        except Stopped:
+            raise
+        except Exception as exc:  # ADB gone, say: the emulator needs restarting
+            log.error("Couldn't restart the game: %s", exc)
         if self._reopen_device is None:
-            log.error("The game keeps failing and the emulator can't be restarted from here")
+            log.error("The game couldn't be restarted, and the emulator can't be restarted from here")
             return
         log.warning("Restarting the emulator")
         self.status("Restarting the emulator")
@@ -312,7 +312,6 @@ class Bot:
                            "emulator. It carries on by itself once the game is back.", "on_emulator_restart", "warn")
         self.game.device = self._reopen_device()
         self.game.screen = None
-        self._game_restarts = 0
         self.ensure_game_running()
 
     def read_resources(self, shift: int = 0) -> Loot | None:
@@ -759,7 +758,6 @@ class Bot:
                 try:
                     attacked = self.cycle()
                     self.errors = 0
-                    self._game_restarts = 0
                     if self.storage_full:
                         break
                 except Stopped:
@@ -773,13 +771,15 @@ class Bot:
                     log.error("Cycle failed (%d in a row): %s", self.errors, exc)
                     self._save_error_screen()
                     if self.errors >= MAX_CONSECUTIVE_ERRORS:
-                        self.errors = 0
-                        try:
-                            self.recover()
-                        except Stopped:
-                            raise
-                        except Exception as exc:  # try again after the next failures
-                            log.error("Recovery failed: %s", exc)
+                        raise RoundsFailed(f"{self.errors} rounds in a row failed, though the game was restarted "
+                                           f"after each: {exc}") from exc
+                    self.status("Restarting the game")
+                    try:
+                        self.recover()
+                    except (Stopped, GaveUp):  # GaveUp: the emulator was started 3 times, never answering
+                        raise
+                    except Exception as exc:  # the next round tries again
+                        log.error("Recovery failed: %s", exc)
                 self.take_break()
                 self.status("Waiting")
                 self._rest(self.config.bot.loop_delay if attacked else max(self.config.bot.loop_delay, IDLE_WAIT))

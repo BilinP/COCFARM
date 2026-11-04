@@ -137,6 +137,15 @@ RULES = [
      "COCFARM can't find {emulator}",
      "The game runs inside the emulator, so nothing can be played. Install it, or pick the other one.",
      "setup", "Open Setup"),
+    (r"rounds in a row failed",
+     "The bot kept getting stuck",
+     "Three rounds in a row failed, though COCFARM closed the game and opened it again after each, so the bot "
+     "stopped. The last screens it saw are in the screens\\errors folder.", "retry", "Try again"),
+    (r"started \d+ times",
+     "{emulator} stopped answering",
+     "COCFARM closed it and started it again three times, but it still didn't answer, so the bot stopped. "
+     "Restart your PC, or open the emulator yourself and check the game loads, then press Start.",
+     "retry", "Try again"),
     (r"is not running",
      "{emulator} isn't open",
      "The bot plays the game inside it.", "autostart", "Start it automatically"),

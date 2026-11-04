@@ -102,6 +102,24 @@ THEMES = {"auto": "Follow Windows", "light": "Light", "dark": "Dark"}
 _TINTED: list[tuple[QWidget, Any, str]] = []  # every coloured widget, to recolour on a theme change
 
 
+NOTICE_LONG = 60  # characters of title and text past which a bar puts the text under the title
+
+
+def notice(icon: InfoBarIcon, title: str, content: str, duration: int, parent: QWidget,
+           button: QWidget | None = None) -> InfoBar:
+    """A bar in the window's bottom right corner. A longer one, or one with
+    a button, puts its text under the title and the button under that, so
+    it stays inside the window; it's shown once the button is in, being
+    placed by its full width."""
+    orient = Qt.Vertical if button is not None or len(title) + len(content) > NOTICE_LONG else Qt.Horizontal
+    bar = InfoBar(icon, title, content, orient, duration=duration, position=InfoBarPosition.BOTTOM_RIGHT,
+                  parent=parent)
+    if button is not None:
+        bar.addWidget(button)
+    bar.show()
+    return bar
+
+
 def tint(widget: QWidget, tone: Any, extra: str = "") -> QWidget:
     """Colour ``widget``'s text (``None``: the theme's own) plus any extra
     style, and do it again whenever the theme changes."""
@@ -131,6 +149,8 @@ class _QueueLogHandler(logging.Handler):
         self.setFormatter(logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S"))
 
     def emit(self, record: logging.LogRecord) -> None:
+        if getattr(record, "file_only", False):  # details for farmbot.log, not the window
+            return
         self.events.put(("log", (record.levelno, self.format(record))))
 
 
@@ -1016,13 +1036,12 @@ class AccountsDialog(BelowTitleBar, MessageBoxBase):
         try:
             main.profiles.copy(source, target, load_config(main.config_path))
         except (OSError, ValueError) as exc:
-            InfoBar.error("Couldn't copy", str(exc), duration=6000, position=InfoBarPosition.BOTTOM_RIGHT,
-                          parent=main)
+            notice(InfoBarIcon.ERROR, "Couldn't copy", str(exc), duration=6000, parent=main)
             return
         if target == main.config.profiles.active:
             main._use_profile(target)  # show its new settings
-        InfoBar.success("Copied", f"{target} now has {source}'s settings.", duration=4000,
-                        position=InfoBarPosition.BOTTOM_RIGHT, parent=main)
+        notice(InfoBarIcon.SUCCESS, "Copied", f"{target} now has {source}'s settings.", duration=4000,
+               parent=main)
         self.refresh()
 
     def _rename(self, name: str) -> None:
@@ -1034,8 +1053,7 @@ class AccountsDialog(BelowTitleBar, MessageBoxBase):
         try:
             new = main.profiles.rename(name, box.edit.text())
         except (OSError, ValueError) as exc:
-            InfoBar.error("Couldn't rename", str(exc), duration=6000, position=InfoBarPosition.BOTTOM_RIGHT,
-                          parent=main)
+            notice(InfoBarIcon.ERROR, "Couldn't rename", str(exc), duration=6000, parent=main)
             return
         profiles = main.config.profiles
         if profiles.active == name:
@@ -1511,9 +1529,9 @@ class FarmbotWindow(FluentWindow):
             starred = self.config.profiles.default
             known = starred and self.profiles.path(starred).is_file()
             source = f"{starred}'s settings" if known else "the settings in use"
-            InfoBar.success("New account", f"Made the profile {name} for it, from {source}. Click it at the bottom "
-                            "left to manage accounts.", duration=8000,
-                            position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
+            notice(InfoBarIcon.SUCCESS, "New account", f"Made the profile {name} for it, from {source}. "
+                   "Click it at the bottom left to manage accounts.", duration=8000,
+                   parent=self)
         if name != self.config.profiles.active:
             self._use_profile(name)
         else:
@@ -1853,8 +1871,8 @@ class FarmbotWindow(FluentWindow):
 
         path = Path(self.config.bot.history) if self.config.bot.history else None
         if not path or not path.is_file():
-            InfoBar.warning("No history yet", "The file appears after the first attack.", duration=4000,
-                            position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
+            notice(InfoBarIcon.WARNING, "No history yet", "The file appears after the first attack.", duration=4000,
+                   parent=self)
             return
         os.startfile(str(path.resolve()))  # Windows: opens with the default app for .csv
 
@@ -2530,7 +2548,7 @@ class FarmbotWindow(FluentWindow):
             return
         image = cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_COLOR)
         if image is None:
-            InfoBar.error("Can't open that file", path, duration=4000, position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
+            notice(InfoBarIcon.ERROR, "Can't open that file", path, duration=4000, parent=self)
             return
         vision = Vision(self.library(), self.config.bot.threshold)
         self.canvas.set_image(normalize_screen(image, vision, self.config.device.ui_scale))
@@ -2551,10 +2569,10 @@ class FarmbotWindow(FluentWindow):
         try:
             path = catalog.save_crop(Path(self.config.bot.templates), picture, crop, self.variant_name.text().strip())
         except OSError as exc:
-            InfoBar.error("Couldn't save", str(exc), duration=4000, position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
+            notice(InfoBarIcon.ERROR, "Couldn't save", str(exc), duration=4000, parent=self)
             return
-        InfoBar.success("Picture saved", f"{picture.title}: COCFARM uses it from now on.", duration=2500,
-                        position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
+        notice(InfoBarIcon.SUCCESS, "Picture saved", f"{picture.title}: COCFARM uses it from now on.", duration=2500,
+               parent=self)
         self.canvas.select(None)
         self._refresh_pictures(keep=picture.name)
 
@@ -2846,8 +2864,8 @@ class FarmbotWindow(FluentWindow):
     def _welcome(self) -> None:
         """First run: open Setup, where the steps say what to do."""
         self.show_page("Setup")
-        InfoBar.info("Welcome to COCFARM", "Follow the four steps on this page. It takes a couple of minutes.",
-                     duration=8000, position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
+        notice(InfoBarIcon.INFORMATION, "Welcome to COCFARM",
+               "Follow the four steps on this page. It takes a couple of minutes.", duration=8000, parent=self)
 
     def _check_for_update(self, force: bool = False) -> None:
         """Ask GitHub for a newer COCFARM in the background (see farmbot/update.py
@@ -2991,8 +3009,8 @@ class FarmbotWindow(FluentWindow):
 
         message = finished_install()
         if message:
-            bar = InfoBar.success if message.startswith("Updated") else InfoBar.warning
-            bar("Update", message, duration=10000, position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
+            notice(InfoBarIcon.SUCCESS if message.startswith("Updated") else InfoBarIcon.WARNING, "Update", message,
+                   duration=10000, parent=self)
 
     def _whats_new(self, force: bool = False) -> None:
         """Once after an update (or on request): what changed, in a player's words."""
@@ -3245,17 +3263,17 @@ class FarmbotWindow(FluentWindow):
                 self._show_status(describe_status("Resuming"))
             return
         if not self._autosave():
-            InfoBar.error("Can't start yet", "A setting has a mistake: look for the red text, fix it, then press "
-                          "Start again.", duration=5000, position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
+            notice(InfoBarIcon.ERROR, "Can't start yet", "A setting has a mistake: look for the red text, fix it, "
+                   "then press Start again.", duration=5000, parent=self)
             return
         attacking = not self.config.search.maintain_only
         missing = catalog.missing(self.library(), required_only=True) if attacking else []
         if missing:
-            self._pictures_bar(InfoBar.error, "A button picture is missing", "The bot finds buttons by their "
+            self._pictures_bar(InfoBarIcon.ERROR, "A button picture is missing", "The bot finds buttons by their "
                                "pictures, and can't attack without: " + ", ".join(p.title for p in missing) + ".")
             return
         if attacking and catalog.slow_exit(self.library()):
-            self._pictures_bar(InfoBar.info, "Tip", "Without the Return Home and Okay pictures the bot closes "
+            self._pictures_bar(InfoBarIcon.INFORMATION, "Tip", "Without the Return Home and Okay pictures the bot closes "
                                "the game to leave each battle, which takes about 30 s longer.")
         self.stop_event = threading.Event()
         self.pause_event.clear()
@@ -3313,21 +3331,20 @@ class FarmbotWindow(FluentWindow):
         self.stop_button.setProperty("red", True)
         setCustomStyleSheet(self.stop_button, red, red)
 
-    def _pictures_bar(self, kind, title: str, text: str) -> None:
-        bar = kind(title, text, duration=8000, position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
+    def _pictures_bar(self, icon: InfoBarIcon, title: str, text: str) -> None:
         go = PushButton("Open Pictures")
+        bar = notice(icon, title, text, duration=8000, parent=self, button=go)
         go.clicked.connect(lambda: (self.show_page("Advanced", "pictures"), bar.close()))
-        bar.addWidget(go)
 
     def _run_bot(self, stop_event: threading.Event) -> None:
         from farmbot.bot import Bot
-        from farmbot.bluestacks import open_device, restart_emulator
+        from farmbot.bluestacks import open_device_retrying, restart_emulator
         from farmbot.game import Game
         from farmbot.vision import TemplateLibrary, Vision
 
         try:
             self.events.put(("status", "Connecting to the device…"))
-            device = open_device(self.config.device)
+            device = open_device_retrying(self.config.device)
             vision = Vision(TemplateLibrary(self.config.bot.templates), self.config.bot.threshold)
             game = Game(device, vision, stop_event=stop_event, ui_scale=self.config.device.ui_scale,
                         window_scale=self.config.device.window_scale,
@@ -3435,8 +3452,8 @@ class FarmbotWindow(FluentWindow):
             self.check_passed = True
             if not self.setup_passed:
                 self.setup_passed = True
-                InfoBar.success("All set", "COCFARM can see your village. Choose the loot you want (step 3), then "
-                                "press Start.", duration=6000, position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
+                notice(InfoBarIcon.SUCCESS, "All set", "COCFARM can see your village. Choose the loot you want "
+                       "(step 3), then press Start.", duration=6000, parent=self)
             self._show_steps()
 
     # ------------------------------------------------------------ events
@@ -3477,11 +3494,9 @@ class FarmbotWindow(FluentWindow):
         self.big_trouble.setText(f"Technical details: {problem.details}")
         tint(self.big_trouble, MUTED)
         self.big_trouble.show()
-        bar = InfoBar.error(problem.title, problem.why, duration=10000, position=InfoBarPosition.BOTTOM_RIGHT,
-                            parent=self)
         fix = PushButton(problem.action_text)
+        bar = notice(InfoBarIcon.ERROR, problem.title, problem.why, duration=10000, parent=self, button=fix)
         fix.clicked.connect(lambda: (self._do_fix(problem.action, retry=self.start), bar.close()))
-        bar.addWidget(fix)
 
     def _show_big_buttons(self) -> None:
         """The Dashboard's big buttons follow the state: Start, Pause, Resume/Stop now, or the fix for a problem."""
@@ -3568,8 +3583,7 @@ class FarmbotWindow(FluentWindow):
                         self.auto_village = "builder" if data.endswith("builder base") else "home"
                         self._changed(save=False)  # the Dashboard shows that village's panel
                     if data.startswith("Stopped: storage full"):
-                        InfoBar.success(status.headline, status.detail, duration=-1,
-                                        position=InfoBarPosition.BOTTOM_RIGHT, parent=self)
+                        notice(InfoBarIcon.SUCCESS, status.headline, status.detail, duration=-1, parent=self)
                     if data.startswith(("Attack ", "Searching")):
                         self.big_trouble.hide()  # a round went through: earlier trouble is over
                     self._show_status(status)

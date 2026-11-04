@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Callable
 
 from farmbot.config import DeviceConfig
-from farmbot.device import NO_WINDOW, AdbDevice, DeviceError
+from farmbot.device import NO_WINDOW, AdbDevice, DeviceError, NoAnswer
 
 log = logging.getLogger(__name__)
 
@@ -248,7 +248,7 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
         except DeviceError as exc:
             last_error = exc
         if clock() >= deadline:
-            raise DeviceError(f"{install.name} did not answer over ADB within {cfg.launch_timeout:.0f}s"
+            raise NoAnswer(f"{install.name} did not answer over ADB within {cfg.launch_timeout:.0f}s"
                               + (f": {last_error}" if last_error else ""))
         sleep(3)
 

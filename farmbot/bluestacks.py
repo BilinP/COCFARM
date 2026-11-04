@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from farmbot.config import DeviceConfig
-from farmbot.device import NO_WINDOW, AdbDevice, Device, DeviceError
+from farmbot.config import EMULATORS, DeviceConfig
+from farmbot.device import NO_WINDOW, AdbDevice, Device, DeviceError, GaveUp, NoAnswer
 
 log = logging.getLogger(__name__)
 
@@ -332,7 +332,7 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
             except DeviceError as exc:
                 last_error = exc
         if clock() >= deadline:
-            raise DeviceError(f"BlueStacks did not accept an ADB connection within {cfg.launch_timeout:.0f}s"
+            raise NoAnswer(f"BlueStacks did not accept an ADB connection within {cfg.launch_timeout:.0f}s"
                               + (f": {last_error}" if last_error else ""))
         sleep(3)
 
@@ -352,14 +352,16 @@ def open_window(install: Install, instance: Instance, cfg: DeviceConfig,
             return device
         except DeviceError:
             if clock() >= deadline:
-                raise DeviceError(f"the BlueStacks window {instance.display_name!r} did not open "
+                raise NoAnswer(f"the BlueStacks window {instance.display_name!r} did not open "
                                   f"within {cfg.launch_timeout:.0f}s") from None
         sleep(3)
 
 
-def restart_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep) -> Device:
-    """Close the emulator and open it again (the watchdog's last resort when
-    the game or ADB stops answering). Returns the new connection."""
+EMULATOR_TRIES = 3  # times the emulator is started before the bot gives up on it
+
+
+def close_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep) -> None:
+    """Close the configured emulator (it is started again by ``open_device``)."""
     if cfg.mode == "ldplayer":
         from farmbot import ldplayer
 
@@ -374,4 +376,29 @@ def restart_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sl
     else:
         raise DeviceError("can't restart a device given by its ADB address")
     sleep(5)
-    return open_device(cfg, sleep=sleep)
+
+
+def open_device_retrying(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
+                         opener: Callable[..., Device] = open_device,
+                         closer: Callable[..., None] = close_emulator) -> Device:
+    """``open_device``; when the emulator doesn't answer, close it and start
+    it again, up to :data:`EMULATOR_TRIES` starts in all, then :class:`GaveUp`.
+    Only an emulator COCFARM starts by itself is restarted."""
+    for attempt in range(1, EMULATOR_TRIES + 1):
+        try:
+            return opener(cfg, sleep=sleep)
+        except NoAnswer as exc:
+            if cfg.mode not in EMULATORS or not cfg.launch_emulator:
+                raise
+            if attempt == EMULATOR_TRIES:
+                raise GaveUp(f"{exc} (started {EMULATOR_TRIES} times)") from exc
+            log.warning("%s; closing the emulator to start it again (%d of %d)", exc, attempt + 1, EMULATOR_TRIES)
+            closer(cfg, sleep)
+    raise GaveUp("the emulator did not answer")  # not reached: the last try returns or raises
+
+
+def restart_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep) -> Device:
+    """Close the emulator and open it again (the watchdog's last resort when
+    the game or ADB stops answering). Returns the new connection."""
+    close_emulator(cfg, sleep)
+    return open_device_retrying(cfg, sleep)

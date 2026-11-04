@@ -31,10 +31,11 @@ def _config(args: argparse.Namespace) -> Config:
     return load_active(args.config)
 
 
-def _device(args: argparse.Namespace, cfg: Config) -> AdbDevice:
+def _device(args: argparse.Namespace, cfg: Config, retry: bool = False) -> AdbDevice:
+    """The device; with ``retry``, an emulator that doesn't answer is restarted (see open_device_retrying)."""
     if args.serial:  # an explicit address always wins
         cfg.device.mode, cfg.device.serial = "manual", args.serial
-    return bluestacks.open_device(cfg.device)
+    return (bluestacks.open_device_retrying if retry else bluestacks.open_device)(cfg.device)
 
 
 def _screen(args: argparse.Namespace, cfg: Config) -> np.ndarray:
@@ -158,7 +159,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     if not cfg.search.maintain_only and catalog.slow_exit(TemplateLibrary(cfg.bot.templates)):
         print("note: without buttons/return_home and buttons/okay the bot closes the game to leave each battle")
-    device = _device(args, cfg)
+    device = _device(args, cfg, retry=True)
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     reopen = (lambda: bluestacks.restart_emulator(cfg.device)) if cfg.device.mode in EMULATORS else None

@@ -29,6 +29,15 @@ class DeviceError(RuntimeError):
     pass
 
 
+class NoAnswer(DeviceError):
+    """The emulator was found but its ADB never answered: closing it and
+    starting it again may help."""
+
+
+class GaveUp(DeviceError):
+    """The emulator was restarted and still didn't answer: the bot stops."""
+
+
 class Device(Protocol):
     def screenshot(self) -> np.ndarray: ...
     def tap(self, x: int, y: int) -> None: ...
@@ -337,7 +346,8 @@ class AdbDevice:
                         found = replace(found, rotation=_rotation(self.shell("dumpsys", "window", "displays")))
             except DeviceError:
                 found = None
-            log.info("Touchscreen: %s%s", found, "" if self._dd else " (no dd: writing with tail and head)")
+            log.info("Touchscreen: %s%s", found, "" if self._dd else " (no dd: writing with tail and head)",
+                     extra={"file_only": True})
             self._touch = found or False
         return self._touch or None
 
