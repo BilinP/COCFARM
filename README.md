@@ -22,15 +22,24 @@ looks after your village, in **both the home village and the builder base**.
 
 ## What it does
 
-- ⚔️ **Farms the home village.** It finds bases with the loot you want, attacks with your whole army, and comes home.
-- 🛠️ **Farms the builder base.** It plays builder battles with your hero and troops (an all **Night Witch** army works best).
+**Farming**
+- ⚔️ **Farms the home village.** It finds bases with the loot you want, sends out every troop, hero and spell in your army, fires the heroes' abilities, and comes home. It can activate your **super troops** before a battle, paying with dark elixir.
+- 🛠️ **Farms the builder base.** It plays both stages of builder battles with your hero and troops (an all **Night Witch** army works best), fires the hero's ability when it's charged, and uses the **Clock Tower**'s free boost.
 - 🔄 **Switches between villages for you.** With **Auto switch** on, it farms one village until its storages are full, then moves to the other.
-- 💰 **Looks after your village.** It collects resources and the loot cart, can upgrade walls, and fills clan donation requests.
+- 🏰 **Raids the Clan Capital (beta).** On Raid Weekends it uses every raid attack with the capital army you set in the game.
+
+**Looking after your village**
+- 💰 **Collects everything.** Resources, the loot cart, and in the builder base the gem mine and the elixir cart.
+- 🧱 **Spends your spare loot (if you turn it on).** It upgrades as many walls as the spare covers, all at once. When a storage is full it starts the dearest upgrades it can pay for: buildings and heroes in the order you pick, research and pets. This works in both villages and never uses gems.
+- 🤝 **Helps your clan.** It fills donation requests with troops and spells suited to each requester's Clan Castle level, and requests troops for you.
+
+**Running it**
+- 👥 **Farms several accounts at once (beta).** Switch on a farm for each emulator instance (LDPlayer, MuMu or BlueStacks, mixed as you like), all from one page. Each account keeps its own settings, picked by the player name in the game.
 - ⏰ **Plays when you want.** You pick the hours, a daily attack range and random breaks, so it plays more like a person.
+- 🛟 **Recovers by itself.** If the game gets stuck it restarts it, and if the emulator stops answering it restarts that too. It stops with the reason during a Clash of Clans maintenance break.
 - 📊 **Tracks your loot.** The History page shows every attack and what you gained.
-- ⬆️ **Updates itself** from GitHub releases, in one click.
-- 🔔 **Sends Discord alerts.** You'll hear when storage is full, when it stops, and get a daily summary.
-- 👥 **Farms several accounts at once (beta).** Switch on a farm for each emulator instance (LDPlayer, MuMu or BlueStacks, mixed as you like), all from one page.
+- 🔔 **Sends Discord alerts.** You'll hear when storage is full, when it stops (with a summary of the run), and get a daily summary.
+- ⬆️ **Updates itself** from GitHub releases, in one click, and shows what's new afterwards. It also adds itself to the Start menu, and to Installed apps so you can uninstall it.
 
 ## Get started
 
@@ -101,9 +110,10 @@ needs about 2 CPU cores and 4 GB of memory.
 
 ## Tips
 
-- **Faster battles:** under **Advanced → Pictures**, add pictures of the
-  **Return Home** and **Okay** buttons (the page walks you through it).
-  Without them, the bot still works but each attack ends about 30 seconds slower.
+- **Spending loot is off by default:** turn on walls and upgrades under
+  **Home village → Village** (and **Builder base → Village**), and set how much to keep.
+- **Super troops:** switch on **Activate super troops** under **Home village → Attacking**.
+  It pays 25,000 dark elixir for each, and never uses a Super Potion or gems.
 - **Builder base army:** train only Night Witches.
 - **Spells:** by default it casts only **Bat Spells**, all at once on one spot: the middle of the base,
   or a random spot near the middle each battle. Switch to **All spells** under
@@ -115,7 +125,8 @@ needs about 2 CPU cores and 4 GB of memory.
 ## Something went wrong?
 
 The Dashboard tells you what happened in plain words, with a button to fix it.
-If the game gets stuck, COCFARM restarts it by itself, and restarts the emulator if needed.
+If the game gets stuck, COCFARM restarts it by itself, and restarts the emulator if needed
+(up to three times). After three failed rounds in a row, it stops and says why.
 For more detail, check `logs/farmbot.log` and the screenshots in `screens/errors/`
 in the COCFARM folder.
 
@@ -153,10 +164,10 @@ farmbot inspect     # show the loot, troop cards and deploy points it sees
 farmbot pictures    # list the button pictures and which are missing
 ```
 
-**Releases:** every push to `main` makes the
+**Releases:** every push and pull request makes the
 [`windows-exe`](.github/workflows/windows-exe.yml) workflow build
-`COCFARM.exe` with PyInstaller, self-test it, and publish a GitHub release
-(a version tag like `v1.2.3` publishes under that exact version).
+`COCFARM.exe` with PyInstaller and self-test it. Pushing a version tag like
+`v1.2.3` also publishes it as a GitHub release under that version.
 
 **License:** COCFARM is free software under the [GNU GPL v3 or later](LICENSE).
 The libraries it bundles (Qt, Fluent Widgets, OpenCV and others) are listed with
