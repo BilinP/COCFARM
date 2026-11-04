@@ -28,8 +28,8 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -42,7 +42,7 @@ jobs:
           if (Test-Path dist/COCFARM/farmbot.log) { Get-Content dist/COCFARM/farmbot.log }
           if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
           Remove-Item dist/COCFARM/farmbot.log, dist/COCFARM/selftest.toml -ErrorAction SilentlyContinue
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: COCFARM-windows
           path: dist/COCFARM/
@@ -62,7 +62,7 @@ jobs:
           fi
       - name: Publish the GitHub Release
         if: steps.release.outputs.tag != ''
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.release.outputs.tag }}
           name: COCFARM ${{ steps.release.outputs.tag }}
