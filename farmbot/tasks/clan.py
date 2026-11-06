@@ -20,21 +20,17 @@ def _missing(game: Game, names: tuple[str, ...]) -> list[str]:
     return [n for n in names if not game.has(n)]
 
 
-def in_clan(game: Game) -> bool | None:
+def in_clan(game: Game, close: bool = True) -> bool | None:
     """Open the chat and look: the "Join A Clan" panel means not in a clan.
-    ``None`` if the chat couldn't be opened. The chat is closed again."""
+    ``None`` if the chat couldn't be opened. The chat is closed again unless
+    ``close`` is False (the next clan step then uses it as it is)."""
     if _missing(game, (T.OPEN_CHAT, T.CLOSE_CHAT, T.NO_CLAN)):
         return None
-    game.refresh()
-    if not game.click(T.OPEN_CHAT):
+    if not _open_chat(game):
         return None
-    if not game.wait_for(T.CLOSE_CHAT, timeout=4):
-        return None
-    game.wait(0.8)  # the panel slides in
-    game.refresh()
     member = game.find(T.NO_CLAN) is None
-    game.click(T.CLOSE_CHAT)
-    game.wait(0.8)
+    if close or not member:
+        _close_chat(game)
     return member
 
 
@@ -54,6 +50,11 @@ def _open_chat(game: Game) -> bool:
     game.wait(0.8)  # the panel slides in
     game.refresh()
     return True
+
+
+def close_chat(game: Game) -> None:
+    """Close the clan chat if it's open (after steps run with close=False)."""
+    _close_chat(game)
 
 
 def _close_chat(game: Game) -> None:
@@ -80,7 +81,7 @@ def request_cooldown(game: Game) -> float | None:
     return float(value) * 60 if value <= MAX_COOLDOWN_MINUTES else float(value)
 
 
-def request_troops(game: Game, cfg: ClanConfig) -> tuple[bool, float | None]:
+def request_troops(game: Game, cfg: ClanConfig, close: bool = True) -> tuple[bool, float | None]:
     """Clan chat → Request (next to Challenge) → Send. Returns whether a
     request went out, and how many seconds until the next one can (from the
     button's cooldown timer; ``None`` if unknown). A Request button with a
@@ -110,14 +111,15 @@ def request_troops(game: Game, cfg: ClanConfig) -> tuple[bool, float | None]:
     wait = request_cooldown(game)
     if not sent:
         log.info("Request is on cooldown%s", f" for {wait / 60:.0f} more min" if wait else "")
-    _close_chat(game)
+    if close:
+        _close_chat(game)
     return sent, wait
 
 
 CHAT_CLOSE_SPOT = (250, 150)  # a tap here, on the chat, closes the donate window
 
 
-def donate(game: Game, cfg: ClanConfig) -> int:
+def donate(game: Game, cfg: ClanConfig, close: bool = True) -> int:
     """Fill the open requests in clan chat: the main units first, then the
     biggest that fit (see farmbot/tasks/donate.py). Returns units given."""
     from farmbot.tasks.donate import donate_open_window
@@ -152,7 +154,8 @@ def donate(game: Game, cfg: ClanConfig) -> int:
             game.tap(*CHAT_CLOSE_SPOT)
             game.wait(0.8)
         game.refresh()
-    _close_chat(game)
+    if close:
+        _close_chat(game)
     if donated:
         log.info("Donated %d unit(s) to %d request(s)", donated, done)
     return donated

@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 from farmbot.config import ZoneConfig
-from farmbot.geometry import Point, Rect
+from farmbot.geometry import Point, Rect, scaled
 from farmbot.redline import SIDE_ANGLES, RedLine
 
 log = logging.getLogger(__name__)
@@ -58,13 +58,18 @@ def _blank(mask: np.ndarray, rects: list[list[int]]) -> None:
         mask[max(r.y, 0):r.y + r.h, max(r.x, 0):r.x + r.w] = 0
 
 
-def open_ground(screen: np.ndarray, cfg: ZoneConfig) -> np.ndarray:
-    """Share of non-ground pixels around each pixel (0 = all grass/dirt)."""
+def ground(screen: np.ndarray) -> np.ndarray:
+    """Grass or dirt, per pixel."""
     hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
     h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
     grass = (h >= 22) & (h <= 58) & (s >= 90) & (v >= 90)
     dirt = (h >= 10) & (h < 22) & (s >= 80) & (v >= 80)
-    blocked = 1.0 - (grass | dirt).astype(np.float32)
+    return grass | dirt
+
+
+def open_ground(screen: np.ndarray, cfg: ZoneConfig) -> np.ndarray:
+    """Share of non-ground pixels around each pixel (0 = all grass/dirt)."""
+    blocked = 1.0 - ground(screen).astype(np.float32)
     k = cfg.ground_window
     return cv2.blur(blocked, (k, k))
 
@@ -77,7 +82,7 @@ def detect(screen: np.ndarray, cfg: ZoneConfig) -> RedLine | None:
     h, w = screen.shape[:2]
     filled = np.zeros((h, w), np.uint8)
     cv2.fillPoly(filled, [hull], 255)
-    k = 2 * cfg.offset_px + 1
+    k = 2 * round(scaled(cfg.offset_px, w)) + 1
     grown = cv2.dilate(filled, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
     contours, _ = cv2.findContours(grown, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     outline = max(contours, key=cv2.contourArea).reshape(-1, 2)

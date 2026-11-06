@@ -9,7 +9,7 @@ from typing import Iterator
 
 import numpy as np
 
-from farmbot import armybar, deployzone, redline as rl, text
+from farmbot import armybar, deployzone, human, redline as rl, text
 from farmbot.armybar import Card
 from farmbot.config import Config
 from farmbot.game import Game, T
@@ -64,6 +64,43 @@ def deploy_edges(game: Game, cfg: Config) -> tuple[dict[str, list[Point]], Point
 BUTTON_ROW_MARGIN = 12  # px kept clear above the battle buttons
 
 
+def _rhythm(cfg: Config) -> bool:
+    """The "Battle rhythm varies" habit is on."""
+    return cfg.human.uses("battle_rhythm")
+
+
+def _wait(game: Game, cfg: Config, seconds: float, shortest: float = human.SHORTEST, note: bool = True) -> None:
+    """Wait about ``seconds``: exactly, or, with the battle rhythm varying,
+    give or take (``shortest`` 1: a wait for the game to show something,
+    which may run long but never short). ``note``: count what it adds to
+    the battle (not for a poll while the battle plays itself out)."""
+    varied = human.pause(game.rng, seconds, _rhythm(cfg), shortest=shortest)
+    if note:
+        game.note("battle_rhythm", human.pause_extra(seconds, shortest=shortest), varied - seconds)
+    game.wait(varied, exact=True)
+
+
+def _beat(game: Game, cfg: Config, seconds: float, plain: float = 0.0, shortest: float = human.SHORTEST) -> None:
+    """A person's pause of about ``seconds`` with the battle rhythm varying;
+    ``plain`` (often none) without it."""
+    on = _rhythm(cfg)
+    varied = human.pause(game.rng, seconds, shortest=shortest) if on else plain
+    game.note("battle_rhythm", seconds + human.pause_extra(seconds, shortest=shortest) - plain, varied - plain)
+    if varied:
+        game.wait(varied, exact=True)
+
+
+def _burst(game: Game, cfg: Config, taps: int, gap: float) -> float | list[float]:
+    """The pauses between a burst's ``taps``: ``gap`` each, or each its own."""
+    pause = human.pauses(game.rng, taps, gap, _rhythm(cfg))
+    added = sum(pause[:-1]) - gap * (taps - 1) if isinstance(pause, list) else 0.0
+    game.note("battle_rhythm", human.pauses_extra(taps, gap), added)
+    return pause
+
+
+SETTLE = 1.0  # shortest: a wait the game needs (a card's count, a hero landing)
+
+
 def button_row_top(game: Game) -> int | None:
     """Top of the row of battle buttons (End Battle, Boost Army, Boost
     Heroes, Next): taps at or below it could press one of them, so no troop
@@ -113,11 +150,16 @@ class DeployPoints:
     guessed line running through a base that fills the map, say) shows up,
     and is dropped: troops then go only where they land."""
 
-    def __init__(self, edges: dict[str, list[Point]], sides: list[str]):
-        self.streams = {s: itertools.cycle(edges[s]) for s in sides if edges.get(s)}
+    def __init__(self, edges: dict[str, list[Point]], sides: list[str], rng=None, human_like: bool = False):
+        # Human-like: each side's points from a random one, in a random
+        # direction, and the sides in a new order each battle (the same
+        # points: only where along them, and which side first).
+        self.rng, self.human_like = rng, human_like and rng is not None
+        on = self.human_like
+        self.streams = {s: itertools.cycle(human.walk(rng, edges[s], on)) for s in sides if edges.get(s)}
         if not self.streams:
             raise RuntimeError("no deploy points on any side")
-        self.live = list(self.streams)
+        self.live = human.order(rng, list(self.streams), on) if on else list(self.streams)
         self.misses: dict[str, int] = {}
         self.turn = 0
         self.seen_land: set[str] = set()  # sides where troops have landed
@@ -135,9 +177,17 @@ class DeployPoints:
         return next(self.streams[self._side()])
 
     def take(self, count: int) -> tuple[str, list[Point]]:
-        """``count`` points along one side, the sides taking turns."""
+        """``count`` points along one side, the sides taking turns. Human-
+        like, now and then one is passed over: a person's taps along a side
+        aren't evenly spaced."""
         side = self._side()
-        return side, [next(self.streams[side]) for _ in range(count)]
+        stream = self.streams[side]
+        batch = []
+        for _ in range(count):
+            if self.human_like and self.rng.random() < SKIP_POINT:
+                next(stream)
+            batch.append(next(stream))
+        return side, batch
 
     def refused(self, side: str) -> bool:
         """A batch from ``side`` went nowhere: after SIDE_REFUSALS of them
@@ -172,7 +222,7 @@ class DeployPoints:
                 continue
             points = on_open_ground(screen, points, cfg)
             if len(points) >= cfg.redline.min_side_points:
-                self.streams[s] = itertools.cycle(points)
+                self.streams[s] = itertools.cycle(human.walk(self.rng, points, self.human_like))
                 self.redrawn.add(s)
                 self.misses[s] = 0
                 moved.append(s)
@@ -182,15 +232,17 @@ class DeployPoints:
 
     def restore(self) -> None:
         """Every side back (the taps were lost, not refused)."""
-        self.live = list(self.streams)
+        self.live = [s for s in self.live if s in self.streams] + [s for s in self.streams if s not in self.live]
         self.misses.clear()
 
 
 SIDE_REFUSALS = 2  # batches in a row a side's points go nowhere before it's dropped
+SKIP_POINT = 0.2  # human-like: chance a point along a side is passed over
 
 
-def cycle_points(edges: dict[str, list[Point]], sides: list[str]) -> DeployPoints:
-    return DeployPoints(edges, sides)
+def cycle_points(edges: dict[str, list[Point]], sides: list[str], rng=None,
+                 human_like: bool = False) -> DeployPoints:
+    return DeployPoints(edges, sides, rng, human_like)
 
 
 def spell_points(edges: dict[str, list[Point]], center: Point | None, reach: float) -> Iterator[Point]:
@@ -238,15 +290,23 @@ def base_center(edges: dict[str, list[Point]]) -> Point:
 
 
 SPELL_BURST = 11  # taps in one go when a spell card's count can't be read
+SPELL_GAP = 0.06  # human-like: about this long between one spell and the next (else as quick as it goes)
 
 
 def cast_together(game: Game, card: Card, spot: Point, count: int | None, cfg: Config) -> None:
     """Every spell on ``card`` at once, on one spot: one burst of as many
     taps as the card holds, then more only if some are left."""
+    taps = count or SPELL_BURST
     game.tap(*card.center)
-    game.wait(0.1)
-    game.tap_many([spot] * (count or SPELL_BURST), jitter=4, pause=0.0)
-    game.wait(0.3)
+    _wait(game, cfg, 0.1, SETTLE)
+    if _rhythm(cfg):  # spells one after another, not all in one instant
+        pause = _burst(game, cfg, taps, SPELL_GAP)
+        game.note("battle_rhythm", SPELL_GAP * (taps - 1), SPELL_GAP * (taps - 1))
+    else:
+        pause = 0.0
+        game.note("battle_rhythm", SPELL_GAP * (taps - 1) + human.pauses_extra(taps, SPELL_GAP))
+    game.tap_many([spot] * taps, jitter=4, pause=pause)
+    _wait(game, cfg, 0.3, SETTLE)
     if not armybar.is_spent(game.refresh(), card, cfg.bar):
         deploy_card(game, card, itertools.repeat(spot), cfg)
 
@@ -287,14 +347,15 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
     batches = batches_for(left, cfg)
     for _ in range(batches):
         game.tap(*card.center)
-        game.wait(0.15)
-        taps = min(acfg.taps_per_batch, left) if left else acfg.taps_per_batch
+        _wait(game, cfg, 0.15, SETTLE)
+        size = human.batch(game.rng, acfg.taps_per_batch, _rhythm(cfg))
+        taps = min(size, left) if left else size
         if isinstance(points, DeployPoints):
             side, batch = points.take(taps)
         else:
             side, batch = None, [next(points) for _ in range(taps)]
-        game.tap_many(batch, jitter=3, pause=acfg.tap_delay)
-        game.wait(0.3)
+        game.tap_many(batch, jitter=3, pause=_burst(game, cfg, taps, acfg.tap_delay))
+        _wait(game, cfg, 0.3, SETTLE)
         after = game.refresh()
         if pick_reward(game):
             after = game.screen
@@ -354,9 +415,9 @@ def place_single(game: Game, card: Card, points: Iterator[Point], cfg: Config,
         # Half the tries on the detected points, half on the fixed lines.
         source = fallback if fallback is not None and attempt >= SINGLE_TRIES // 2 else points
         game.tap(*card.center)
-        game.wait(0.15)
+        _wait(game, cfg, 0.15, SETTLE)
         game.tap(*next(source), jitter=3)
-        game.wait(0.6)
+        _wait(game, cfg, 0.6, SETTLE)
         after = game.refresh()
         if pick_reward(game):
             after = game.screen
@@ -366,6 +427,10 @@ def place_single(game: Game, card: Card, points: Iterator[Point], cfg: Config,
     return False
 
 
+HERO_BEAT = 0.6  # human-like: about this long between the last troops and the first hero
+HERO_GAP = 0.35  # ...and between one hero and the next (else 0.08 s)
+
+
 def place_singles(game: Game, cards: list[Card], points: Iterator[Point], cfg: Config,
                   fallback: Iterator[Point] | None = None) -> list[Card]:
     """Put every hero and siege machine down in one quick pass (card, point,
@@ -373,17 +438,20 @@ def place_singles(game: Game, cards: list[Card], points: Iterator[Point], cfg: C
     refused get another point. Returns the cards that went out."""
     before = game.refresh()
     placed: list[Card] = []
-    waiting = list(cards)
+    on = _rhythm(cfg)
+    waiting = human.order(game.rng, cards, on)  # human-like: not always left to right
+    if waiting:
+        _beat(game, cfg, HERO_BEAT)  # a moment after the troops, as a person looks where to put them
     for attempt in range(SINGLE_TRIES):
         if not waiting:
             break
         source = fallback if fallback is not None and attempt >= SINGLE_TRIES // 2 else points
         for card in waiting:
             game.tap(*card.center)
-            game.wait(0.08)
+            _wait(game, cfg, 0.08, SETTLE)
             game.tap(*next(source), jitter=3)
-            game.wait(0.08)
-        game.wait(0.5)
+            _beat(game, cfg, HERO_GAP, plain=0.08)
+        _wait(game, cfg, 0.5, SETTLE)
         after = game.refresh()
         if pick_reward(game):
             after = game.refresh()
@@ -415,8 +483,9 @@ def read_count(game: Game, card: Card, cfg: Config) -> int | None:
 
 def deploy_taps(game: Game, card: Card, points: Iterator[Point], taps: int, cfg: Config) -> None:
     game.tap(*card.center)
-    game.wait(0.15)
-    game.tap_many([next(points) for _ in range(taps)], jitter=3, pause=cfg.attack.tap_delay)
+    _wait(game, cfg, 0.15, SETTLE)
+    batch = [next(points) for _ in range(taps)]  # (round the sides, a point each)
+    game.tap_many(batch, jitter=3, pause=_burst(game, cfg, taps, cfg.attack.tap_delay))
 
 
 def loot_left(game: Game, cfg: Config) -> Loot | None:
@@ -438,6 +507,11 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None) -> float 
     started = last_change = game.clock()
     last_loot = None
     can_return = game.has(T.RETURN_HOME) and game.has(T.SURRENDER_OK)
+    # Human-like: how long without loot before leaving, and the share of
+    # loot that's enough, vary a little each battle.
+    spread = cfg.human.uses("end_spread")
+    no_loot = human.end_wait(game.rng, acfg.no_loot_seconds, spread)
+    enough_share = human.end_share(game.rng, acfg.end_at_loot_share, spread)
     while True:
         game.refresh()
         if pick_reward(game):
@@ -452,13 +526,15 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None) -> float 
         # Loot only goes down in a battle: a higher reading is a misread.
         if loot is not None and loot != last_loot and (last_loot is None or _not_more(loot, last_loot)):
             last_loot, last_change = loot, now
-        stalled = acfg.end_when_no_loot and last_loot is not None and now - last_change >= acfg.no_loot_seconds
+        stalled = acfg.end_when_no_loot and last_loot is not None and now - last_change >= no_loot
         share = taken_share(target, last_loot, cfg) if target and last_loot else 0.0
-        enough = bool(acfg.end_at_loot_share) and share >= acfg.end_at_loot_share
+        enough = bool(acfg.end_at_loot_share) and share >= enough_share
         if stalled or enough or now - started >= acfg.battle_timeout:
             reason = ("%d%% of the loot taken" % (share * 100) if enough else
-                      "no loot gained for %ds" % acfg.no_loot_seconds if stalled else "time limit")
+                      "no loot gained for %ds" % no_loot if stalled else "time limit")
             log.info("Ending battle: %s", reason)
+            if stalled:
+                game.note("end_spread", human.end_wait_extra(acfg.no_loot_seconds), no_loot - acfg.no_loot_seconds)
             if not can_return:
                 # Without the Return Home / Okay pictures, closing the game is
                 # the way out: the attack ends with what it has already won,
@@ -468,20 +544,31 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None) -> float 
                 game.wait(3)
                 return
             game.click(T.END_BATTLE)
+            _beat(game, cfg, 0.5)  # a moment to read the question
             game.click_when_visible(T.SURRENDER_OK, timeout=5)
             if not game.wait_for(T.RETURN_HOME, timeout=15):
                 raise RuntimeError("return-home button never appeared")
             break
-        game.wait(2)
+        _wait(game, cfg, 2, note=False)  # (a longer look doesn't make the battle longer)
     taken = taken_share(target, last_loot, cfg) if target and last_loot else None
     if taken is not None:
         log.info("Took %d%% of the base's loot", taken * 100)
     game.wait(1.0)
+    look_at_result(game)
     # The 100% reward can show over the results.
     if not game.click_when_visible(T.RETURN_HOME, timeout=5) and pick_reward(game):
         game.click_when_visible(T.RETURN_HOME, timeout=5)
     open_event_chests(game)
     return taken
+
+
+def look_at_result(game: Game) -> None:
+    """A look at the stars and loot before going home ("Look at the
+    result"), in either village."""
+    seconds = human.result_look(game.rng) if game.uses("result_pause") else 0.0
+    game.note("result_pause", human.result_extra(), seconds)
+    if seconds:
+        game.wait(seconds, exact=True)
 
 
 def _not_more(loot: Loot, before: Loot) -> bool:
@@ -573,6 +660,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
     than fits on the screen, it's deployed a screenful at a time, in that
     order, scrolling on until its end."""
     acfg = cfg.attack
+    game.look_around()  # "Look around before deploying": before the view is measured
     # The game centres a battle's view by itself, at the village's zoom: a
     # zoom-out is all it needs.
     game.zoom_out()
@@ -581,10 +669,14 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
         # Neither found the base: most likely still zoomed in (a pinch the
         # game missed, from a village left zoomed in on an upgrade).
         log.info("Deploy points: the base wasn't found; zooming out again")
-        game.zoom_out()
+        # Pinched for real: the view may only look like the last zoom-out's.
+        game.zoom_out(force=True)
         edges, center = deploy_edges(game, cfg)
-    edge_points = cycle_points(edges, acfg.sides)
-    fixed_points = cycle_points(fixed_lines(game.size[0], cfg), acfg.sides)
+        if center is None:
+            log.warning("Deploy points: the base still wasn't found after zooming out (the view may be zoomed "
+                        "in); dropping troops on the fixed lines")
+    edge_points = cycle_points(edges, acfg.sides, game.rng, _rhythm(cfg))
+    fixed_points = cycle_points(fixed_lines(game.size[0], cfg), acfg.sides, game.rng, _rhythm(cfg))
     over_base = spell_points(edges, center, acfg.spell_reach)
     spot = spell_spot(edges, center, acfg.spell_spot, game.rng)
     if acfg.spell_placement == "together":
@@ -623,12 +715,13 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
                         unfinished.append(card)
                     continue
                 left = remaining.get(card)
-                share = math.ceil(left / (waves - wave)) if left else acfg.taps_per_batch
+                share = (human.share(game.rng, left, waves - wave, _rhythm(cfg)) if left else
+                         human.batch(game.rng, acfg.taps_per_batch, _rhythm(cfg)))
                 deploy_taps(game, card, edge_points, share, cfg)
                 if left:
                     remaining[card] = left - share
             if not last:
-                game.wait(acfg.wave_delay)
+                _wait(game, cfg, acfg.wave_delay)
 
         here = place_singles(game, singles, edge_points, cfg, fixed_points)
         for card in unfinished:
@@ -636,6 +729,8 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
             if not armybar.is_spent(game.refresh(), card, cfg.bar):
                 log.info("Card at x=%d still has units; deploying the rest", card.left)
                 deploy_card(game, card, edge_points, cfg, fixed_points)
+        if spells:
+            _beat(game, cfg, SPELL_BEAT)
         for card in spells:
             if acfg.spell_placement == "together":
                 cast_together(game, card, spot, counts.get(card), cfg)
@@ -667,15 +762,27 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
         if acfg.ability_health > 0:
             fire_abilities_when_hurt(game, placed, cfg)
         else:
-            game.wait(acfg.hero_ability_delay)
-            for card in placed:
-                game.tap(*card.center)
-                game.wait(0.2)
+            fire_abilities_on_time(game, placed, cfg)
         log.info("Activated %d hero/siege card(s)", len(placed))
     return finish_battle(game, cfg, target)
 
 
 ABILITY_CHECK = 0.5  # seconds between looks at the heroes' health
+SPELL_BEAT = 0.8  # human-like: about this long between the heroes and the spells
+
+
+def fire_abilities_on_time(game: Game, cards: list[Card], cfg: Config) -> None:
+    """Fire each ability ``hero_ability_delay`` after the heroes landed:
+    all together, or, human-like, each at its own time around it."""
+    acfg = cfg.attack
+    times = human.ability_times(game.rng, len(cards), acfg.hero_ability_delay, _rhythm(cfg))
+    start = game.clock()
+    for card, at in zip(human.order(game.rng, cards, _rhythm(cfg)), times):
+        wait = at - (game.clock() - start)
+        if wait > 0:
+            game.wait(wait, exact=True)  # (to the moment: the battle goes on meanwhile)
+        game.tap(*card.center)
+        game.wait(0.2)
 
 
 def fire_abilities_when_hurt(game: Game, cards: list[Card], cfg: Config) -> None:
@@ -683,16 +790,26 @@ def fire_abilities_when_hurt(game: Game, cards: list[Card], cfg: Config) -> None
     to ``ability_health``, or when its bar disappears (about to fall), or at
     ``ability_max_wait`` at the latest."""
     acfg = cfg.attack
+    on = _rhythm(cfg)
     waiting = list(cards)
-    deadline = game.clock() + acfg.ability_max_wait
+    # Human-like: each hero's own threshold, and its own last moment.
+    limit = {card: human.threshold(game.rng, acfg.ability_health, on) for card in cards}
+    start = game.clock()
+    # "At the latest" stays the latest: a hero's own deadline is a little
+    # before it, never after.
+    deadline = {card: start + acfg.ability_max_wait * (game.rng.uniform(0.85, 1.0) if on else 1.0)
+                for card in cards}
     while waiting:
         screen = game.refresh()
         if pick_reward(game):
             continue
-        late = game.clock() >= deadline
+        now = game.clock()
         for card in list(waiting):
             health = armybar.hero_health(screen, card)
-            if late or health is None or health <= acfg.ability_health:
+            late = now >= deadline[card]
+            if late or health is None or health <= limit[card]:
+                if on and not late and health is not None:
+                    game.wait(human.reaction(game.rng), exact=True)  # seen, then tapped
                 game.tap(*card.center)
                 game.wait(0.15)
                 waiting.remove(card)

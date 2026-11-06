@@ -23,10 +23,13 @@ looks after your village, in **both the home village and the builder base**.
 ## What it does
 
 - ⚔️ **Farms the home village.** It finds bases with the loot you want, attacks with your whole army, and comes home.
+- 🎯 **Deploys right at the red line.** Troops land just outside the red line, or just outside the buildings where it can't be seen, not out at the map's edge.
+- 🏰 **Fits your Town Hall.** Loot to look for starts at amounts for your Town Hall, and what it hasn't unlocked yet is greyed out. Your village (from the game's Data Export) is a click away.
 - 🛠️ **Farms the builder base.** It plays builder battles with your hero and troops (an all **Night Witch** army works best).
 - 🔄 **Switches between villages for you.** With **Auto switch** on, it farms one village until its storages are full, then moves to the other.
 - 💰 **Looks after your village.** It collects resources and the loot cart, can upgrade walls, and fills clan donation requests.
 - ⏰ **Plays when you want.** You pick the hours, a daily attack range and random breaks, so it plays more like a person.
+- 🧑 **Plays like a person.** Switch on habits one by one (taps around a button, varied pauses and swipes, a battle rhythm of its own) and see how much time each adds.
 - 📊 **Tracks your loot.** The History page shows every attack and what you gained.
 - ⬆️ **Updates itself** from GitHub releases, in one click.
 - 🔔 **Sends Discord alerts.** You'll hear when storage is full, when it stops, and get a daily summary.

@@ -28,6 +28,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from farmbot import human
 from farmbot.config import BuilderConfig
 from farmbot.tasks.search import Loot
 from farmbot.game import VIEW_AREA, VIEW_NEAR, VIEW_STILL, Game, T, view_change, view_shift
@@ -57,10 +58,11 @@ class BuilderError(RuntimeError):
 
 
 # ------------------------------------------------------------------ getting there
-def in_builder_base(game: Game) -> bool:
+def in_builder_base(game: Game, refresh: bool = True) -> bool:
     if not game.has(T.BB_BATTLE):
         return False
-    game.refresh()
+    if refresh:
+        game.refresh()
     return game.find(T.BB_BATTLE, region=game.region(BATTLE_AREA)) is not None
 
 
@@ -234,6 +236,8 @@ def _restore_view(game: Game, reference: np.ndarray) -> bool:
     for _ in range(VIEW_TRIES):
         shift = view_shift(reference, game.refresh())
         log.debug("Builder base view: %s from where it was", shift)
+        if shift is None and _close_window(game):
+            continue  # it hid the map
         if shift is None:
             dx, dy = VIEW_SEARCH[searched % len(VIEW_SEARCH)]
             searched += 1
@@ -294,19 +298,20 @@ def _in_cart_area(x: int, y: int) -> bool:
 
 
 def collect_resources(game: Game, tries: int = 4, second_base: bool = True,
-                      kinds: tuple[str, ...] = ("gold", "elixir", "gems")) -> list[str]:
+                      kinds: tuple[str, ...] = ("gold", "elixir", "gems"), restore: bool = True) -> list[str]:
     """Empty the builder base's full gold mines, elixir collectors and gem
     mine (of ``kinds``: leave out a full storage's, whose collectors can't
     be emptied) by tapping their bubbles (never the elixir cart's tag), on
     the first base and then, with ``second_base``, the second one, after
-    which the view is put back. Returns what was collected."""
+    which (with ``restore``) the view is put back. Returns what was collected."""
     game.zoom_out()
     view = game.refresh().copy()
     collected = _collect_in_view(game, tries, kinds)
     if second_base and {"gold", "elixir"} & set(kinds):  # the gem mine is on the first base
         _to_second_base(game)
         collected += [k for k in _collect_in_view(game, tries, kinds) if k not in collected]
-        restore_view(game, view)
+        if restore:
+            restore_view(game, view)
     if collected:
         log.info("Collected builder base %s", ", ".join(collected))
     return collected
@@ -347,7 +352,22 @@ def _collect_in_view(game: Game, tries: int, kinds: tuple[str, ...] = ("gold", "
             game.wait(1.0)
             if kind not in collected:
                 collected.append(kind)
+            _close_window(game)
     return collected
+
+
+def _close_window(game: Game) -> bool:
+    """Close a window a tap opened over the map (the elixir cart's, when
+    the second base's view brings it out of its usual place): drags under
+    it would only scroll it. True if one was."""
+    if not game.has(T.CLOSE):
+        return False
+    game.refresh()
+    if not game.click(T.CLOSE):
+        return False
+    log.info("Closed a window over the builder base")
+    game.wait(0.6)
+    return True
 
 
 def collect_elixir_cart(game: Game) -> bool:
@@ -892,6 +912,24 @@ def start_battle(game: Game) -> None:
     game.wait(1.0)
 
 
+def _rhythm_wait(game: Game, seconds: float, shortest: float = 0.85) -> None:
+    """Wait about ``seconds``: exactly, or with "Battle rhythm varies" a
+    little longer or shorter (never under ``shortest`` of it)."""
+    varied = human.pause(game.rng, seconds, game.uses("battle_rhythm"), shortest=shortest)
+    game.note("battle_rhythm", human.pause_extra(seconds, shortest=shortest), varied - seconds)
+    if varied > 0:
+        game.wait(varied, exact=True)
+
+
+def _later(game: Game, seconds: float) -> float:
+    """A battle's timing, ``seconds``: each battle its own, around it, with
+    "Battle rhythm varies" (it adds no time: the battle plays on)."""
+    return seconds * game.rng.uniform(*TIMING_SPREAD) if game.uses("battle_rhythm") else seconds
+
+
+TIMING_SPREAD = (0.8, 1.25)
+
+
 def _tap_card(game: Game, slot: Slot, cfg: BuilderConfig) -> None:
     game.tap(slot.x, cfg.card_y)
     game.wait(cfg.tap_gap)
@@ -922,6 +960,8 @@ def deploy_stage(game: Game, cfg: BuilderConfig, first: bool = False) -> tuple[f
     """Hero at the far corner, then (``troop_delay`` s later) every ready
     troop there too. Returns when the hero landed and the troops sent.
     On the ``first`` base, the hero is set to ``cfg.first_hero`` first."""
+    if first:
+        game.look_around()  # "Look around before deploying"
     game.zoom_out()
     if first and cfg.use_hero and cfg.first_hero in HEROES:
         choose_hero(game, cfg, cfg.first_hero)
@@ -945,7 +985,7 @@ def deploy_stage(game: Game, cfg: BuilderConfig, first: bool = False) -> tuple[f
         else:
             point = found
         landed = game.clock()
-        game.wait(max(cfg.troop_delay - 0.6, 0))
+        _rhythm_wait(game, max(cfg.troop_delay - 0.6, 0))
     elif troops:
         # No hero to find a good spot with: the first troop does it.
         first = troops[0]
@@ -960,7 +1000,11 @@ def deploy_stage(game: Game, cfg: BuilderConfig, first: bool = False) -> tuple[f
         # Select the first card; each tap on the map sends the selected
         # troop and the game selects the next card. The pause is the troop speed.
         _tap_card(game, troops[0], cfg)
-        game.tap_many([point] * len(troops), jitter=6, pause=cfg.tap_delay)
+        taps = len(troops)
+        pause = human.pauses(game.rng, taps, cfg.tap_delay, game.uses("battle_rhythm"))
+        game.note("battle_rhythm", human.pauses_extra(taps, cfg.tap_delay),
+                  sum(pause[:-1]) - cfg.tap_delay * (taps - 1) if isinstance(pause, list) else 0.0)
+        game.tap_many([point] * taps, jitter=6, pause=pause)
         sent += troops
         game.wait(0.5)
         tried = len(troops)
@@ -1004,7 +1048,10 @@ class BattleResult:
 
 def _finish(game: Game, stages: int) -> BattleResult:
     """Keep the result screen, then Return Home."""
+    from farmbot.tasks.attack import look_at_result
+
     result = BattleResult(stages, None if game.screen is None else game.screen.copy())
+    look_at_result(game)
     game.click(T.BB_RETURN_HOME)
     game.wait_for(T.BB_BATTLE, timeout=15)
     return result
@@ -1022,7 +1069,8 @@ def attack(game: Game, cfg: BuilderConfig, on_stage: Callable[[int], None] | Non
         landed, troops = deploy_stage(game, cfg, first=stages == 0)
         stages += 1
         batches = [troops[i:i + cfg.ability_batch] for i in range(0, len(troops), max(cfg.ability_batch, 1))]
-        next_batch = game.clock() + cfg.ability_delay
+        next_batch = game.clock() + _later(game, cfg.ability_delay)
+        hero_after = _later(game, cfg.hero_ability_after)
         ability = cfg.use_hero and cfg.hero_ability
         charges_seen = False  # the charge bars showed: fire by them, not the timer
         hero_next, hero_uses = landed, 0
@@ -1033,12 +1081,12 @@ def attack(game: Game, cfg: BuilderConfig, on_stage: Callable[[int], None] | Non
                 batch = batches.pop(0)
                 log.debug("Troop abilities: cards %s", [s.index for s in batch])
                 _fire_abilities(game, batch, cfg)
-                next_batch = now + cfg.ability_delay
+                next_batch = now + _later(game, cfg.ability_delay)
             screen = game.refresh()
             if ability and now >= hero_next:
                 charges = hero_charges(screen, cfg)
                 charges_seen = charges_seen or charges > 0
-                timer = not charges_seen and not hero_uses and now - landed >= cfg.hero_ability_after
+                timer = not charges_seen and not hero_uses and now - landed >= hero_after
                 if charges >= CHARGES_TO_FIRE or timer:
                     game.tap(cfg.hero_x, cfg.card_y)
                     hero_uses += 1
@@ -1051,10 +1099,10 @@ def attack(game: Game, cfg: BuilderConfig, on_stage: Callable[[int], None] | Non
                 return _finish(game, stages)
             if now - landed > 5 and stage_reset(game):
                 log.info("First base down: on to the next one")
-                game.wait(cfg.stage_delay)
+                _rhythm_wait(game, cfg.stage_delay)
                 new_stage = True
                 break
-            game.wait(0.5)
+            game.wait(0.5, exact=True)  # a poll while the battle plays
         if not new_stage:
             break
     # Time's up (or something unexpected): wait for the result, then go home.

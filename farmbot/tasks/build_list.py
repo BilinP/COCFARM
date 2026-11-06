@@ -37,6 +37,9 @@ LIST_BOTTOM_FROM_BOTTOM = 110  # ...and end above its tabs
 LIST_PAGE = 400  # a swipe in a sorted list: under the list's height, so no row is skipped
 SLOW_SWIPE_MS = 900
 MAX_SORTED_SCROLLS = 30  # the whole list, top to bottom
+LIST_PANEL_W = 360  # the list's panel, from the screen's right edge
+LIST_STILL = 4  # mean change in the panel under this: it didn't scroll (a scroll: 40+;
+                # its own shimmer, ~1; the village beside it animates, so it's left out)
 # While the list is open it pushes the resource bar this many "Wall x"
 # heights to the left (487 px at 860 x 672).
 HUD_SHIFT = 23.2
@@ -74,6 +77,10 @@ CONFIRM_TIMEOUT = 3
 # The builder counter ("3/5": free of all) above the Build button, in Build
 # text heights from its middle.
 BUILDERS = (-3.0, -6.8, 2.75, 1.2)  # x, y, width, height
+# Before the laboratory (town hall 1-2) there's one counter, wider, centred
+# over Build, its number beside the builder's face ("[face] 2/2"): from
+# the face, at the same height. Its pieces before the number are skipped.
+BUILDERS_ALONE = (-1.6, -6.8, 3.2, 1.2)
 # Where a goblin shows over the counters, in Build text heights from its
 # middle: the builders' left of it, the laboratory's right.
 GOBLINS = (-4.0, 4.0, -9.0, -5.5)  # x from, to; y from, to
@@ -241,23 +248,68 @@ def rows(game: Game, kinds: tuple[str, ...] = ("gold", "elixir", "dark"), lst: B
     return sorted(found, key=lambda r: r.y)
 
 
+def list_still(before: np.ndarray | None, after: np.ndarray | None) -> bool:
+    """Whether the list's panel looks the same in both screenshots: a swipe
+    didn't move it (its end). Only the panel is compared: the village
+    beside it never stops moving."""
+    if before is None or after is None or before.shape != after.shape:
+        return False
+    h, w = after.shape[:2]
+    area = (slice(LIST_TOP, h - LIST_BOTTOM_FROM_BOTTOM), slice(max(w - LIST_PANEL_W, 0), w))
+    return float(np.abs(after[area].astype(np.int16) - before[area].astype(np.int16)).mean()) < LIST_STILL
+
+
 def first_affordable(game: Game, budget: dict[str, int], lst: BuildList = HOME) -> Row | None:
     """In a tab sorted Cost Max, scroll down to the first row that
     ``budget`` (resource -> amount) covers: the dearest upgrade it can pay
     for. ``None`` if the list ends without one."""
     w, h = game.size
     x, y = w - LIST_SWIPE_X, h - LIST_SWIPE_FROM_BOTTOM
+    game.refresh()
     for _ in range(MAX_SORTED_SCROLLS):
-        game.refresh()
         found = [r for r in rows(game, tuple(budget), lst) if r.price <= budget[r.kind]]
         if found:
             return found[0]
         before = game.screen
         game.swipe(x, y, x, y - LIST_PAGE, duration_ms=SLOW_SWIPE_MS)
         game.wait(0.8)
-        game.refresh()
-        if float(np.abs(game.screen.astype(np.int16) - before.astype(np.int16)).mean()) < 1:
+        game.refresh()  # (looked at for rows on the next turn)
+        if list_still(before, game.screen):
             return None  # the list's end
+    return None
+
+
+RED_PRICE = ((8, 172), 120, 150)  # hue at most / at least, saturation, value: a price drawn red
+WHITE_PRICE = (50, 200)  # saturation at most, value at least: a price drawn white
+PRICE_PIXELS = 200  # of the one colour, the other next to none (a dimmed list has neither)
+
+
+def top_row_affordable(game: Game, kinds: tuple[str, ...], lst: BuildList = HOME) -> bool | None:
+    """In a tab sorted Cost Min: whether its top priced row, the cheapest
+    upgrade, can be paid for. The game draws a price it can't pay red
+    (which the digits reader can't read) and one it can white. ``None``
+    if there's no such row on show or its colour can't be told."""
+    game.refresh()
+    w, h = game.size
+    column = Rect(w - ICON_COLUMN, LIST_TOP, ICON_COLUMN, h - LIST_BOTTOM_FROM_BOTTOM - LIST_TOP)
+    walls = [m.y for m in game.find_all(T.WALL_SUGGESTION)] if game.has(T.WALL_SUGGESTION) else []
+    icons = [m for kind in kinds if game.has(lst.cost_icons[kind])
+             for m in game.find_all(lst.cost_icons[kind], region=column)
+             if not any(WALL_ROW_BAND[0] <= y - m.y <= WALL_ROW_BAND[1] for y in walls)]
+    if not icons:
+        return None
+    m = min(icons, key=lambda i: i.y)
+    x0, y0 = m.x - round(PRICE_LEFT * m.h), m.y - m.h // 2 - 2
+    area = cv2.cvtColor(game.screen[max(y0, 0):y0 + m.h + 4, max(x0, 0):x0 + round(PRICE_WIDTH * m.h)],
+                        cv2.COLOR_BGR2HSV)
+    (hue_low, hue_high), sat, val = RED_PRICE
+    red = int(np.count_nonzero(((area[..., 0] <= hue_low) | (area[..., 0] >= hue_high))
+                               & (area[..., 1] >= sat) & (area[..., 2] >= val)))
+    white = int(np.count_nonzero((area[..., 1] <= WHITE_PRICE[0]) & (area[..., 2] >= WHITE_PRICE[1])))
+    if red >= PRICE_PIXELS and white < PRICE_PIXELS // 4:
+        return False
+    if white >= PRICE_PIXELS and red < PRICE_PIXELS // 4:
+        return True
     return None
 
 
@@ -385,8 +437,17 @@ def free_builders(game: Game) -> int | None:
     if "builder" in goblins(game, build):
         return 0
     h = build.h
-    x, y, width, height = BUILDERS
-    return _read_free(game, Rect(build.x + round(x * h), build.y + round(y * h), round(width * h), round(height * h)))
+
+    def at(box: tuple[float, float, float, float]) -> Rect:
+        x, y, width, height = box
+        return Rect(build.x + round(x * h), build.y + round(y * h), round(width * h), round(height * h))
+
+    free = _read_free(game, at(BUILDERS))
+    if free is None:
+        # Nothing where the builders' counter is when there are two: one
+        # counter only, the number beside the face.
+        free = _read_free(game, at(BUILDERS_ALONE), lead=True)
+    return free
 
 
 def goblins(game: Game, build: Match | None = None) -> set[str]:
@@ -415,12 +476,21 @@ def tab_free(game: Game, tab: str, lst: BuildList = HOME) -> int | None:
     return _read_free(game, Rect(w - lst.tabs[tab] - half, h - top, 2 * half, height))
 
 
-def _read_free(game: Game, region: Rect) -> int | None:
+def _read_free(game: Game, region: Rect, lead: bool = False) -> int | None:
+    """The number before the "/" in ``region``; with ``lead``, what comes
+    before the number (the builder's face) is skipped, and the "/" must
+    follow it."""
     font = game.vision.font(T.LOOT_FONT)
     digits = []
     for _, mask in pieces(game._current(), region):
         char, score = font.classify(mask)
         if score < SEPARATOR_SCORE or not char.isdigit():
+            if lead and not digits:
+                continue  # (the face)
+            if lead:
+                return int("".join(digits))  # the "/" (or what ends the number)
             break  # the "/": the free count is before it
         digits.append(char)
+    if lead:
+        return None  # no "/" after it: not the counter
     return int("".join(digits)) if digits else None

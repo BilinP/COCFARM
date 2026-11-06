@@ -420,7 +420,7 @@ def close_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.slee
     elif cfg.mode == "mumu":
         from farmbot import mumu
 
-        mumu.quit_instance(cfg)
+        mumu.quit_instance(cfg, sleep=sleep)
     elif cfg.mode == "bluestacks":
         install = find_install()
         instance = install.instance(cfg.bluestacks_instance) if install else None

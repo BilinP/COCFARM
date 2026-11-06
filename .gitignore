@@ -24,3 +24,6 @@ farmbot.log
 
 # Settings per account, with a picture of each player name: kept locally
 /profiles/
+
+# Which farms are picked on the Farms page: kept locally
+/instances/

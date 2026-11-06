@@ -40,6 +40,8 @@ DIFFERENT = 0.7  # less alike than this: another name (in between: not sure)
 
 OCR_SCRIPT = Path(__file__).parent / "ocr.ps1"
 OCR_ZOOM = 4  # the letters are about 12 px tall: Windows reads them better bigger
+PICTURE_ZOOM = 3  # (the name as it shows: read best a little less big)
+NAME_ROOM = 12  # px either side of the name in its picture
 OCR_TIMEOUT = 30.0
 
 # Kept in the main settings file, shared by every profile.
@@ -50,6 +52,19 @@ SHARED_BOT = ("theme", "templates", "threshold", "update_repo", "check_updates")
 def name_mask(screen: np.ndarray) -> np.ndarray | None:
     """The player name's letters as a 0/255 mask trimmed to them, or None
     when no name shows there."""
+    found = _name(screen)
+    return found[0] if found else None
+
+
+def name_picture(screen: np.ndarray) -> np.ndarray | None:
+    """The player name as it shows (grey, a little room around it): what
+    the name is read from. The mask loses thick letters' insides (a W or
+    an H reads as something else); this doesn't."""
+    found = _name(screen)
+    return found[1] if found else None
+
+
+def _name(screen: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
     scale = screen.shape[0] / BASE_HEIGHT
     x, y, w, h = (round(v * scale) for v in NAME_AREA)
     area = screen[y:y + h, x:x + w]
@@ -67,14 +82,16 @@ def name_mask(screen: np.ndarray) -> np.ndarray | None:
         if col - end > WORD_GAP:
             break
         end = col
-    mask = mask[:, columns[0]:end + 1]
+    left, right = columns[0], end + 1
+    mask = mask[:, left:right]
     rows = np.flatnonzero(mask.any(axis=1))
     if rows[0] == 0 or rows[-1] == mask.shape[0] - 1:
         return None  # running off the area: a window or a white wall, not one line of letters
     mask = mask[rows[0]:rows[-1] + 1]
     if not LEAST_PIXELS <= np.count_nonzero(mask) <= MOST_FILL * mask.size:
         return None
-    return mask
+    grey = cv2.cvtColor(area, cv2.COLOR_BGR2GRAY)[:, max(left - NAME_ROOM, 0):right + NAME_ROOM]
+    return mask, grey
 
 
 def likeness(a: np.ndarray, b: np.ndarray) -> float:
@@ -100,15 +117,28 @@ def likeness(a: np.ndarray, b: np.ndarray) -> float:
     return best
 
 
+def namer_for(picture: np.ndarray | None) -> Callable[[np.ndarray], str]:
+    """Reads a name: from ``picture`` (:func:`name_picture`), else (or if
+    that reads nothing) from the mask it's given."""
+    def read(mask: np.ndarray) -> str:
+        return (read_name(picture) if picture is not None else "") or read_name(mask)
+    return read
+
+
 def _safe(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", name).strip().rstrip(".")
 
 
 def read_name(mask: np.ndarray) -> str:
-    """The player name in ``mask``, read by Windows' OCR ("" if it can't:
-    unusual letters, or not Windows 10 or later)."""
-    picture = 255 - cv2.resize(mask, None, fx=OCR_ZOOM, fy=OCR_ZOOM, interpolation=cv2.INTER_CUBIC)
-    picture = cv2.copyMakeBorder(picture, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)  # dark letters on white
+    """The player name in ``mask`` (or, better, its :func:`name_picture`),
+    read by Windows' OCR ("" if it can't: unusual letters, or not Windows
+    10 or later)."""
+    if len(np.unique(mask)) > 2:  # the name as it shows
+        picture = cv2.resize(mask, None, fx=PICTURE_ZOOM, fy=PICTURE_ZOOM, interpolation=cv2.INTER_CUBIC)
+        picture = cv2.copyMakeBorder(picture, 30, 30, 30, 30, cv2.BORDER_REPLICATE)
+    else:
+        picture = 255 - cv2.resize(mask, None, fx=OCR_ZOOM, fy=OCR_ZOOM, interpolation=cv2.INTER_CUBIC)
+        picture = cv2.copyMakeBorder(picture, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)  # dark letters on white
     with tempfile.TemporaryDirectory() as folder:
         path = Path(folder) / "name.png"
         cv2.imwrite(str(path), picture)
@@ -148,6 +178,10 @@ class Profiles:
 
     def picture_path(self, name: str) -> Path:
         return self.folder / f"{name}.png"
+
+    def village_path(self, name: str) -> Path:
+        """The account's village export (``farmbot/townhall.py``)."""
+        return self.folder / f"{name}.village.json"
 
     def mask(self, name: str) -> np.ndarray | None:
         path = self.picture_path(name)
@@ -219,13 +253,14 @@ class Profiles:
         new = _safe(new)
         if not new or new.lower() in {n.lower() for n in self.names() if n != old}:
             raise ValueError(f"there's already a profile called {new}" if new else "give it a name")
-        for path in (self.path(old), self.picture_path(old)):
+        for path, renamed in ((self.path(old), self.path(new)), (self.picture_path(old), self.picture_path(new)),
+                              (self.village_path(old), self.village_path(new))):
             if path.exists():
-                path.rename(path.with_name(new + path.suffix))
+                path.rename(renamed)
         return new
 
     def delete(self, name: str) -> None:
-        for path in (self.path(name), self.picture_path(name)):
+        for path in (self.path(name), self.picture_path(name), self.village_path(name)):
             path.unlink(missing_ok=True)
 
 
@@ -277,6 +312,25 @@ def for_account(profiles: Profiles, config: Config, mask: np.ndarray,
     fresh.storage.read_on = fresh.storage.builder_read_on = ""
     fresh.storage.read = fresh.storage.builder_read = True
     return profiles.create(new, fresh, mask), True
+
+
+FALLBACK_NAME = re.compile(r"Account \d+")  # a profile named while the account's name couldn't be read
+
+
+def read_later(profiles: Profiles, name: str, mask: np.ndarray,
+               namer: Callable[[np.ndarray], str] = read_name) -> str | None:
+    """Profile ``name`` is still "Account 1" (or 2...): the account's name
+    couldn't be read when it was made. Read it again now; the name read,
+    if it's one no other profile has, else None."""
+    if not FALLBACK_NAME.fullmatch(name):
+        return None
+    read = _safe(namer(mask))
+    if not read or FALLBACK_NAME.fullmatch(read):
+        return None
+    if read.lower() in {n.lower() for n in profiles.names() if n != name}:
+        log.info("Player name read as %s, but another profile has that name: keeping %s", read, name)
+        return None
+    return read
 
 
 def load_active(path: str | Path) -> Config:

@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 from farmbot.config import RedLineConfig
-from farmbot.geometry import Point, Rect
+from farmbot.geometry import Point, Rect, scaled
 
 log = logging.getLogger(__name__)
 
@@ -147,6 +147,7 @@ def detect(screen: np.ndarray, cfg: RedLineConfig) -> RedLine | None:
     outline = _outermost(angles, flat, cfg.bins_per_side, band)
 
     field = Rect.from_list(cfg.battlefield).resolve(screen.shape[1], screen.shape[0])
+    offset = scaled(cfg.offset_px, screen.shape[1])
     sides: dict[str, list[Point]] = {}
     for side, idx in outline.items():
         envelope: list[Point] = []
@@ -154,7 +155,7 @@ def detect(screen: np.ndarray, cfg: RedLineConfig) -> RedLine | None:
             r = radii[i]
             if r == 0:
                 continue
-            scale = (r + cfg.offset_px) / r  # step outward from the centre
+            scale = (r + offset) / r  # step outward from the centre
             envelope.append((round(cx + dx[i] * scale), round(cy + dy[i] * scale)))
         points = _drop_inner(_inside(envelope, field), (cx, cy), cfg)
         sides[side] = points if _smooth(points, (cx, cy), cfg) else []

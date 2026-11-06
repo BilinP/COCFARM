@@ -54,6 +54,8 @@ class Instance:
     width: int
     height: int
     dpi: int
+    pid: int = -1  # the player's process (-1: none)
+    vm_pid: int = -1  # its virtual machine's
 
     @property
     def serial(self) -> str:
@@ -155,7 +157,7 @@ def parse_list2(text: str) -> list[Instance]:
             continue
         try:
             instances.append(Instance(int(parts[0]), parts[1], parts[4] == "1",
-                                      int(parts[7]), int(parts[8]), int(parts[9])))
+                                      int(parts[7]), int(parts[8]), int(parts[9]), int(parts[5]), int(parts[6])))
         except ValueError:
             continue
     return instances
@@ -265,6 +267,10 @@ def emulator_of(path: Path, installs: list[Install]) -> tuple[str, Install | Non
     return "other", None
 
 
+# A start that didn't take: neither the player nor its virtual machine
+# runs this long after "launch" (it would answer in ~25 s): started again
+# then, not after the whole launch timeout.
+LAUNCH_GONE = 45  # seconds
 PORT_FREE_TIMEOUT = 30  # seconds for the emulator that was closed to let go of the port
 
 
@@ -368,7 +374,8 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
             raise DeviceError(f"{install.name} is not running. Start it, or turn on 'Start the emulator automatically'.")
         log.info("Starting %s (instance %d)", install.name, inst.index + 1)
         run([str(install.console), "launch", "--index", str(inst.index)])
-    deadline = clock() + cfg.launch_timeout
+    launched = clock()
+    deadline = launched + cfg.launch_timeout
     last_error: Exception | None = None
     while True:
         try:
@@ -392,7 +399,19 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
         if clock() >= deadline:
             raise NoAnswer(f"{install.name} did not answer over ADB within {cfg.launch_timeout:.0f}s"
                               + (f": {last_error}" if last_error else ""))
+        if clock() - launched >= LAUNCH_GONE and _gone(install, inst.index, run):
+            raise NoAnswer(f"{install.name} isn't running {clock() - launched:.0f}s after it was started "
+                           "(neither the player nor its virtual machine)")
         sleep(3)
+
+
+def _gone(install: Install, index: int, run: Runner) -> bool:
+    """The instance has neither a player nor a virtual machine process."""
+    try:
+        current = next((i for i in instances(install, run) if i.index == index), None)
+    except Exception:  # noqa: BLE001 - a console that can't list: not known to be gone
+        return False
+    return current is not None and current.pid <= 0 and current.vm_pid <= 0
 
 
 def quit_instance(cfg: DeviceConfig, run: Runner = _run) -> None:

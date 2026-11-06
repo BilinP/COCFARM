@@ -15,6 +15,7 @@ its log lines say which farm wrote them.
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import logging
 import re
@@ -165,6 +166,82 @@ def emulators() -> list[Emulator]:
     return found
 
 
+# Where Windows keeps what's installed: each emulator's version (its "DisplayVersion").
+UNINSTALL_KEYS = (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                  r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall")
+INSTALLED_NAMES = {"mumu": re.compile(r"^mumu", re.I), "bluestacks": re.compile(r"^bluestacks$", re.I)}
+
+
+def _installed_versions() -> dict[str, str]:
+    """Each program installed, by its name, and its version (Windows only)."""
+    try:
+        import winreg
+    except ImportError:
+        return {}
+    found: dict[str, str] = {}
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for key in UNINSTALL_KEYS:
+            try:
+                parent = winreg.OpenKey(root, key)
+            except OSError:
+                continue
+            with parent:
+                for i in range(winreg.QueryInfoKey(parent)[0]):
+                    try:
+                        with winreg.OpenKey(parent, winreg.EnumKey(parent, i)) as entry:
+                            name = str(winreg.QueryValueEx(entry, "DisplayName")[0])
+                            found.setdefault(name, str(winreg.QueryValueEx(entry, "DisplayVersion")[0]))
+                    except OSError:
+                        continue
+    return found
+
+
+def major_version(mode: str, install: str = "", installed: dict[str, str] | None = None) -> str:
+    """The emulator's version number, as players call it: LDPlayer's from its
+    name ("LDPlayer 14": "14"), the others' from what Windows has installed
+    (BlueStacks 5.22.110: "5"). "" if not known."""
+    if mode == "ldplayer":
+        number = re.search(r"\d+", install or "")
+        return number.group(0) if number else ""
+    pattern = INSTALLED_NAMES.get(mode)
+    if pattern is None:
+        return ""
+    installed = _installed_versions() if installed is None else installed
+    version = next((v for name, v in sorted(installed.items()) if pattern.search(name)), "")
+    number = re.match(r"\d+", version)
+    return number.group(0) if number else ""
+
+
+@functools.lru_cache(maxsize=None)
+def emulator_badge(mode: str, install: str = "") -> tuple[Path | None, str]:
+    """For the Farms page's pictures: the emulator's own program (its icon)
+    and version number. Looked up once."""
+    from farmbot import bluestacks, ldplayer, mumu
+
+    program: Path | None = None
+    try:
+        if mode == "ldplayer":
+            installs = ldplayer.find_installs()
+            found = next((i for i in installs if i.name == install), installs[0] if installs else None)
+            program = found.path / "dnplayer.exe" if found else None
+            install = install or (found.name if found else "")
+        elif mode == "mumu":
+            tools = mumu.find_install()
+            if tools is not None:
+                program = next((p for p in (tools.tools / "MuMuNxMain.exe", tools.tools / "MuMuPlayer.exe")
+                                if p.is_file()), None)
+        elif mode == "bluestacks":
+            player = bluestacks.find_install()
+            program = player.player_exe if player else None
+    except (OSError, DeviceError) as exc:
+        log.debug("Couldn't find %s's program: %s", mode, exc)
+    try:
+        version = major_version(mode, install)
+    except OSError:
+        version = ""
+    return (program if program is not None and program.is_file() else None), version
+
+
 def choices(cfg: DeviceConfig | None = None) -> list[Choice]:
     """The instances made in the emulators' multi-instance managers: of
     ``cfg``'s emulator, or (without) of every emulator installed."""
@@ -179,7 +256,7 @@ def choices(cfg: DeviceConfig | None = None) -> list[Choice]:
             installs = [picked] if picked else []
         for install in installs:
             try:
-                found += [Choice(str(i.index), f"{i.index}: {i.title}", "ldplayer", install.name, i.port)
+                found += [Choice(str(i.index), f"{i.index + 1}: {i.title}", "ldplayer", install.name, i.port)
                           for i in ldplayer.instances(install)]
             except DeviceError as exc:
                 log.warning("Couldn't list %s's instances: %s", install.name, exc)
@@ -187,7 +264,7 @@ def choices(cfg: DeviceConfig | None = None) -> list[Choice]:
         install = mumu.find_install()
         if install is not None:
             try:
-                found += [Choice(str(i.index), f"{i.index}: {i.name}", "mumu", "", i.adb_port)
+                found += [Choice(str(i.index), f"{i.index + 1}: {i.name}", "mumu", "", i.adb_port)
                           for i in mumu.instances(install)]
             except DeviceError as exc:
                 log.warning("Couldn't list MuMu Player's instances: %s", exc)
@@ -305,10 +382,12 @@ def mend_sizes(root: Path | None = None) -> list[int]:
     return mended
 
 
-def add(device: DeviceConfig | str, source: int = 1, root: Path | None = None) -> int:
+def add(device: DeviceConfig | str, source: int = 1, root: Path | None = None, account: str = "") -> int:
     """A new farm playing ``device``'s emulator instance (or instance ``key``
     of farm ``source``'s emulator), with farm ``source``'s settings.
-    Returns its number."""
+    ``account``: the profile it plays with, when known (a copy of another
+    farm's instance is signed in to that farm's account); else it's found
+    when the game shows the player's name. Returns its number."""
     root = root or ROOT
     taken = numbers(root)
     if len(taken) >= MOST:
@@ -327,7 +406,7 @@ def add(device: DeviceConfig | str, source: int = 1, root: Path | None = None) -
     for other in taken:
         if same_instance(device_of(other, root), config.device):
             raise ValueError(f"farm {other} plays {describe(config.device)} already")
-    config.profiles.active = ""  # its account is picked when the game shows it
+    config.profiles.active = account  # "": picked when the game shows the player's name
     path = config_path(n, root)
     path.parent.mkdir(parents=True, exist_ok=True)
     save_config(config, path)

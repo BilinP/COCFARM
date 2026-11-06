@@ -8,6 +8,9 @@ directory name addresses every PNG in it, e.g. ``troops``.
 
 from __future__ import annotations
 
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -181,8 +184,25 @@ def best_scale(screen: np.ndarray, template: np.ndarray, sizes: list[float], reg
         return _score(area, _resized(template, scale))
 
     candidates = sorted({round(size + 0.01 * i, 2) for size in sizes for i in range(-3, 4)})
-    best = max(candidates, key=score)
-    return best, score(best)
+    # matchTemplate lets go of the GIL: the sizes are tried side by side.
+    scores = list(_scale_pool().map(score, candidates)) if len(candidates) > 4 else [score(c) for c in candidates]
+    i = max(range(len(candidates)), key=lambda k: (scores[k], -k))  # the first of equal bests, as max() gives
+    return candidates[i], scores[i]
+
+
+SCALE_THREADS = max(2, min(8, (os.cpu_count() or 2) // 2))
+_scale_executor: ThreadPoolExecutor | None = None
+_scale_lock = threading.Lock()
+
+
+def _scale_pool() -> ThreadPoolExecutor:
+    """Threads for ``best_scale``'s sizes (apart from the game's find
+    threads, which call it: a pool waiting on itself could stall)."""
+    global _scale_executor
+    with _scale_lock:
+        if _scale_executor is None:
+            _scale_executor = ThreadPoolExecutor(SCALE_THREADS, thread_name_prefix="farmbot-scale")
+        return _scale_executor
 
 
 class Vision:

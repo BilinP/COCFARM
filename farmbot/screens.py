@@ -36,6 +36,11 @@ VILLAGES = (Screen.HOME, Screen.BUILDER)
 POPUP_BUTTONS = (T.TRY_AGAIN, T.RELOAD, T.BB_OKAY, T.CONTINUE, T.OKAY, T.CLOSE)
 
 
+# What covers a village, looked for first: anything over the village wins.
+COVERS = (T.MAINTENANCE, T.RATE_TITLE, T.PICK_REWARD, T.EVENT_CHEST, T.RETURN_HOME, T.BB_RETURN_HOME,
+          T.END_BATTLE, T.BB_BATTLE_STARTS, T.BB_BATTLE_ENDS)
+
+
 def _seen(game: Game, name: str) -> bool:
     return game.has(name) and game.find(name) is not None
 
@@ -48,6 +53,8 @@ def identify(game: Game, refresh: bool = True) -> Screen:
 
     if refresh:
         game.refresh()
+    # Every picture of a step looked for at once (the same answers, sooner).
+    game.prefetch([(name, None) for name in COVERS])
     if _seen(game, T.MAINTENANCE):  # over everything
         return Screen.MAINTENANCE
     if _seen(game, T.RATE_TITLE):  # Google Play's, over the game
@@ -60,9 +67,11 @@ def identify(game: Game, refresh: bool = True) -> Screen:
         return Screen.RESULTS
     if any(_seen(game, name) for name in (T.END_BATTLE, T.BB_BATTLE_STARTS, T.BB_BATTLE_ENDS)):
         return Screen.BATTLE
+    game.prefetch([(name, None) for name in (*POPUP_BUTTONS, T.BATTLE, T.LOGIN)]
+                  + [(T.BB_BATTLE, game.region(builder.BATTLE_AREA))])
     if any(_seen(game, name) for name in POPUP_BUTTONS):
         return Screen.POPUP
-    if builder.in_builder_base(game):
+    if builder.in_builder_base(game, refresh=False):
         return Screen.BUILDER
     if _seen(game, T.BATTLE):
         return Screen.HOME

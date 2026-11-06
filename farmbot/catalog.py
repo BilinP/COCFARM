@@ -90,6 +90,16 @@ PICTURES: list[Picture] = [
             "for a battle: its title \"Defensive Layout obstructed\".", "Attacking with an obstructed layout"),
     Picture(T.OBSTRUCTED_ATTACK, "Attack (obstructed layout)", "The same window: the word \"Attack\" on its "
             "green button.", "Attacking with an obstructed layout"),
+    Picture(T.UNABLE_TO_ATTACK, "Unable to attack", "The white screen after Find a Match when the last "
+            "battle was left without surrendering: the words \"Unable to attack\".", "Searching"),
+    Picture(T.SETTINGS_TAB, "Settings tab", "Tap your level badge at the top left: the \"Settings\" tab of the "
+            "window that opens (picked, or not).", "Reading the village data", folder=True),
+    Picture(T.MORE_SETTINGS, "More Settings", "That Settings tab: the words \"More Settings\" on its button.",
+            "Reading the village data"),
+    Picture(T.DATA_EXPORT, "Export Village data", "More Settings, at the bottom: the words \"Export Village data "
+            "in JSON format\".", "Reading the village data"),
+    Picture(T.EXPORT_COPY, "Copy (Data Export)", "The same row: the word \"Copy\" on its green button.",
+            "Reading the village data"),
     Picture(T.BB_BATTLE_STARTS, "Battle starts in", "Builder battle, top: \"Battle starts in:\".", "Builder base"),
     Picture(T.BB_BATTLE_ENDS, "Battle ends in", "Builder battle, top: \"Battle ends in:\".", "Builder base"),
     Picture(T.BB_RETURN_HOME, "Return Home (builder)", "Builder battle result: the words \"Return Home\".",

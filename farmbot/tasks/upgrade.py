@@ -25,6 +25,7 @@ buildings; heroes and research take elixir, buildings gold or elixir.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Callable
 
 import numpy as np
@@ -32,7 +33,8 @@ import numpy as np
 from farmbot.config import BuilderConfig, Config
 from farmbot.game import Game, T
 from farmbot.tasks.build_list import (BUILDER, HOME, HUD_SHIFT_PX, BuildList, Row, busy, first_affordable,
-                                      free_builders, goblins, open_tab, rows, set_filter, tab_free, upgrade_row)
+                                      free_builders, goblins, open_tab, rows, set_filter, tab_free, top_row_affordable,
+                                      upgrade_row)
 from farmbot.tasks.builder import restore_view
 from farmbot.tasks.search import Loot
 from farmbot.tasks.village import _close_windows, deselect
@@ -69,33 +71,52 @@ def plan(order: list[str], enabled: dict[str, bool]) -> list[str]:
     return [k for k in order if enabled.get(k)]
 
 
-def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], last: bool = False) -> int:
+def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], last: bool = False,
+            hand_over: dict | None = None, locked: dict[str, str] | None = None) -> int:
     """Spend the home village's ``full`` storages' resources on upgrades.
     What was upgraded is left zoomed in on (the walls, or the battle,
     next zoom out), and dropped unless ``last`` (a battle comes next, which
-    drops it). Returns how many were started."""
+    drops it). ``hand_over``: the walls come next, so Buildings & Heroes
+    is left open for them (one trip to the list, not two), and this gets
+    what they need: "loot", the resources left (read before the upgrades,
+    less what they spent), and "builders", the free builders read before
+    (one of them was kept for the walls). Left empty if the list wasn't
+    left open. ``locked``: what this account hasn't unlocked yet
+    (``townhall.locked``): left out. Returns how many were started."""
     ucfg = cfg.upgrade
     full = {k for k in full if k in HOME.resources}
     if not ucfg.enabled or not full or not all(game.has(n) for n in NEEDED):
         return 0
-    budget = _open(game, read_resources, full)
-    if budget is None:
+    game.zoom_out()
+    loot = read_resources()
+    if loot is None:
         return 0
+    budget = {k: getattr(loot, k) for k in full}
     kinds = plan(ucfg.order, {"pets": ucfg.pets, "hero": ucfg.heroes, "research": ucfg.lab,
                               "building": ucfg.buildings})
+    for kind, feature in (("pets", "pets"), ("hero", "heroes"), ("research", "research")):
+        if kind in kinds and feature in (locked or {}):
+            log.info("Upgrades: no %s: %s", "heroes" if kind == "hero" else kind, locked[feature])
+            kinds.remove(kind)
     if "research" in kinds and "lab" in goblins(game):
         log.info("Upgrades: the laboratory is busy (only the Goblin Researcher, for gems)")
         kinds = [k for k in kinds if k != "research"]
-    builders = _spare(free_builders(game), cfg.walls.enabled) if {"hero", "building"} & set(kinds) else 0
-    done = 0
+    uses_builders = bool({"hero", "building"} & set(kinds))
+    free = free_builders(game) if uses_builders or hand_over is not None else None
+    builders = _spare(free, cfg.walls.enabled) if uses_builders else 0
+    done, handed = 0, False
     try:
         if not _open_list(game):
             return 0
         done = _in_order(game, kinds, HOME_SPEND, ucfg.first, ucfg.heroes, budget, builders, read_resources, HOME)
+        if hand_over is not None:
+            hand_over.update(loot=replace(loot, **budget), builders=free)
+            handed = True
     finally:
-        _close_windows(game)
-        if not last:
-            deselect(game)  # a pinch on what's still selected would move it
+        if not handed:
+            _close_windows(game)
+            if not last:
+                deselect(game)  # a pinch on what's still selected would move it
     return done
 
 
@@ -218,14 +239,36 @@ def _buildings(game: Game, kinds: list[str | None], money: list[str], budget: di
             if builders <= 0:
                 return done
             if not set_filter(game, lst.resource_filter[resource], KIND_FILTER.get(kind), T.SORT_COST_MAX, lst):
+                log.info("Upgrades: no %s upgrade%s for %s in the list", kind or "building", "" if kind else "s",
+                         resource)
                 continue  # nothing of that kind to upgrade
+            spent = False
             while builders > 0:
+                if spent and not _may_afford(game, resource, budget[resource], kind, lst):
+                    break
                 row = first_affordable(game, {resource: budget[resource]}, lst)
                 if row is None or not _spend(game, row, budget, read_resources, kind or "a building", lst):
                     break
+                spent = True
                 builders -= 1
                 done += 1
     return done
+
+
+def _may_afford(game: Game, resource: str, left: int, kind: str | None, lst: BuildList) -> bool:
+    """After an upgrade has spent most of the budget: the cheapest upgrade
+    (sorted Cost Min, at the top) can be paid for. Saves scrolling the
+    whole Cost Max list (a minute, at a big town hall) to find there is
+    none. The list is sorted Cost Max again if there may be one."""
+    if not game.has(T.SORT_COST_MIN):
+        return True
+    if not set_filter(game, lst.resource_filter[resource], KIND_FILTER.get(kind), T.SORT_COST_MIN, lst):
+        return True
+    if top_row_affordable(game, (resource,), lst) is False:
+        log.info("Upgrades: even the cheapest costs more than the %s %s left", f"{left:,}", resource)
+        return False
+    set_filter(game, lst.resource_filter[resource], KIND_FILTER.get(kind), T.SORT_COST_MAX, lst)
+    return True
 
 
 def _research(game: Game, money: list[str], budget: dict[str, int], read_resources: Reader, lst: BuildList) -> int:

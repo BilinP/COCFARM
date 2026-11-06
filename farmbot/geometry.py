@@ -65,3 +65,11 @@ def split_evenly(total: int, parts: int) -> list[int]:
         return []
     base, extra = divmod(total, parts)
     return [base + (1 if i < extra else 0) for i in range(parts)]
+
+
+STANDARD_WIDTH = 860  # the display px settings are given for (scaled to the screen's width)
+
+
+def scaled(px: float, width: int) -> float:
+    """``px`` on a screen ``STANDARD_WIDTH`` wide, on one ``width`` wide."""
+    return px * width / STANDARD_WIDTH

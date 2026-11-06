@@ -19,7 +19,7 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -34,6 +34,29 @@ TOOL_DIRS = ("nx_main", "shell")  # where the manager and adb live (MuMu 12's ne
 DEFAULT_ROOTS = (Path("C:/Program Files/Netease"), Path("D:/Program Files/Netease"), Path("C:/Netease"),
                  Path("D:/Netease"))
 ADB_BASE_PORT, ADB_PORT_STEP = 16384, 32  # instance N: 127.0.0.1:16384 + 32 N (when it doesn't say)
+STOP_WAIT = 30  # seconds for an instance to close; then its process is ended
+# An instance whose virtual machine hangs while starting stays "starting_vm"
+# for good (MuMu's own hang, the PC idle): given up on after this long and
+# started afresh, not waited for until the launch timeout.
+VM_STUCK = 90
+# Other emulators' virtual machine services, left running after the emulator
+# is closed, that stop MuMu's starting (seen with LDPlayer 9's).
+RIVAL_SERVICES = {"Ld9BoxSVC.exe": "LDPlayer"}
+
+
+def _rival_hint(running: Callable[[], str] | None = None) -> str:
+    """Why MuMu's virtual machine may hang: another emulator's service, or ''."""
+    try:
+        listing = running() if running else subprocess.run(
+            ["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=10,
+            creationflags=NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    found = [f"{app} ({exe})" for exe, app in RIVAL_SERVICES.items() if exe.lower() in listing.lower()]
+    if not found:
+        return ""
+    return (f". {', '.join(found)} is still running in the background and can stop it starting: "
+            "end it in Task Manager (or restart the PC)")
 
 Runner = Callable[[list[str]], str]
 
@@ -68,6 +91,8 @@ class Instance:
     running: bool  # Android has started
     started: bool  # its window/process is up (Android may still be starting)
     adb_port: int | None = None
+    state: str = ""  # MuMu's player_state: "starting_vm", "stopping", "start_finished"...
+    pid: int | None = None  # its window's process
 
     @property
     def serial(self) -> str:
@@ -147,8 +172,10 @@ def parse_info(text: str) -> list[Instance]:
     for e in entries:
         try:
             port = e.get("adb_port")
+            pid = e.get("pid")
             found.append(Instance(int(e["index"]), str(e.get("name", "")), bool(e.get("is_android_started")),
-                                  bool(e.get("is_process_started")), int(port) if port else None))
+                                  bool(e.get("is_process_started")), int(port) if port else None,
+                                  str(e.get("player_state", "")), int(pid) if pid else None))
         except (KeyError, ValueError):
             continue
     return sorted(found, key=lambda i: i.index)
@@ -237,6 +264,9 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
         log.warning("Setting up %s: %s (restarts it)", install.name, "; ".join(changes))
         set_up(install, inst, cfg, run, sleep)
         inst.running = inst.started = False
+    if inst.started and inst.state == "stopping":
+        # Still closing (a restart): it can't be launched until it's down.
+        inst = _wait_stopped(install, inst, run, sleep)
     if not inst.started:
         if not cfg.launch_emulator:
             raise DeviceError(f"{install.name} is not running. Start it, or turn on 'Start the emulator automatically'.")
@@ -244,15 +274,25 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
         run([str(install.manager), "control", "-v", str(inst.index), "launch"])
     deadline = clock() + cfg.launch_timeout
     last_error: Exception | None = None
+    vm_since: float | None = None  # when it was first seen starting its virtual machine
     while True:
         try:
             current = next((i for i in instances(install, run) if i.index == inst.index), inst)
+            if current.state != "starting_vm":
+                vm_since = None
+            elif vm_since is None:
+                vm_since = clock()
+            if vm_since is not None and clock() - vm_since >= VM_STUCK:
+                raise NoAnswer(f"{install.name}'s virtual machine hung while starting "
+                               f"(still starting after {VM_STUCK}s){_rival_hint()}")
             if current.running:
                 device = make(current.serial, str(install.adb))
                 device.connect()
                 if device.shell("getprop", "sys.boot_completed").strip() == "1" and device.foreground_package():
                     log.info("Connected to %s at %s", install.name, current.serial)
                     return device
+        except NoAnswer:
+            raise
         except DeviceError as exc:
             last_error = exc
         if clock() >= deadline:
@@ -261,10 +301,31 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
         sleep(3)
 
 
-def quit_instance(cfg: DeviceConfig, run: Runner = _run) -> None:
+def quit_instance(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], None] = time.sleep) -> None:
     """Close the configured MuMu instance (it is started again by ``open_device``)."""
     install = find_install()
     if install is None:
         raise DeviceError("MuMu Player was not found")
     log.warning("Closing %s (instance %d) to start it again", install.name, cfg.mumu_index + 1)
     run([str(install.manager), "control", "-v", str(cfg.mumu_index), "shutdown"])
+    inst = next((i for i in instances(install, run) if i.index == cfg.mumu_index), None)
+    if inst is not None:
+        _wait_stopped(install, inst, run, sleep)
+
+
+def _wait_stopped(install: Install, inst: Instance, run: Runner = _run,
+                  sleep: Callable[[float], None] = time.sleep) -> Instance:
+    """Until the instance has closed. One still up after STOP_WAIT seconds
+    (hung starting or stopping) has its process ended: a start while it's
+    still up does nothing, and the bot would wait out the launch timeout."""
+    for _ in range(STOP_WAIT):
+        if not inst.started:
+            return inst
+        sleep(1)
+        inst = next((i for i in instances(install, run) if i.index == inst.index), replace(inst, started=False))
+    if inst.started and inst.pid:
+        log.warning("%s (instance %d) didn't close; ending its process", install.name, inst.index + 1)
+        subprocess.run(["taskkill", "/PID", str(inst.pid), "/T", "/F"], capture_output=True, check=False,
+                       creationflags=NO_WINDOW)
+        sleep(3)
+    return replace(inst, started=False, running=False)

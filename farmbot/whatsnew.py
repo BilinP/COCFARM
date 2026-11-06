@@ -18,6 +18,32 @@ from farmbot.update import STATE, _load, _save, parse_version
 KINDS = ["New", "Improved", "Fixed"]
 
 NOTES: dict[str, list[tuple[str, str, str]]] = {
+    "1.5.0": [
+        ("Improved", "Troops go right up to the red line",
+         "Troops land just outside the red line (half as far out as before), and where it can't be seen, just "
+         "outside the buildings instead of out at the map's edge. Works on any window size; older settings move "
+         "up to the line on their own."),
+        ("New", "Play like a person",
+         "A new page of habits you switch on one by one: taps that land around a button, varied pauses and "
+         "swipes, a different battle rhythm each time, a look at each base, and more. It shows how much time "
+         "each habit adds."),
+        ("New", "Settings that fit your Town Hall",
+         "The loot to look for starts at amounts that suit your Town Hall and goes up with it, until you type "
+         "your own. Anything your Town Hall hasn't unlocked yet, like dark elixir, spells, heroes or the builder "
+         "base, is greyed out with a note saying why."),
+        ("New", "Your village data",
+         "Once a day the bot reads your village from the game's own Data Export. The Village tab's Show button "
+         "lists your Town Hall, buildings and army."),
+        ("Improved", "Profiles named after your account",
+         "A new profile takes the player name shown in the game instead of staying \"Account 1\"."),
+        ("Fixed", "\"Unable to attack Village\" is waited out",
+         "After a battle that didn't finish, the game refuses new ones for a while: the bot closes the game for "
+         "a few minutes and carries on, instead of failing round after round."),
+        ("Improved", "Says why MuMu won't start",
+         "When MuMu Player hangs while starting and LDPlayer's background service is still running (it stops "
+         "MuMu starting), the message says so and how to end it."),
+        ("Improved", "Smoother window","Resizing the COCFARM window no longer stutters."),
+    ],
     "1.0.0": [
         ("New", "Farm several accounts at once (beta)",
          "Switch on a farm for each emulator instance on the Farms page (LDPlayer, MuMu Player or BlueStacks, "

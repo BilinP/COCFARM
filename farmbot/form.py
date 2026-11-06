@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from farmbot.human import HABITS
 from farmbot.config import RESOURCES, SIDES, Config, unreachable_minimums, unreachable_note
 
 SIDE_LABELS = {"nw": "Top-left (NW)", "ne": "Top-right (NE)", "sw": "Bottom-left (SW)", "se": "Bottom-right (SE)"}
@@ -61,6 +62,7 @@ FIELDS = [
     Field("bot.collect_every", "int", 1, 100),
     Field("bot.collect_loot_cart", "bool"),
     Field("bot.clear_gravestones", "bool"),
+    Field("bot.read_village", "bool"),
     Field("bot.stop_when_full", "resources"),
     Field("bot.mode", "text"),
     Field("bot.theme", "text"),
@@ -98,7 +100,6 @@ FIELDS = [
     Field("builder.upgrade_first", "text"),
     Field("walls.enabled", "bool"),
     Field("walls.use", "text"),
-    Field("walls.pick", "text"),
     Field("walls.keep_gold", "percent", 0, 100),
     Field("walls.keep_elixir", "percent", 0, 100),
     Field("walls.only_when_full", "bool"),
@@ -139,6 +140,9 @@ FIELDS = [
     Field("schedule.break_every_max", "int", 1, 500),
     Field("schedule.break_minutes_min", "int", 1, 600),
     Field("schedule.break_minutes_max", "int", 1, 600),
+    # Like a person
+    Field("human.enabled", "bool"),
+    *(Field(f"human.{h.key}", "bool") for h in HABITS),
     Field("notify.discord_webhook", "text"),
     Field("notify.on_storage_full", "bool"),
     Field("notify.on_stopped", "bool"),

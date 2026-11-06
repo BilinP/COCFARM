@@ -87,13 +87,47 @@ SEARCH_SHARES = {"gold": 0.025, "elixir": 0.025, "dark": 0.01}
 SEARCH_STEPS = {"gold": 50_000, "elixir": 50_000, "dark": 1_000}  # rounded to these
 
 
-def search_minimums_for(storage: dict[str, int], current: dict[str, int]) -> dict[str, int]:
-    """Search minimums from what the storages hold (``storage``), if the
-    ``current`` ones are all still the defaults; otherwise none."""
-    if current != SEARCH_DEFAULTS or not {"gold", "elixir"} <= set(storage):
+# Gold and elixir a base should offer, by your Town Hall: about what bases
+# near it give (a Town Hall 2 base has a few thousand, a Town Hall 15 one
+# half a million). Dark elixir stays 0: with "Any one is enough" off, a base
+# would need it as well.
+SEARCH_BY_TOWN_HALL = {1: 1_000, 2: 3_000, 3: 10_000, 4: 25_000, 5: 50_000, 6: 80_000, 7: 120_000,
+                       8: 160_000, 9: 200_000, 10: 250_000, 11: 300_000, 12: 350_000, 13: 400_000,
+                       14: 450_000}
+SEARCH_TOP = 500_000  # Town Hall 15 and up
+MAX_TOWN_HALL = 18
+
+
+def town_hall_minimums(town_hall: int) -> dict[str, int]:
+    """The search minimums that suit ``town_hall``."""
+    amount = SEARCH_BY_TOWN_HALL.get(town_hall, SEARCH_TOP if town_hall > 14 else SEARCH_BY_TOWN_HALL[1])
+    return {"gold": amount, "elixir": amount, "dark": 0}
+
+
+def _from_storage(storage: dict[str, int]) -> dict[str, int]:
+    if not {"gold", "elixir"} <= set(storage):
         return {}
     return {k: max(SEARCH_STEPS[k], round(storage[k] * share / SEARCH_STEPS[k]) * SEARCH_STEPS[k])
             for k, share in SEARCH_SHARES.items() if k in storage}
+
+
+def search_minimums_for(storage: dict[str, int], current: dict[str, int],
+                        town_hall: int | None = None, by_hand: bool = False) -> dict[str, int]:
+    """The search minimums to set, if the ``current`` ones were never set by
+    hand (still the defaults, or what this set before): from the
+    ``town_hall`` when it's known, else from what the storages hold
+    (``storage``). Only those that change; none when set by hand
+    (``by_hand``: typed in the window, whatever the amounts)."""
+    if by_hand:
+        return {}
+    fitted = _from_storage(storage)
+    untouched = [SEARCH_DEFAULTS, *(town_hall_minimums(t) for t in range(1, MAX_TOWN_HALL + 1))]
+    if fitted:
+        untouched.append({**SEARCH_DEFAULTS, **fitted})
+    if current not in untouched:
+        return {}
+    target = town_hall_minimums(town_hall) if town_hall else fitted
+    return {k: v for k, v in target.items() if current.get(k) != v}
 
 
 # More than any base offers to loot (the richest seen give about half): a
@@ -120,6 +154,9 @@ class SearchConfig:
     min_gold: int = SEARCH_DEFAULTS["gold"]
     min_elixir: int = SEARCH_DEFAULTS["elixir"]
     min_dark: int = SEARCH_DEFAULTS["dark"]
+    # Typed in by you: the three above stay as they are. Off, they're your
+    # Town Hall's (search_minimums_for), and follow it up.
+    minimums_by_hand: bool = False
     match_any: bool = False  # accept a base if any one minimum is met
     max_searches: int = 150
     next_delay: float = 2.5  # seconds to wait for the next base to load
@@ -224,7 +261,10 @@ class ZoneConfig:
     close_px: int = 15
     min_patch: int = 1500
     min_patches: int = 4
-    offset_px: int = 30  # distance outside the building area, about a tile
+    # Distance outside the building area, px on a screen 860 wide (scaled to
+    # the screen's width): about a tile. Too close only costs a refused tap,
+    # which shows the red line; too far, troops walk the gap.
+    offset_px: int = 14
     step_px: int = 24  # spacing of candidate points along the ring
     ground_window: int = 25
     max_blocked: float = 0.35  # skip points with more non-ground around them
@@ -265,7 +305,9 @@ class RedLineConfig:
     min_points: int = 40  # red pixels needed before trusting the result
     bins_per_side: int = 24  # deploy points sampled along each edge
     min_side_points: int = 6  # fewer than this on a side → try the next method
-    offset_px: int = 12  # how far outside the line to tap
+    # px outside the line's outer edge, on a screen 860 wide (scaled to the
+    # screen's width): taps land just past it, not a tile out.
+    offset_px: int = 6
     iso_ratio: float = 0.75  # base height / width on screen (isometric squash)
     # Only red pixels between these shares of the typical line distance
     # from the centre count as line: closer is red stuff inside the base,
@@ -280,9 +322,6 @@ class RedLineConfig:
     # the battlefield's width.
     min_extent: float = 0.3
     center: list[int] = field(default_factory=list)  # [x, y]; empty = auto
-    # Tap the base centre with a troop selected so the game flashes the
-    # red line. Only safe if the centre is always covered by buildings.
-    reveal_tap: bool = False
 
 
 @dataclass
@@ -334,6 +373,35 @@ class ScheduleConfig:
 
 
 @dataclass
+class HumanConfig:
+    """Playing like a person (see ``farmbot/human.py``): one switch for them
+    all, and one for each habit. The "Like a person" page shows what each
+    adds to a round."""
+
+    enabled: bool = True
+    tap_spread: bool = True  # taps land around their point, not on one pixel
+    tap_hold: bool = True  # each tap held down its own short while
+    waits: bool = True  # waits after a tap run a touch longer; the rest between rounds varies
+    swipes: bool = True  # swipes start a little off and vary in speed
+    curved_swipes: bool = False  # ...along a slight curve, quick in the middle (written to the touchscreen)
+    chore_order: bool = True  # the village's jobs in a different order each round
+    odd_hours: bool = True  # playing hours start and end some minutes off the hour, new each day
+    battle_rhythm: bool = True  # battle pauses, batches, sides, heroes and abilities vary
+    look_at_bases: bool = True  # a look at each base, longer at a good one, before Next
+    result_pause: bool = True  # a look at the result before Return Home
+    end_spread: bool = True  # battles end at slightly different moments
+    scout_look: bool = False  # a look around the base (a drag and back) before deploying
+
+    def uses(self, habit: str) -> bool:
+        return self.enabled and bool(getattr(self, habit))
+
+    def active(self) -> set[str]:
+        from farmbot.human import HABITS
+
+        return {h.key for h in HABITS if self.uses(h.key)}
+
+
+@dataclass
 class NotifyConfig:
     """Messages to your phone through a Discord webhook (see ``farmbot/notify.py``)."""
 
@@ -363,6 +431,10 @@ class BotConfig:
     collect_every: int = 7  # ...every N rounds (1 = each round); the first round after Start always collects
     collect_loot_cart: bool = True  # loot left over from defences, shown as a cart
     clear_gravestones: bool = True  # left by attackers' troops; tapping one clears them all
+    # Once a day, the game's village export (Settings → More Settings → Data
+    # Export): the Town Hall's level and every building's, so what this
+    # account can't do yet is left out (farmbot/townhall.py).
+    read_village: bool = True
     # Stop farming once all of these storages are full ("gold", "elixir", "dark").
     stop_when_full: list[str] = field(default_factory=list)
     max_attacks: int = 0  # 0 = unlimited
@@ -383,9 +455,6 @@ class WallsConfig:
     # Keep this share of what the storages hold; walls get the rest.
     keep_gold: float = 0.7
     keep_elixir: float = 0.7
-    # Which wall: "cheapest" (the list sorted Cost Min) or "first" (the first
-    # one the list shows, unsorted: quicker).
-    pick: str = "cheapest"
     # Only spend a resource on walls once its storages are full.
     only_when_full: bool = False
 
@@ -412,7 +481,6 @@ WALL_RESOURCES = ("gold", "elixir", "both")
 UPGRADE_FIRST = ("defense", "resource", "army", "none")
 UPGRADE_ORDER = ("pets", "hero", "research", "building")
 BUILDER_UPGRADE_ORDER = ("research", "hero", "building")
-WALL_PICKS = ("cheapest", "first")
 MODES = ("home", "builder", "auto")  # auto: one village until its storages are full, then the other
 THEMES = ("auto", "light", "dark")
 BUILDER_CORNERS = ("auto", "left", "top", "right")
@@ -550,6 +618,7 @@ class Config:
     clan: ClanConfig = field(default_factory=ClanConfig)
     capital: CapitalConfig = field(default_factory=CapitalConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
+    human: HumanConfig = field(default_factory=HumanConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     bot: BotConfig = field(default_factory=BotConfig)
     walls: WallsConfig = field(default_factory=WallsConfig)
@@ -599,8 +668,6 @@ class Config:
             raise ValueError(f"builder.corner must be one of {BUILDER_CORNERS}")
         if self.walls.use not in WALL_RESOURCES:
             raise ValueError(f"walls.use must be one of {WALL_RESOURCES}")
-        if self.walls.pick not in WALL_PICKS:
-            raise ValueError(f"walls.pick must be one of {WALL_PICKS}")
         if self.upgrade.first not in UPGRADE_FIRST:
             raise ValueError(f"upgrade.first must be one of {UPGRADE_FIRST}")
         if self.builder.upgrade_first not in UPGRADE_FIRST:
@@ -622,7 +689,8 @@ class Config:
 # Settings that existed once and were removed (the game dropped Quick Train;
 # dead-base search is out for now; Clan Castle troops come with the siege machine): older farmbot.toml files may still have
 # them, so they're skipped quietly.
-REMOVED_SETTINGS = {"bot.quick_train", "bot.army_recipe", "clan.request_text", "search.dead_base",
+REMOVED_SETTINGS = {"redline.reveal_tap",  # never used: inside a base, grass by buildings can take a troop
+                    "bot.quick_train", "bot.army_recipe", "clan.request_text", "search.dead_base",
                     "search.dead_base_collectors", "attack.use_cc",
                     "search.min_total", "search.dark_weight",
                     # A request is given what fits its room (the window closes when it's full).
@@ -635,7 +703,9 @@ REMOVED_SETTINGS = {"bot.quick_train", "bot.army_recipe", "clan.request_text", "
                     # Walls: as many as the spare covers, not a set number a round.
                     "walls.max_per_round", "builder.walls_per_round",
                     # Profiles are always on (picked by the account in the game).
-                    "profiles.auto"}
+                    "profiles.auto",
+                    # Walls are always the cheapest (taking the first one shown saved little).
+                    "walls.pick"}
 
 
 # One unit each to donate became lists: older files' choices carry over.
@@ -718,6 +788,18 @@ def _widen_own_regions(regions: RegionsConfig) -> None:
             setattr(regions, name, list(NEW_OWN_REGIONS[name]))
 
 
+# Offsets that put troops a tile or more out (before 1.0.1): files still
+# holding them get the ones that sit right at the line.
+OLD_OFFSETS = {"redline": 12, "zone": 30}
+
+
+def _closer_offsets(config: Config) -> None:
+    for name, old in OLD_OFFSETS.items():
+        part = getattr(config, name)
+        if part.offset_px == old:
+            part.offset_px = type(part).offset_px
+
+
 def _count_font(bar: BarConfig) -> None:
     """Before 0.9.7 the troop counts were read with the loot digits, which
     misread them (x68 as 50); settings still naming them get the bar's own."""
@@ -742,11 +824,17 @@ def load_config(path: str | Path | None) -> Config:
     config = Config()
     if path is not None:
         # utf-8-sig: Notepad (and PowerShell) can save the file with a byte-order mark.
-        _merge(config, tomllib.loads(Path(path).read_text(encoding="utf-8-sig")), "")
+        data = tomllib.loads(Path(path).read_text(encoding="utf-8-sig"))
+        # One switch for all of it, from before each habit had its own.
+        human_like = data.get("bot", {}).pop("human_like", None) if isinstance(data.get("bot"), dict) else None
+        _merge(config, data, "")
+        if isinstance(human_like, bool) and "human" not in data:
+            config.human.enabled = human_like
     _siege_out_of_main(config.clan)
     _upgrade_orders(config)
     _widen_own_regions(config.regions)
     _count_font(config.bar)
+    _closer_offsets(config)
     config.validate()
     return config
 

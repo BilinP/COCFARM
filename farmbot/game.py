@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import logging
+import math
+import os
 import random
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 import cv2
 import numpy as np
 
+from farmbot import human
 from farmbot.device import Device
+from farmbot.timings import Ledger
 from farmbot.geometry import Rect
 from farmbot.text import TextStyle
 from farmbot.vision import Match, Vision, _resized, best_scale, match_template
@@ -195,6 +200,14 @@ class T:
     # "Defensive Layout obstructed" after asking for a battle, and its Attack button
     LAYOUT_OBSTRUCTED = "buttons/layout_obstructed"
     OBSTRUCTED_ATTACK = "buttons/obstructed_attack"
+    # "Unable to attack Village! Try again later." after Find a Match: the last battle,
+    # left without surrendering, still runs on the server
+    UNABLE_TO_ATTACK = "buttons/unable_to_attack"
+    # The village export (tasks/export.py): profile → Settings → More Settings → Data Export
+    SETTINGS_TAB = "buttons/settings_tab"  # directory: the tab picked, or not
+    MORE_SETTINGS = "buttons/more_settings"
+    DATA_EXPORT = "buttons/data_export"  # "Export Village data in JSON format"
+    EXPORT_COPY = "buttons/export_copy"  # its "Copy" (looked for in that row only)
     # Clan Capital raids (Raid Weekends)
     CAPITAL_BADGE = "capital/raid_badge"  # the sword on the red badge over the capital airship: raids left
     CAPITAL_COLLAPSE = "capital/collapse_bar"  # "<" at the end of the event buttons: folds them off the airship
@@ -257,6 +270,22 @@ def view_change(before: np.ndarray, after: np.ndarray) -> float:
     return float((cv2.absdiff(a, b) > VIEW_GREY).mean())
 
 
+# Looks at one screenshot for several pictures run side by side (OpenCV lets
+# go of Python's lock while matching): the screen check's dozen or two
+# pictures take a fraction of the time one after another would.
+FIND_THREADS = max(2, min(8, (os.cpu_count() or 2) // 2))
+_find_pool: ThreadPoolExecutor | None = None
+_find_pool_lock = threading.Lock()
+
+
+def find_pool() -> ThreadPoolExecutor:
+    global _find_pool
+    with _find_pool_lock:
+        if _find_pool is None:
+            _find_pool = ThreadPoolExecutor(FIND_THREADS, thread_name_prefix="farmbot-find")
+        return _find_pool
+
+
 class Stopped(Exception):
     """Raised inside long waits when the bot is asked to stop."""
 
@@ -298,6 +327,16 @@ def view_shift(reference: np.ndarray, screen: np.ndarray) -> tuple[int, int] | N
     if int(np.sum(np.all(np.abs(shifts - shift) <= VIEW_NEAR, axis=1))) < VIEW_AGREE:
         return None
     return round(shift[0]), round(shift[1])
+
+
+SCOUT_Y = 0.42  # the look-around drags go through the middle of the map: the base, where nothing deploys
+SCOUT_NEAR = 6  # px: the view back this close counts as back
+SCOUT_FIXES = 3
+SCOUT_LEAST = 40  # px: a shorter drag could read as a tap
+SCOUT_SETTLE = 0.4
+CURVE_STEP_MS = 40  # a curved swipe moves the finger about this often
+CURVE_STEPS_LEAST = 6
+CURVE_EXTRA = 0.08  # s a curved swipe takes over a plain one, about (writing it to the touchscreen)
 
 
 class Game:
@@ -343,11 +382,32 @@ class Game:
         # The game's package, set by the bot: taps stop if another app comes in front.
         self.package = ""
         self._front_checked = -FRONT_CHECK
+        # The human-like habits in use (the bot sets them from cfg.human):
+        # see farmbot/human.py. None: everything exact.
+        self.habits: set[str] = set()
+        # This round's parts and what the habits add to them (farmbot/timings.py).
+        self.ledger = Ledger(clock)
 
     # -- timing ---------------------------------------------------------
-    def wait(self, seconds: float) -> None:
+    def uses(self, habit: str) -> bool:
+        return habit in self.habits
+
+    def note(self, habit: str, expected: float, added: float = 0.0) -> None:
+        """A human-like step: it adds ``expected`` s on average, and added
+        ``added`` (0 with its habit off). Kept for the "Like a person" page."""
+        self.ledger.note(habit, expected, added)
+
+    def wait(self, seconds: float, exact: bool = False) -> None:
+        """Wait ``seconds`` (human-like: a little longer, never shorter).
+        ``exact``: just ``seconds``: a battle's own pauses (which vary by
+        themselves), or a poll that waits for something to show (a longer
+        one wouldn't make the round longer, only the look less often)."""
         if self.stop_event.is_set():
             raise Stopped
+        if not exact:
+            longer = human.linger(self.rng, seconds, self.uses("waits"))
+            self.note("waits", human.linger_extra(seconds), longer - seconds)
+            seconds = longer
         if self._sleep is time.sleep:
             self.stop_event.wait(seconds)  # "Stop now" cuts the wait short
         else:
@@ -448,6 +508,28 @@ class Game:
             self._seen[key] = found
         return list(self._seen[key])
 
+    def prefetch(self, looks: list[tuple[str, Rect | None]]) -> None:
+        """Look for each ``(name, region)`` on the current screenshot at
+        once, ahead of the finds that will ask for them (answered from what
+        this found). Pictures whose look can change what the game knows
+        (working out the UI or window size, any-size buttons) are left to
+        their own find."""
+        screen = self._current()
+        if not self.ui_scale:
+            return
+        if self._seen_on is not screen:
+            self._seen_on, self._seen = screen, {}
+        todo = [(name, region) for name, region in dict.fromkeys(looks)
+                if (name, None, region) not in self._seen and name not in ANY_SIZE
+                and not (name in WINDOW_ANCHORS and not self.window_scale) and self.has(name)]
+        if len(todo) < 2:
+            return
+        pool = find_pool()
+        futures = [(name, region, pool.submit(self.vision.find_all, screen, name, None, region))
+                   for name, region in todo]
+        for name, region, future in futures:
+            self._seen[(name, None, region)] = future.result()
+
     def _find_any_size(self, screen: np.ndarray, name: str, threshold: float | None,
                        region: Rect | None) -> list[Match]:
         """``name`` at a size near one of ANY_SIZES (the one that last
@@ -493,32 +575,55 @@ class Game:
         self._front_checked = self.clock()
 
     def tap(self, x: int, y: int, jitter: int = 0) -> None:
+        """Tap (x, y); ``jitter``: up to that many pixels off it, mostly
+        less (a finger lands near where it aims, not on a uniform square)."""
         self.check_in_front()
+        spread = self.uses("tap_spread")
+        if not jitter and spread:
+            jitter = human.TAP_JITTER  # a finger never lands on the same pixel twice
         if jitter:
-            x += self.rng.randint(-jitter, jitter)
-            y += self.rng.randint(-jitter, jitter)
-        self.device.tap(round(x * self.scale), round(y * self.scale))
+            dx, dy = self._offset(jitter, spread)
+            x, y = x + dx, y + dy
+        x, y = round(x * self.scale), round(y * self.scale)
+        press = getattr(self.device, "press", None)
+        if self.uses("tap_hold") and press is not None:
+            ms = human.hold_ms(self.rng)
+            press(x, y, ms)
+            self.note("tap_hold", human.hold_extra(), ms / 1000)
+        else:
+            self.device.tap(x, y)
+            self.note("tap_hold", human.hold_extra())
 
-    def tap_many(self, points: list[tuple[int, int]], jitter: int = 0, pause: float = 0.0) -> None:
+    def _offset(self, jitter: int, spread: bool) -> tuple[int, int]:
+        """Where a tap lands around its point: mostly near it (human-like),
+        or anywhere in the square ``jitter`` px around it."""
+        if spread:
+            return human.offset(self.rng, jitter)
+        return self.rng.randint(-jitter, jitter), self.rng.randint(-jitter, jitter)
+
+    def tap_many(self, points: list[tuple[int, int]], jitter: int = 0, pause: float | list[float] = 0.0) -> None:
         """Tap each point in quick succession: one burst on devices that
-        support it, single taps ``pause`` seconds apart otherwise."""
+        support it, single taps ``pause`` seconds apart otherwise (a list:
+        the pause after each tap)."""
         if self.stop_event.is_set():
             raise Stopped
         self.check_in_front()
         scaled = []
+        spread = self.uses("tap_spread")
         for x, y in points:
             if jitter:
-                x += self.rng.randint(-jitter, jitter)
-                y += self.rng.randint(-jitter, jitter)
+                dx, dy = self._offset(jitter, spread)
+                x, y = x + dx, y + dy
             scaled.append((round(x * self.scale), round(y * self.scale)))
         burst = getattr(self.device, "tap_many", None)
         if burst is not None:
             burst(scaled, pause)
             return
-        for point in scaled:
+        gaps = pause if isinstance(pause, list) else [pause] * len(scaled)
+        for point, gap in zip(scaled, gaps + [0.0] * (len(scaled) - len(gaps))):
             self.device.tap(*point)
-            if pause:
-                self.wait(pause)
+            if gap:
+                self.wait(gap, exact=True)
 
     def stop_fast_taps(self) -> bool:
         """Switch the device from its fast tap bursts to plain taps. True if
@@ -526,18 +631,20 @@ class Game:
         stop = getattr(self.device, "stop_fast_taps", None)
         return bool(stop and stop())
 
-    def zoom_out(self) -> bool:
+    def zoom_out(self, force: bool = False) -> bool:
         """Pinch the view all the way out, on devices that can. The game
         keeps its zoom between battles, and a zoomed-in view hides the
         map's edges where troops go. A pinch close in on a wall just
         upgraded can select it (and a pinch finger on a selected building
         moves it, so whoever left one selected drops it first): one that
-        did is dropped, and the view pinched again."""
+        did is dropped, and the view pinched again. ``force``: pinch even
+        if the view looks like the one the last zoom-out ended on (it
+        turned out not to be zoomed out after all)."""
         pinch = getattr(self.device, "zoom_out", None)
         if pinch is None:
             return False
         self.check_in_front()
-        if self._still_zoomed_out(self.refresh()):
+        if not force and self._still_zoomed_out(self.refresh()):
             # The view the last zoom-out ended on, unmoved: still all the
             # way out. Another pinch would only make the map spring back.
             log.debug("Still zoomed out: no pinch")
@@ -548,13 +655,16 @@ class Game:
             # (it happens on LDPlayer) must not leave a battle zoomed in.
             before = self.refresh()
             still = False
-            for _ in range(ZOOM_PASSES):
+            for i in range(ZOOM_PASSES):
                 log.debug("Pinching out")
                 if not pinch():
                     return False
                 self.wait(0.5)
                 after = self.refresh()
-                if view_change(before, after) < VIEW_STILL:
+                # The first pinch changing nothing isn't enough: a pinch the
+                # game missed (LDPlayer misses some) looks just the same as
+                # one on a view already all the way out. A second one tells.
+                if view_change(before, after) < VIEW_STILL and i:
                     still = True
                     break
                 before = after
@@ -623,8 +733,55 @@ class Game:
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 500) -> None:
         self.check_in_front()
+        plain = duration_ms
+        x1, y1, x2, y2, duration_ms = human.swipe(self.rng, x1, y1, x2, y2, duration_ms, self.uses("swipes"))
+        self.note("swipes", human.swipe_extra(plain), (duration_ms - plain) / 1000)
         s = self.scale
-        self.device.swipe(round(x1 * s), round(y1 * s), round(x2 * s), round(y2 * s), duration_ms)
+        start, end = (round(x1 * s), round(y1 * s)), (round(x2 * s), round(y2 * s))
+        drag = getattr(self.device, "drag", None)
+        if self.uses("curved_swipes") and drag is not None:
+            steps = max(CURVE_STEPS_LEAST, round(duration_ms / CURVE_STEP_MS))
+            began = self.clock()
+            if drag(human.curve(self.rng, *start, *end, steps), duration_ms):
+                taken = self.clock() - began
+                self.note("curved_swipes", CURVE_EXTRA, max(taken - duration_ms / 1000, 0.0))
+                self.screen = None
+                return
+        self.note("curved_swipes", CURVE_EXTRA)
+        self.device.swipe(*start, *end, duration_ms)
+        self.screen = None
+
+    def look_around(self) -> None:
+        """"Look around before deploying": drag the view a little, look,
+        and drag it back, checking it came back (and putting it right if
+        not). The drags start on the base, where nothing can be deployed,
+        and none is short enough to count as a tap."""
+        self.note("scout_look", human.scout_extra())
+        if not self.uses("scout_look"):
+            return
+        began = self.clock()
+        w, h = self.size
+        cx, cy = w // 2, round(h * SCOUT_Y)
+        before = self.refresh().copy()
+        dx, dy = human.scout_drag(self.rng)
+        self._drag_view(cx, cy, dx, dy)
+        self.wait(human.pause(self.rng, human.SCOUT_LOOK, spread=0.3, shortest=0.5), exact=True)
+        self._drag_view(cx, cy, -dx, -dy)
+        for _ in range(SCOUT_FIXES):
+            shift = view_shift(before, self.refresh())
+            log.debug("Look around: the view is %s from where it was", shift)
+            if shift is None or max(map(abs, shift)) <= SCOUT_NEAR:
+                break
+            self._drag_view(cx, cy, -shift[0], -shift[1])
+        self.note("scout_look", 0.0, self.clock() - began)
+
+    def _drag_view(self, cx: int, cy: int, dx: int, dy: int) -> None:
+        """Move the map by (dx, dy) with a drag through (cx, cy): two, when
+        one would be short enough to read as a tap."""
+        moves = [(dx, dy)] if math.hypot(dx, dy) >= SCOUT_LEAST else [(dx + SCOUT_LEAST, dy), (-SCOUT_LEAST, 0)]
+        for mx, my in moves:
+            self.swipe(cx - mx // 2, cy - my // 2, cx + mx - mx // 2, cy + my - my // 2, human.SCOUT_DRAG_MS)
+            self.wait(SCOUT_SETTLE, exact=True)
         self.screen = None
 
     def tap_match(self, match: Match) -> None:
@@ -648,7 +805,7 @@ class Game:
             match = self.find(name, threshold)
             if match or self.clock() >= deadline:
                 return match
-            self.wait(interval)
+            self.wait(interval, exact=True)  # a poll: see wait()
 
     def click_when_visible(self, name: str, timeout: float, threshold: float | None = None, leftmost: bool = False) -> bool:
         if not self.wait_for(name, timeout, threshold=threshold):
