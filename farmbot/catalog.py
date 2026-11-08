@@ -34,6 +34,7 @@ class Picture:
 
 QUICK_EXIT = "Leaving battles without restarting the game"
 BAT_SPELLS = "Casting only Bat Spells"
+WARDEN_SIDE = "Putting the Grand Warden with the most troops"
 SUPER_TROOPS = "Activating super troops"
 CAPITAL = "Clan Capital raids"
 
@@ -45,6 +46,8 @@ PICTURES: list[Picture] = [
     Picture(T.NEXT, "Next", "Scouting a base, bottom right: the word \"Next\".", "Attacking", True),
     Picture(T.BAT_SPELL_CARD, "Bat Spell card", "Troop bar during a battle: the bats and bottle on the "
             "Bat Spell card (not its count or level).", BAT_SPELLS),
+    Picture(T.WARDEN_CARD, "Grand Warden card", "Troop bar during a battle: the Grand Warden's face on his "
+            "card (not his level).", WARDEN_SIDE),
     Picture(T.END_BATTLE, "End Battle", "During a battle, bottom left: the words \"End Battle\" "
             "(\"Surrender\" once units are out).", "Attacking", True, folder=True),
     # Recommended: without these two the bot closes the game to leave a battle.
@@ -54,6 +57,9 @@ PICTURES: list[Picture] = [
             "(or \"Claim Reward\" when a star bonus is due).", QUICK_EXIT, folder=True),
     Picture(T.EVENT_CHEST, "Event chest room", "After some battles during events: the top half of the arched window "
             "above the chest.", "Opening event chests"),
+    Picture(T.REMOVE_ADS, "Remove Ads", "An ad shown in the game (\"Welcome Back Chief!\" with another game's "
+            "picture): the \"Remove Ads\" badge at its top right, without the X beside it.",
+            "Closing ads with their X instead of Okay, which opens the ad"),
     Picture(T.PICK_REWARD, "Pick a Reward", "During event battles (at 30%, 50% and 100% damage): the words "
             "\"Pick a Reward!\" on the red banner above the reward cards.", "Opening event chests"),
     Picture(T.CONTINUE, "Continue", "Under an event chest's reward: the word \"Continue\".", "Opening event chests"),
@@ -92,6 +98,11 @@ PICTURES: list[Picture] = [
             "green button.", "Attacking with an obstructed layout"),
     Picture(T.UNABLE_TO_ATTACK, "Unable to attack", "The white screen after Find a Match when the last "
             "battle was left without surrendering: the words \"Unable to attack\".", "Searching"),
+    Picture(T.LOCKOUT_RETURN_HOME, "Return Home (Unable to attack)", "The same white screen: the words "
+            "\"Return Home\" on the portrait button at its bottom left.", "Leaving the Unable to attack screen"),
+    Picture(T.ATTACK_COOLDOWN, "Attack available in", "Battle → the battle menu while a battle left midway "
+            "still runs: the words \"Attack available in:\" on the grey box where the Battle card's Find a "
+            "Match would be.", "Waiting out a battle left midway"),
     Picture(T.SETTINGS_TAB, "Settings tab", "Tap your level badge at the top left: the \"Settings\" tab of the "
             "window that opens (picked, or not).", "Reading the village data", folder=True),
     Picture(T.MORE_SETTINGS, "More Settings", "That Settings tab: the words \"More Settings\" on its button.",
@@ -138,6 +149,16 @@ PICTURES: list[Picture] = [
             "(shown when only the Goblin Builder, for gems, is left).", "Not paying gems for the Goblin Builder or Researcher"),
     Picture(T.WALL_SUGGESTION, "Wall in Buildings & Heroes", "Build list: the words \"Wall x\" (leave out the "
             "number).", "Upgrading walls"),
+    Picture(T.TOWN_HALL_ROW, "Town Hall in Buildings & Heroes", "Build list: the words \"Town Hall\" on its "
+            "row (the name only).", "Leaving the Town Hall to you (when that's chosen)"),
+    Picture(T.UPGRADE_LOCKED, "Upgrade Locked", "The window a Town Hall that can't be upgraded yet opens: its "
+            "title, \"Upgrade Locked\".", "Upgrading the Town Hall"),
+    Picture(T.FREE_ROW, "FREE in Buildings & Heroes", "Build list: the word \"FREE\" on a new wall's row.",
+            "Building new walls"),
+    Picture(T.PLACE_OK, "Build here (tick)", "A new building being put down: the white tick inside its green "
+            "button (not the button's edge).", "Building new buildings"),
+    Picture(T.PLACE_CANCEL, "Don't build (cross)", "A new building being put down: the white cross inside its "
+            "red button (not the button's edge).", "Building new buildings"),
     Picture(T.UPGRADE, "Upgrade", "A selected wall: the word \"Upgrade\" under the hammer.", "Upgrading walls"),
     Picture(T.UPGRADE_CONFIRM, "Confirm (upgrade)", "Upgrade window: the word \"Confirm\" on the green button.",
             "Upgrading walls"),
@@ -189,6 +210,10 @@ PICTURES: list[Picture] = [
             "(raids left; a gold sword for the bonus raid).", CAPITAL, folder=True),
     Picture(T.CAPITAL_COLLAPSE, "Fold event buttons", "Home village, bottom: the \"<\" at the end of the event "
             "buttons.", CAPITAL),
+    Picture(T.CAPITAL_AIRSHIP, "Capital airship", "Home village, bottom left (event buttons folded): the airship's "
+            "three orange balloons, without the badge.", CAPITAL),
+    Picture(T.CAPITAL_START_RAID, "Start Raid", "Clan Capital before the clan's raid began, bottom right: the "
+            "crossed swords and \"Start Raid\".", CAPITAL),
     Picture(T.CAPITAL_NEXT_RAID, "Next Raid", "Clan Capital, after a raid's summary: the words \"Next Raid\".",
             CAPITAL),
     Picture(T.CAPITAL_RAID_MAP, "Raid Map", "Clan Capital, bottom right: the words \"Raid Map\".", CAPITAL),

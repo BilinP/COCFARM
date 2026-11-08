@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+from pathlib import Path
 from typing import Iterator
 
 import numpy as np
@@ -35,20 +36,28 @@ def deploy_edges(game: Game, cfg: Config) -> tuple[dict[str, list[Point]], Point
         ("red line", cfg.redline.enabled, lambda: rl.detect(screen, cfg.redline), cfg.redline.min_side_points),
         ("building ring", cfg.zone.enabled, lambda: deployzone.detect(screen, cfg.zone), 1),
     )
-    for name, enabled, detect, minimum in detectors:
-        if not enabled or all(s in found for s in sides):
-            continue
-        result = detect()
+    def take(name, result, minimum, on):
+        nonlocal center
         if result is None:
-            continue
-        center = center or result.center
+            return
+        blocked = deployzone.open_ground(on, cfg.zone) if name == "red line" else None
         for side in sides:
             points = result.sides.get(side, [])
             if name == "red line":
-                points = on_open_ground(screen, points, cfg)
+                points = on_open_ground(on, points, cfg, blocked, result.rims)
             if side not in found and len(points) >= minimum:
                 found[side] = points
                 sources[side] = name
+                center = center or result.center  # (not from a line none of whose sides were used)
+
+    for name, enabled, detect, minimum in detectors:
+        if not enabled or all(s in found for s in sides):
+            continue
+        take(name, detect(), minimum, screen)
+        if name == "red line" and not all(s in found for s in sides):
+            # the line pulses: a side too faint on one frame shows on the next
+            again = game.refresh()
+            take(name, rl.detect(again, cfg.redline), minimum, again)
     lines = fixed_lines(screen.shape[1], cfg)
     for side in sides:
         if side not in found:
@@ -115,15 +124,20 @@ SIDE_MAX_BLOCKED = 0.2  # and a side whose points typically have more is not tru
 GROUND_UNKNOWN = 0.8  # share of the screen that is not grass or dirt above which the check is skipped
 
 
-def on_open_ground(screen, points: list[Point], cfg: Config) -> list[Point]:
+def on_open_ground(screen, points: list[Point], cfg: Config, blocked=None, rims: bool = False) -> list[Point]:
     """Red-line points that sit on open ground. The real boundary runs over
     grass; wall edges that look like it (golden walls do) sit among
-    buildings, so a side whose points are mostly cluttered is dropped."""
+    buildings, so a side whose points are mostly cluttered is dropped.
+    ``blocked``: the screen's ``deployzone.open_ground``, if already made.
+    ``rims``: a line found along the rims of ground of its colour
+    (``RedLine.rims``): wall edges inside a base can look like that too,
+    so with no ground to judge by (city scenery, say) it isn't used."""
     if not points:
         return points
-    blocked = deployzone.open_ground(screen, cfg.zone)
+    if blocked is None:
+        blocked = deployzone.open_ground(screen, cfg.zone)
     if float(blocked.mean()) > GROUND_UNKNOWN:
-        return points  # hardly any grass or dirt (snow, desert themes): can't judge
+        return [] if rims else points  # hardly any grass or dirt (snow, desert themes): can't judge
     shares = [float(blocked[y, x]) for x, y in points]
     kept = [p for p, b in zip(points, shares) if b <= POINT_MAX_BLOCKED]
     if not kept or sorted(b for b in shares if b <= POINT_MAX_BLOCKED)[len(kept) // 2] > SIDE_MAX_BLOCKED:
@@ -164,6 +178,7 @@ class DeployPoints:
         self.turn = 0
         self.seen_land: set[str] = set()  # sides where troops have landed
         self.redrawn: set[str] = set()  # sides moved onto the red line a refusal showed
+        self.dropped: dict[str, int] = {}  # troop taps per side
 
     def __iter__(self) -> DeployPoints:
         return self
@@ -187,7 +202,28 @@ class DeployPoints:
             if self.human_like and self.rng.random() < SKIP_POINT:
                 next(stream)
             batch.append(next(stream))
+        self.dropped[side] = self.dropped.get(side, 0) + count
         return side, batch
+
+    def round(self, count: int) -> list[Point]:
+        """``count`` troop taps round the sides, a point each."""
+        batch = []
+        for _ in range(count):
+            side = self._side()
+            self.dropped[side] = self.dropped.get(side, 0) + 1
+            batch.append(next(self.streams[side]))
+        return batch
+
+    def busiest(self) -> str | None:
+        """The side most troops went to (of those still in use), if any did."""
+        sides = [s for s in self.live if self.dropped.get(s)]
+        return max(sides, key=lambda s: self.dropped[s]) if sides else None
+
+    def on_side(self, side: str) -> Iterator[Point]:
+        """Points along just ``side``."""
+        stream = self.streams[side]
+        while True:
+            yield next(stream)
 
     def refused(self, side: str) -> bool:
         """A batch from ``side`` went nowhere: after SIDE_REFUSALS of them
@@ -220,7 +256,7 @@ class DeployPoints:
         for s, points in found.sides.items():
             if s not in self.streams or (s != side and (s in self.seen_land or s in self.redrawn)):
                 continue
-            points = on_open_ground(screen, points, cfg)
+            points = on_open_ground(screen, points, cfg, rims=found.rims)
             if len(points) >= cfg.redline.min_side_points:
                 self.streams[s] = itertools.cycle(human.walk(self.rng, points, self.human_like))
                 self.redrawn.add(s)
@@ -427,15 +463,35 @@ def place_single(game: Game, card: Card, points: Iterator[Point], cfg: Config,
     return False
 
 
+def warden_points(game: Game, singles: list[Card], points: Iterator[Point]) -> dict[Card, Iterator[Point]]:
+    """The Grand Warden's card (from its picture), with points on the side
+    most troops went to: a person puts him with the troops he's to guard."""
+    if not singles or not isinstance(points, DeployPoints) or not game.vision.library.has(T.WARDEN_CARD):
+        return {}
+    side = points.busiest()
+    if side is None:
+        return {}
+    [(_, picture)] = game.vision.library.get(T.WARDEN_CARD)[:1]
+    screen = game.refresh()
+    warden = next((c for c in singles if armybar.card_is(screen, c, picture)), None)
+    if warden is None:
+        return {}
+    log.info("Grand Warden goes on the %s side, with the most troops (%d)", side, points.dropped[side])
+    return {warden: points.on_side(side)}
+
+
 HERO_BEAT = 0.6  # human-like: about this long between the last troops and the first hero
 HERO_GAP = 0.35  # ...and between one hero and the next (else 0.08 s)
 
 
 def place_singles(game: Game, cards: list[Card], points: Iterator[Point], cfg: Config,
-                  fallback: Iterator[Point] | None = None) -> list[Card]:
+                  fallback: Iterator[Point] | None = None,
+                  own: dict[Card, Iterator[Point]] | None = None) -> list[Card]:
     """Put every hero and siege machine down in one quick pass (card, point,
     next card...), then check them all on one screenshot; any the game
-    refused get another point. Returns the cards that went out."""
+    refused get another point. ``own``: points for some cards alone (the
+    Warden's, where most troops went). Returns the cards that went out."""
+    own = own or {}
     before = game.refresh()
     placed: list[Card] = []
     on = _rhythm(cfg)
@@ -445,8 +501,9 @@ def place_singles(game: Game, cards: list[Card], points: Iterator[Point], cfg: C
     for attempt in range(SINGLE_TRIES):
         if not waiting:
             break
-        source = fallback if fallback is not None and attempt >= SINGLE_TRIES // 2 else points
+        late = fallback is not None and attempt >= SINGLE_TRIES // 2
         for card in waiting:
+            source = fallback if late else own.get(card, points)
             game.tap(*card.center)
             _wait(game, cfg, 0.08, SETTLE)
             game.tap(*next(source), jitter=3)
@@ -484,7 +541,8 @@ def read_count(game: Game, card: Card, cfg: Config) -> int | None:
 def deploy_taps(game: Game, card: Card, points: Iterator[Point], taps: int, cfg: Config) -> None:
     game.tap(*card.center)
     _wait(game, cfg, 0.15, SETTLE)
-    batch = [next(points) for _ in range(taps)]  # (round the sides, a point each)
+    # (round the sides, a point each)
+    batch = points.round(taps) if isinstance(points, DeployPoints) else [next(points) for _ in range(taps)]
     game.tap_many(batch, jitter=3, pause=_burst(game, cfg, taps, cfg.attack.tap_delay))
 
 
@@ -513,6 +571,10 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None) -> float 
     no_loot = human.end_wait(game.rng, acfg.no_loot_seconds, spread)
     enough_share = human.end_share(game.rng, acfg.end_at_loot_share, spread)
     while True:
+        # Nothing is tapped while the battle plays out, so the check made before
+        # taps is made here: a game that crashed or closed shows no loot, and
+        # the battle would otherwise be watched to its time limit.
+        game.check_in_front()
         game.refresh()
         if pick_reward(game):
             continue
@@ -546,20 +608,85 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None) -> float 
             game.click(T.END_BATTLE)
             _beat(game, cfg, 0.5)  # a moment to read the question
             game.click_when_visible(T.SURRENDER_OK, timeout=5)
-            if not game.wait_for(T.RETURN_HOME, timeout=15):
-                raise RuntimeError("return-home button never appeared")
             break
         _wait(game, cfg, 2, note=False)  # (a longer look doesn't make the battle longer)
     taken = taken_share(target, last_loot, cfg) if target and last_loot else None
     if taken is not None:
         log.info("Took %d%% of the base's loot", taken * 100)
     game.wait(1.0)
+    if not game.find(T.RETURN_HOME) and not _wait_for_result(game, RESULT_TIMEOUT):
+        _keep_result_screen(game)
+        raise ResultNotFound(f"result screen not detected: return-home button never appeared {RESULT_TIMEOUT}s "
+                             f"after the battle "
+                             f"({game.scores(T.RETURN_HOME, T.END_BATTLE, T.SURRENDER_OK)}; UI scale "
+                             f"{game.ui_scale or 1.0:.2f})")
     look_at_result(game)
-    # The 100% reward can show over the results.
-    if not game.click_when_visible(T.RETURN_HOME, timeout=5) and pick_reward(game):
-        game.click_when_visible(T.RETURN_HOME, timeout=5)
+    if not return_home(game):
+        # Tapped, and still showing: the next round's popup check tries again.
+        log.warning("Return Home was tapped %d times and still shows (%s)", RETURN_TRIES,
+                    game.scores(T.RETURN_HOME))
+        _keep_result_screen(game)
     open_event_chests(game)
     return taken
+
+
+class ResultNotFound(RuntimeError):
+    """After a battle, no way home was found on its result screen."""
+
+
+RESULT_TIMEOUT = 25  # s for the result screen after a battle (slow emulators, delayed results)
+RESULT_SCREENS = Path("screens/results")  # the last few result screens the bot couldn't leave
+
+
+def _keep_result_screen(game: Game) -> None:
+    from farmbot.tasks.village import _keep_screen
+
+    _keep_screen(RESULT_SCREENS, game.screen)
+    log.warning("No way home on the result screen; kept it in %s", RESULT_SCREENS)
+
+
+def _wait_for_result(game: Game, timeout: float) -> bool:
+    """Until Return Home shows, taking any reward offered over the results
+    on the way (a "Pick a Reward!" after a star bonus, say). True if it did."""
+    deadline = game.clock() + timeout
+    while True:
+        game.check_in_front()  # a closed game is that, not a missing result screen
+        game.refresh()
+        if game.find(T.RETURN_HOME):  # (its pictures include "Claim Reward")
+            return True
+        if pick_reward(game):
+            continue
+        if game.clock() >= deadline:
+            return False
+        game.wait(1.0, exact=True)
+
+
+RETURN_TRIES = 3
+
+
+def return_home(game: Game) -> bool:
+    """Press Return Home (or Claim Reward) on the result screen until it's
+    gone. True once it is."""
+    for _ in range(RETURN_TRIES):
+        game.refresh()
+        if pick_reward(game):  # the 100% reward can show over the results
+            continue
+        if not game.click(T.RETURN_HOME):
+            return True  # gone already
+        if _gone(game):
+            return True
+    return False
+
+
+def _gone(game: Game) -> bool:
+    """Return Home went away within a few seconds of a tap."""
+    deadline = game.clock() + 4
+    while game.clock() < deadline:
+        game.wait(0.5, exact=True)
+        game.refresh()
+        if not game.find(T.RETURN_HOME):
+            return True
+    return False
 
 
 def look_at_result(game: Game) -> None:
@@ -617,6 +744,23 @@ def scroll_bar(game: Game, cfg: Config, forward: bool = True) -> bool:
         game.swipe(int(w * 0.17), y, int(w * 0.93), y, 400)
     game.wait(0.8)
     return bar_scrolled(before, _bar_strip(game, cfg))
+
+
+BAR_ROOM = 1.5  # card widths of room right of the last card: the bar can't scroll
+BAR_GAP = 0.6  # of a card: more between cards (or before the first) is one not found
+
+
+def bar_fits(game: Game, cfg: Config) -> bool:
+    """The whole army is on show: its cards end well before the screen's
+    right edge (empty slots after them), so there is nothing to scroll to
+    and no test swipe is needed."""
+    cards = sorted(armybar.find_cards(game.refresh(), cfg.bar), key=lambda c: c.left)
+    if not cards or cards[0].left > BAR_GAP * cfg.bar.card_width:
+        return False
+    # a gap in the row: a card not found, so maybe more past the edge too
+    if any(b.left - a.right > BAR_GAP * cfg.bar.card_width for a, b in zip(cards, cards[1:])):
+        return False
+    return cards[-1].right < game.size[0] - BAR_ROOM * cfg.bar.card_width
 
 
 def rewind_bar(game: Game, cfg: Config) -> None:
@@ -682,7 +826,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
     if acfg.spell_placement == "together":
         log.info("Spells go on %s (%s)", spot, acfg.spell_spot)
 
-    scrolls = scroll_bar(game, cfg)
+    scrolls = not bar_fits(game, cfg) and scroll_bar(game, cfg)
     if scrolls:
         log.info("The troop bar scrolls: deploying it a screenful at a time")
         rewind_bar(game, cfg)
@@ -723,7 +867,8 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
             if not last:
                 _wait(game, cfg, acfg.wave_delay)
 
-        here = place_singles(game, singles, edge_points, cfg, fixed_points)
+        own = warden_points(game, singles, edge_points)
+        here = place_singles(game, singles, edge_points, cfg, fixed_points, own)
         for card in unfinished:
             # Troops a card still holds: another go, now the others are down.
             if not armybar.is_spent(game.refresh(), card, cfg.bar):
@@ -737,7 +882,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
             else:
                 deploy_card(game, card, over_base, cfg)
         # One more go for any hero that was refused, now on other points.
-        here += place_singles(game, [c for c in singles if c not in here], edge_points, cfg, fixed_points)
+        here += place_singles(game, [c for c in singles if c not in here], edge_points, cfg, fixed_points, own)
         singles_seen += len(singles)
         placed_total += len(here)
         # Abilities are fired from the cards on show at the end: earlier

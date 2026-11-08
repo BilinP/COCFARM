@@ -33,7 +33,7 @@ VILLAGES = (Screen.HOME, Screen.BUILDER)
 
 # Buttons that only show on a window over the village (tried in this order
 # when clearing them). Continue sits under a chest's reward.
-POPUP_BUTTONS = (T.TRY_AGAIN, T.RELOAD, T.BB_OKAY, T.CONTINUE, T.OKAY, T.CLOSE)
+POPUP_BUTTONS = (T.TRY_AGAIN, T.RELOAD, T.BB_OKAY, T.CONTINUE, T.OKAY, T.CLOSE, T.REMOVE_ADS)
 
 
 # What covers a village, looked for first: anything over the village wins.

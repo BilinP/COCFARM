@@ -5,6 +5,10 @@ cannot be dropped. Instead of matching pictures of it, we pick out its
 colour, keep only the outermost red pixels in each direction from the base
 centre, and push them outward a few pixels so taps land just outside.
 
+At low Town Halls the line runs right along bare ground of its own colour
+(the base's dirt): there only the rims of such patches count, a second try
+when the first finds the line on fewer than all four sides.
+
 Sides follow the isometric view of a fully zoomed-out base:
 
     nw = upper-left edge    ne = upper-right edge
@@ -38,12 +42,15 @@ SIDE_ANGLES = {
 class RedLine:
     center: Point
     sides: dict[str, list[Point]]  # ordered along each edge
+    rims: bool = False  # found along the rims of ground of its colour: only on ground that can be judged
 
 
-def red_mask(screen: np.ndarray, cfg: RedLineConfig) -> np.ndarray:
-    """Binary mask of red-line coloured pixels inside the battlefield."""
-    hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
-    mask = thin_line_mask(hsv, cfg) if cfg.line_hue else np.zeros(screen.shape[:2], np.uint8)
+def red_mask(screen: np.ndarray, cfg: RedLineConfig, rims: bool = False, hsv: np.ndarray | None = None) -> np.ndarray:
+    """Binary mask of red-line coloured pixels inside the battlefield.
+    ``rims``: of the line's colour, keep the rims of thick patches (see
+    :func:`thin_line_mask`)."""
+    hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV) if hsv is None else hsv
+    mask = thin_line_mask(hsv, cfg, rims) if cfg.line_hue else np.zeros(screen.shape[:2], np.uint8)
     if cv2.countNonZero(mask) < cfg.min_points:
         # No faint line: look for the bright red one older versions flash.
         for lo, hi in cfg.hue_ranges:
@@ -62,14 +69,22 @@ def red_mask(screen: np.ndarray, cfg: RedLineConfig) -> np.ndarray:
     return mask
 
 
-def thin_line_mask(hsv: np.ndarray, cfg: RedLineConfig) -> np.ndarray:
+RIM_PX = 2  # px of a thick patch's edge kept as its rim
+
+
+def thin_line_mask(hsv: np.ndarray, cfg: RedLineConfig, rims: bool = False) -> np.ndarray:
     """The faint orange boundary: pixels of its colour that form thin
     strokes running along the isometric tile grid. Thick patches of the
-    same colour (dirt, desert ground, campfires) are dropped."""
+    same colour (dirt, desert ground, campfires) are dropped, or, with
+    ``rims``, all but their edges: a line drawn along bare ground of its
+    colour (a low Town Hall's base) is one with it, and is its edge."""
     (h_lo, h_hi), (v_lo, v_hi) = cfg.line_hue, cfg.line_value
     mask = cv2.inRange(hsv, (h_lo, cfg.line_min_saturation, v_lo), (h_hi, 255, v_hi))
-    thick = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((4, 4), np.uint8))
-    mask &= ~cv2.dilate(thick, np.ones((5, 5), np.uint8))
+    if rims:
+        mask &= ~cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=RIM_PX)
+    else:
+        thick = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((4, 4), np.uint8))
+        mask &= ~cv2.dilate(thick, np.ones((5, 5), np.uint8))
     strokes = np.zeros_like(mask)
     for slope in (cfg.iso_ratio, -cfg.iso_ratio):
         strokes |= cv2.morphologyEx(mask, cv2.MORPH_OPEN, _line_kernel(cfg.line_length, slope))
@@ -117,8 +132,28 @@ def _outermost(angles: np.ndarray, radii: np.ndarray, bins: int, band: tuple[flo
 
 
 def detect(screen: np.ndarray, cfg: RedLineConfig) -> RedLine | None:
-    """Locate the red line; ``None`` if too little of it is visible."""
-    points = _blob_points(red_mask(screen, cfg), cfg.min_blob)
+    """Locate the red line; ``None`` if too little of it is visible. Found
+    on fewer than all four sides, it is looked for again along the rims of
+    patches of its colour, and the try that shows more sides wins."""
+    hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
+    first = _detect(screen, cfg, red_mask(screen, cfg, hsv=hsv))
+    if _sides(first, cfg) == len(SIDE_ANGLES) or not cfg.line_hue:
+        return first
+    second = _detect(screen, cfg, red_mask(screen, cfg, rims=True, hsv=hsv))
+    if _sides(second, cfg) > _sides(first, cfg):
+        second = RedLine(second.center, second.sides, rims=True)
+        log.debug("Red line: found along the rims of ground of its colour")
+        return second
+    return first
+
+
+def _sides(line: RedLine | None, cfg: RedLineConfig) -> int:
+    """How many sides ``line`` has points enough on."""
+    return 0 if line is None else sum(len(p) >= cfg.min_side_points for p in line.sides.values())
+
+
+def _detect(screen: np.ndarray, cfg: RedLineConfig, mask: np.ndarray) -> RedLine | None:
+    points = _blob_points(mask, cfg.min_blob)
     if len(points) < cfg.min_points:
         log.debug("Red line: only %d red pixels found", len(points))
         return None
@@ -160,7 +195,10 @@ def detect(screen: np.ndarray, cfg: RedLineConfig) -> RedLine | None:
         points = _drop_inner(_inside(envelope, field), (cx, cy), cfg)
         sides[side] = points if _smooth(points, (cx, cy), cfg) else []
     kept = [p for pts in sides.values() for p in pts]
-    if not kept or max(x for x, _ in kept) - min(x for x, _ in kept) < cfg.min_extent * field.w:
+    # A line round the base spans a good part of the screen, or, round a
+    # small base (low Town Halls), shows on three sides of it at least.
+    around = _sides(RedLine((0, 0), sides), cfg) >= AROUND_SIDES
+    if not kept or (max(x for x, _ in kept) - min(x for x, _ in kept) < cfg.min_extent * field.w and not around):
         log.debug("Red line: red pixels found but they do not form a line around the base")
         return None
     log.debug("Red line: centre (%d, %d), points %s", cx, cy, {s: len(p) for s, p in sides.items()})
@@ -177,6 +215,7 @@ def _smooth(points: list[Point], center: tuple[float, float], cfg: RedLineConfig
     return float(np.percentile(jumps, 90)) <= cfg.max_jump
 
 
+AROUND_SIDES = 3  # sides with points enough that a narrow line still counts as going round a base
 INNER_SHARE = 0.85  # points closer in than this share of their side's typical distance are dropped
 
 

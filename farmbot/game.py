@@ -19,7 +19,7 @@ from farmbot.device import Device
 from farmbot.timings import Ledger
 from farmbot.geometry import Rect
 from farmbot.text import TextStyle
-from farmbot.vision import Match, Vision, _resized, best_scale, match_template
+from farmbot.vision import Match, Vision, _resized, _score, best_scale, match_template
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +117,12 @@ class T:
     BUILD = "buttons/build"  # home village, bottom right: opens Buildings & Heroes
     GOBLIN = "buttons/goblin"  # over the builder/lab counter: the Goblin Builder/Researcher (gems)
     WALL_SUGGESTION = "buttons/wall_suggestion"  # "Wall x N" in that list
+    TOWN_HALL_ROW = "buttons/town_hall_row"  # "Town Hall" in that list: left to the player if they want
+    UPGRADE_LOCKED = "buttons/upgrade_locked"  # the title of the window a locked upgrade opens (the Town Hall's)
+    FREE_ROW = "buttons/free_row"  # "FREE" on a row of that list: a new wall to put down
+    # Over a new building being put down: the green tick (build it there) and red cross (don't).
+    PLACE_OK = "buttons/place_ok"
+    PLACE_CANCEL = "buttons/place_cancel"
     UPGRADE = "buttons/upgrade"  # under a selected building (gold and elixir versions look alike)
     UPGRADE_CONFIRM = "buttons/upgrade_confirm"  # "Confirm" in the upgrade window
     UPGRADE_MORE = "buttons/upgrade_more"  # under a selected wall: starts picking more of its level
@@ -187,6 +193,7 @@ class T:
     RATE_NEVER = "buttons/rate_never"  # its NEVER: it isn't asked again
     MAINTENANCE = "buttons/maintenance"  # the "Maintenance break" banner: the game can't be played meanwhile
     OKAY = "buttons/okay"
+    REMOVE_ADS = "buttons/remove_ads"  # an ad's window, top right: its Okay opens the ad, its small X closes it
     # Clan (optional)
     REQUEST = "buttons/request"
     REQUEST_SEND = "buttons/request_send"
@@ -203,6 +210,12 @@ class T:
     # "Unable to attack Village! Try again later." after Find a Match: the last battle,
     # left without surrendering, still runs on the server
     UNABLE_TO_ATTACK = "buttons/unable_to_attack"
+    # That screen's Return Home (a portrait, its words on two lines): looked
+    # for only once Unable to attack is seen, since the searching screen
+    # shows a faded one that would pass for a lockout.
+    LOCKOUT_RETURN_HOME = "buttons/lockout_return_home"
+    # ...shown in the battle menu instead: the regular card's "Attack available in:" countdown
+    ATTACK_COOLDOWN = "buttons/attack_cooldown"
     # The village export (tasks/export.py): profile → Settings → More Settings → Data Export
     SETTINGS_TAB = "buttons/settings_tab"  # directory: the tab picked, or not
     MORE_SETTINGS = "buttons/more_settings"
@@ -211,6 +224,8 @@ class T:
     # Clan Capital raids (Raid Weekends)
     CAPITAL_BADGE = "capital/raid_badge"  # the sword on the red badge over the capital airship: raids left
     CAPITAL_COLLAPSE = "capital/collapse_bar"  # "<" at the end of the event buttons: folds them off the airship
+    CAPITAL_AIRSHIP = "capital/airship"  # the capital airship's balloons (found without its badge)
+    CAPITAL_START_RAID = "capital/start_raid"  # "Start Raid", bottom right of the capital before the raid began
     CAPITAL_NEXT_RAID = "capital/next_raid"  # "Next Raid" under the last raid's summary
     CAPITAL_RAID_MAP = "capital/raid_map"  # "Raid Map", bottom right of the capital
     CAPITAL_LEAVE_RAID = "capital/leave_raid"  # the airship "Map" button, bottom left of the raid map
@@ -224,6 +239,7 @@ class T:
     CAPITAL_BATTLE_HEAL = "capital/battle_heal"  # the heal spell's card in the raid's troop bar
     CAPITAL_RESULT_MAP = "capital/result_map"  # "Map" under a raid's result
     BAT_SPELL_CARD = "cards/bat_spell"  # the Bat Spell card's picture in the troop bar
+    WARDEN_CARD = "cards/grand_warden"  # the Grand Warden card's picture in the troop bar
     DONATE_ITEM_DIR = "donate"  # donate/<unit slug>.png: units in the donate window
     DONATE_WINDOW = "buttons/donate_window"  # the donate window's "Donation Resource" title
     # Digit glyphs (directory, made with ``farmbot learn-digits``)
@@ -253,6 +269,14 @@ ANY_SIZES = (1.3, 1.2, 1.1, 1.4, 0.85)
 # whose grey level changes by more than VIEW_GREY (0-255) below which the
 # view has stopped moving. The village's animations (water, flags, troops
 # walking) change 2-4% of it; a zoom or a drag, over half.
+def _pinch_once(pinch) -> bool:
+    """One pinch, from a device that can do just one (else its usual)."""
+    try:
+        return pinch(times=1)
+    except TypeError:
+        return pinch()
+
+
 ZOOM_PASSES = 3
 ZOOM_TRIES = 2  # zoom-outs, when one leaves a building selected
 VIEW_GREY = 40
@@ -387,6 +411,12 @@ class Game:
         self.habits: set[str] = set()
         # This round's parts and what the habits add to them (farmbot/timings.py).
         self.ledger = Ledger(clock)
+        # New buildings the upgrades put down (not free walls): the bot reads
+        # the village data again, since one may unlock something (a Laboratory).
+        self.built_new = 0
+        # Build list rows (resource, price) that wouldn't upgrade (no window,
+        # a locked Town Hall), and until when (clock) they're passed over.
+        self.unupgradable: dict[tuple[str, int], float] = {}
 
     # -- timing ---------------------------------------------------------
     def uses(self, habit: str) -> bool:
@@ -469,6 +499,38 @@ class Game:
                 self._rescale()
                 return True
         return False
+
+    def recalibrate(self, name: str) -> bool:
+        """Measure the UI scale again from ``name``, even though one is known:
+        a button that isn't found at the scale worked out earlier (another
+        screen, or the emulator's window resized since). True if it changed."""
+        if self.raw is None or not self.has(name):
+            return False
+        scale = detect_ui_scale(self.raw, self.vision, [name])
+        old = self.ui_scale or 1.0
+        if scale is None or abs(scale - old) < 0.02:
+            return False
+        log.info("Buttons on this screen are now %.2fx the pictures' size (were %.2fx); scaling to match", scale, old)
+        self.ui_scale = scale
+        self.vision.scales.clear()
+        self.vision.scales.update(self.picture_scales)
+        self._seen_on = None
+        self._rescale()
+        return True
+
+    def best_score(self, name: str, region: Rect | None = None) -> float:
+        """How closely ``name`` (the best of its pictures) matches anywhere on
+        the current screen, 0-1, for the log when it isn't found."""
+        screen = self._current()
+        best = 0.0
+        for tname, image in self.vision.library.get(name):
+            for size in {1.0, self.vision.scales.get(tname, 1.0), self.vision.window_scale}:
+                best = max(best, _score(screen, _resized(image, size), region))
+        return best
+
+    def scores(self, *names: str) -> str:
+        """``"next 0.62, return_home 0.31"``: each picture's best score, for the log."""
+        return ", ".join(f"{n.rsplit('/', 1)[-1]} {self.best_score(n):.2f}" for n in names if self.has(n))
 
     def _current(self) -> np.ndarray:
         return self.screen if self.screen is not None else self.refresh()
@@ -657,7 +719,9 @@ class Game:
             still = False
             for i in range(ZOOM_PASSES):
                 log.debug("Pinching out")
-                if not pinch():
+                # The first goes twice; after it one pinch is enough to see
+                # whether the view still moves (a second costs ~1 s a battle).
+                if not (pinch() if i == 0 else _pinch_once(pinch)):
                     return False
                 self.wait(0.5)
                 after = self.refresh()

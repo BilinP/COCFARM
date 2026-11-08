@@ -18,6 +18,72 @@ from farmbot.update import STATE, _load, _save, parse_version
 KINDS = ["New", "Improved", "Fixed"]
 
 NOTES: dict[str, list[tuple[str, str, str]]] = {
+    "1.5.1": [
+        ("New", "Farms move off a shared port by themselves",
+         "LDPlayer gives instance N the port 5555 + 2N in every version, so LDPlayer 9 and 14 (and MuMu Player's "
+         "first instance, which listens on 5555 too) can want the same one. Instead of stopping, the farm that "
+         "started later copies its instance to one with a port of its own (the game and its login go with it) "
+         "and plays that from then on. The old instance is kept."),
+        ("New", "One account, one farm",
+         "Two farms on the same account log each other out. Each farm reads the player's name once its game is "
+         "open; if another farm already plays that account, this one closes its game and stops, and says so."),
+        ("New", "Stop any farm from the Farms page",
+         "Each farm that's playing has its own Stop button: no need to show it in the window first. A second "
+         "press stops it straight away."),
+        ("New", "Mute switch and builder limits",
+         "Advanced → Emulator → Keep the emulator muted (on by default). Upgrades → how many builders may be busy "
+         "at once, for the "
+         "home village and the builder base; the log says how many are working, free and kept free."),
+        ("Improved", "Fewer trips to the Build menu",
+         "New buildings are looked for in one list across gold and elixir, a busy Laboratory is seen from its "
+         "count without opening its tab, and a building that won't upgrade is passed over for an hour instead of "
+         "tapped every round."),
+        ("Fixed", "A new Laboratory or Town Hall is seen the same day",
+         "The village data was read once a day, so research could stay \"locked\" for hours after the Laboratory "
+         "went up. It's read again after the bot builds something new, and every two hours while things are "
+         "still locked."),
+        ("Improved", "The window opens faster",
+         "Pages are built the first time they're shown, with the logo breathing while they load."),
+        ("Fixed", "Muting on LDPlayer 14",
+         "Android 9's volume command differs from newer Androids': the emulator is muted on both now."),
+        ("Improved", "Every emulator is set up the same",
+         "LDPlayer, MuMu Player and BlueStacks always get the screen COCFARM is trained on (860 × 672, 240 DPI), "
+         "2 CPU cores, 4 GB of memory and 60 FPS, and LDPlayer and MuMu the same phone model. Anything changed in "
+         "the emulator is put back when the bot connects, so these are no longer in Settings."),
+        ("Fixed", "No more emulator ads over the game",
+         "MuMu Player's and LDPlayer's own store apps showed other games' ads over Clash of Clans, and a tap on "
+         "one opened the Play Store. COCFARM switches those store apps off when it connects; any ad that still "
+         "shows is closed with its X."),
+        ("New", "New buildings are built",
+         "Buildings your Town Hall has unlocked but you haven't built yet come before upgrades, put down where "
+         "the game places them (move them whenever you like). New walls, which are free, are put down too. "
+         "Switch it off in Upgrades → Build new buildings."),
+        ("Improved", "The Town Hall is upgraded too",
+         "When the game says the Town Hall can't be upgraded yet (other buildings first), the bot closes that "
+         "and starts the next upgrade, instead of spending nothing. Switch it off in Upgrades → Upgrade the "
+         "Town Hall to keep it for yourself."),
+        ("Fixed", "An upgrade that won't start no longer stops others",
+         "If a building's upgrade doesn't open (locked, say), the bot moves on to the next one instead of giving "
+         "up on that resource for the round."),
+        ("Fixed", "\"Unable to attack\" is waited out",
+         "When the game won't start a battle (one left early still runs), the bot spots the white \"Unable to "
+         "attack\" screen even where its words look a little different, presses Return Home, closes the game for "
+         "3 to 5 minutes and searches again."),
+        ("Fixed", "Ranked Battle is never started",
+         "While a battle left midway still runs, the battle menu shows a countdown where Find a Match goes, and "
+         "the bot could tap Ranked Battle's Find a Match instead. It now only ever taps the regular one, and "
+         "takes the countdown as the sign to wait."),
+        ("Fixed", "Attacks below Town Hall 7",
+         "A low Town Hall's Find a Match button (with its cost under it) wasn't recognised, so the bot never "
+         "started a battle there."),
+        ("Fixed", "A game that closes mid-battle is noticed at once",
+         "Before, the bot watched an empty screen until the battle's 3 minutes were up and then blamed a missing "
+         "result screen; now it restarts the game within seconds."),
+        ("Improved", "Searching copes with slow emulators",
+         "The bot waits longer for a base to show, measures the screen's size again if Next can't be found, taps "
+         "Next again when the same base comes back, and after a battle waits for the result screen (taking any "
+         "reward on it) before going home. When something does go wrong, the log says exactly what."),
+    ],
     "1.5.0": [
         ("Improved", "Troops go right up to the red line",
          "Troops land just outside the red line (half as far out as before), and where it can't be seen, just "

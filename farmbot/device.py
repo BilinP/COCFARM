@@ -195,6 +195,31 @@ _ports: dict[str, int] = {}
 _ports_lock = threading.Lock()
 
 
+def switch_off_ad_apps(device: "Device", packages: tuple[str, ...], emulator: str) -> None:
+    """Switch off the emulator's own apps that put ads over the game (each
+    emulator's store). Done on every connect: the emulator's updates and new
+    instances bring them back, and Android saves the change a few seconds
+    late, so one made just before the emulator closed is lost. Never stops
+    the bot: an app it can't switch off is only logged."""
+    try:
+        off = set(device.shell("pm", "list", "packages", "-d").split())
+    except DeviceError as exc:
+        log.info("Couldn't list %s's switched-off apps: %s", emulator, exc, extra={"file_only": True})
+        return
+    for package in packages:
+        if f"package:{package}" in off:
+            continue
+        try:
+            out = device.shell("pm", "disable-user", "--user", "0", package)
+        except DeviceError as exc:
+            out = str(exc)
+        if "disabled" in out:
+            log.info("Switched off %s's %s, which puts ads over the game", emulator, package)
+        else:
+            log.info("Couldn't switch off %s's %s: %s", emulator, package, out.strip() or "no answer",
+                     extra={"file_only": True})
+
+
 def server_port_for(adb_path: str) -> int:
     """COCFARM's adb server for this adb: 15037 for the first, the next port
     for each other one (farms on two emulators run two adbs of their own

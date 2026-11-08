@@ -32,14 +32,22 @@ STARTUP_TIMEOUT = 90  # seconds to wait for the home village after starting the 
 # started then is closed again: start it once Android has been up this long.
 BOOT_SETTLE = 20.0
 START_TRIES = 3  # starts of the game, if it closes while loading
-BLOCKED_WAIT = 180  # seconds the game stays closed after "Unable to attack Village!"
+BLOCKED_WAIT = 180  # seconds the game stays closed after "Unable to attack Village!", at least...
+BLOCKED_WAIT_MAX = 300  # ...and at most (a different wait each time)
 
 
 class RoundsFailed(RuntimeError):
     """Rounds kept failing though the game was restarted after each: the bot stops."""
 
 
-VILLAGE_TRIES = 2  # a day, for the village export
+class SameAccount(RuntimeError):
+    """Another farm already plays the account this emulator's game opened:
+    two farms on one account log each other out, so this one stops."""
+
+
+VILLAGE_TRIES = 2  # a day, for the village export (failed reads in a row)
+YOUNG_REREAD = timedelta(hours=2)  # a village still unlocking things is read again this often
+YOUNG_LOCKS = {"research", "heroes", "pets", "clan"}  # what a new building or Town Hall level unlocks
 
 
 class Bot:
@@ -77,6 +85,7 @@ class Bot:
             (lambda name: instances.resolve(config, townhall.VILLAGE_FILE)) if home else (lambda name: None))
         self.village: townhall.Village | None = None
         self._village_tries: dict[str | None, tuple[str, int]] = {}
+        self._village_read_at: dict[str | None, datetime] = {}  # this session's last reading, per account
         self._said_locked: set[str] = set()
         self._edges: tuple[date, int, int] | None = None  # today's playing-hours edges (odd_hours)
         game.package = config.device.package  # taps stop if the game crashes to the emulator's home screen
@@ -111,6 +120,8 @@ class Bot:
         # Mode "auto": the village being farmed now, and the ones whose storages are already full.
         self.auto_village: str | None = None
         self.full_villages: set[str] = set()
+        # Mode "auto": no boat to sail to the builder base (it isn't repaired yet), so home only.
+        self._no_boat = False
         self._since_cart = 0  # builder battles since the elixir cart was last emptied
         self._since_collect: int | None = None  # builder battles since the collectors were emptied
         self._since_home_collect: int | None = None  # home village rounds since the collectors were emptied
@@ -155,6 +166,7 @@ class Bot:
         if name is None:
             return False
         self._account_mask = mask
+        self._claim(name)
         if name == self._account:
             return False
         first, self._account = self._account is None, name
@@ -166,12 +178,39 @@ class Bot:
             self.storage_full = False
             self.auto_village = None
             self.full_villages = set()
+            self._no_boat = False
             self._storage_max_reads = {}
             self._since_collect = self._since_home_collect = None
             self._in_clan = self._next_request = self._capital_after = None
             self._walls_known, self._builder_walls_known = {}, {}
             self.village, self._said_locked = None, set()
         return True
+
+    def _claim(self, name: str) -> None:
+        """This farm plays account ``name`` (read in the game): unless another
+        farm already does. Then this one closes the game, which hands the
+        account back to that farm, and stops."""
+        from farmbot import instances
+
+        other = instances.claim_account(name)
+        if other is None:
+            return
+        log.error("Farm %d is already playing %s: closing the game here so it keeps the account", other, name)
+        try:
+            self.game.device.stop_app(self.config.device.package)
+        except Exception as exc:  # noqa: BLE001 - stopping anyway
+            log.info("Couldn't close the game: %s", exc)
+        raise SameAccount(f"farm {other} is already playing the account {name}, and this emulator opened it too "
+                          "(two farms on one account log each other out). Sign this emulator's game in to another "
+                          "account, or farm it from one farm only.")
+
+    def _check_account_first(self) -> bool:
+        """Before the round: whose account the game opened, so another farm's
+        is found straight away. True if the settings changed."""
+        if self._on_account is None or self._account is not None:
+            return False
+        where = screens.settle(self.game)
+        return where in (screens.Screen.HOME, screens.Screen.BUILDER) and self.check_account()
 
     def status(self, text: str) -> None:
         log.debug("Status: %s", text)
@@ -376,14 +415,23 @@ class Bot:
     def _wait_out_blocked(self, exc: Exception) -> None:
         """"Unable to attack Village! Try again later.": a battle left without
         surrendering still runs, and the game won't start another until it's
-        over. Close the game, wait BLOCKED_WAIT seconds, start it again."""
-        log.warning("%s: closing the game for %d minutes", exc, BLOCKED_WAIT // 60)
+        over. Close the game, wait 3 to 5 minutes, start it again: the next
+        round searches again from the village."""
+        seconds = self.game.rng.uniform(BLOCKED_WAIT, BLOCKED_WAIT_MAX)
+        log.warning("%s: closing the game for %.1f minutes [%s]", exc, seconds / 60, self._diagnostics())
         self._save_error_screen()
-        self.status(f"Can't attack yet: the game is closed for {BLOCKED_WAIT // 60} minutes")
+        self.status(f"Can't attack yet: the game is closed for {round(seconds / 60)} minutes")
         self.game.device.stop_app(self.config.device.package)
-        self._rest(BLOCKED_WAIT)
+        self._rest(seconds)
         self.checkpoint()
         self.ensure_game_running()
+        log.info("The game is back after the lockout: searching again")
+
+    def _diagnostics(self) -> str:
+        """The emulator and the scales the bot is using, for a failure's log line."""
+        g = self.game
+        return (f"emulator {self.config.device.mode}, UI scale {g.ui_scale or 1.0:.2f}, "
+                f"window scale {g.window_scale or g.vision.window_scale:.2f}")
 
     def recover(self) -> None:
         """After a failed round: close the game and start it again, or, if
@@ -527,10 +575,13 @@ class Bot:
             return
         account = self._account
         path = self._village_path(account)
+        now = self._now()
         if self.village is None and path is not None:
             self.village = townhall.load(path)
-        today = self._now().date().isoformat()
-        if self.village is None or self.village.read_on != today:
+            if self.village is not None:
+                self._village_read_at.setdefault(account, now)  # (kept: as good as read now)
+        today = now.date().isoformat()
+        if self._village_stale(account, now):
             day, tries = self._village_tries.get(account, ("", 0))
             tries = tries if day == today else 0
             if tries < VILLAGE_TRIES and screens.identify(self.game) is screens.Screen.HOME:
@@ -540,6 +591,8 @@ class Bot:
                 fresh = townhall.parse(text)
                 if fresh is not None:
                     fresh.read_on = today
+                    self._village_tries.pop(account, None)
+                    self._village_read_at[account] = now
                     if path is not None:
                         try:
                             townhall.save(path, text, today)
@@ -552,6 +605,29 @@ class Bot:
             self._fit_search_minimums()
             if self._on_village:
                 self._on_village(account, self.village)
+
+    def _village_stale(self, account: str | None, now: datetime) -> bool:
+        """Read the village data again: not read today, or, while the
+        village is young (research, heroes... still locked), not read in
+        YOUNG_REREAD this session; a Town Hall level or a Laboratory that
+        finished since unlocks them the same day."""
+        if self.village is None or self.village.read_on != now.date().isoformat():
+            return True
+        if not YOUNG_LOCKS & set(self.locked()):
+            return False
+        last = self._village_read_at.get(account)
+        return last is None or now - last >= YOUNG_REREAD
+
+    def _village_changed(self) -> None:
+        """A new building went up (a Laboratory, say, unlocking research):
+        the village data is read again next round, not tomorrow."""
+        self.game.built_new = 0
+        # Only while a building could still unlock something (each reading takes a trip to Settings).
+        if self.village is not None and YOUNG_LOCKS & set(self.locked()):
+            log.info("Upgrades: a new building went up; the village data is read again next round")
+            self.village.read_on = ""
+            self._village_tries.pop(self._account, None)
+            self._village_read_at.pop(self._account, None)
 
     def _fit_search_minimums(self) -> None:
         """Search minimums never set by hand: from the Town Hall if it's
@@ -647,10 +723,13 @@ class Bot:
             if full:
                 self.status("Upgrading")
                 started = upgrade.upgrade(self.game, cfg, self.read_resources, full, last=not cfg.walls.enabled,
-                                          hand_over=handed if cfg.walls.enabled else None, locked=self.locked())
+                                          hand_over=handed if cfg.walls.enabled else None, locked=self.locked(),
+                                          total=self.village.builders if self.village else 0)
                 self.session["upgrades"] += started
                 if started:
                     self._left_selected = self._left_zoomed_in = not cfg.walls.enabled
+                if self.game.built_new:
+                    self._village_changed()
         if cfg.walls.enabled:
             self.status("Upgrading walls")
             # (With the list still open, the numbers beside it aren't read: the upgrades say what's left.)
@@ -693,6 +772,17 @@ class Bot:
         self.checkpoint()
         self.status("Raiding the Clan Capital")
         self._capital_after = now + timedelta(hours=1)
+        device = self.game.device
+        recorder = None
+        if self.config.capital.record:
+            from farmbot.recorder import RecordingDevice
+
+            folder = instances.resolve(self.config, "screens/raids") / f"{now:%Y%m%d-%H%M%S}"
+            try:
+                recorder = self.game.device = RecordingDevice(device, folder, self.game.clock)
+                log.info("Clan Capital: recording the raids to %s", folder)
+            except OSError as exc:
+                log.warning("Clan Capital: can't record the raids to %s: %s", folder, exc)
         try:
             raids = capital.raid_capital(self.game, self.config.capital)
         except capital.NotAllowed:
@@ -702,6 +792,11 @@ class Bot:
             if end is not None:
                 self._capital_after = end.astimezone(now.tzinfo) if now.tzinfo else end.astimezone().replace(tzinfo=None)
             raids = 0
+        finally:
+            if recorder is not None:
+                recorder.close()
+                if self.game.device is recorder:  # (not a new device after an emulator restart)
+                    self.game.device = device
         self.session["raids"] += raids
         if raids:
             log.info("Clan Capital: %d raid(s) made", raids)
@@ -714,6 +809,8 @@ class Bot:
         mode = self.config.bot.mode
         village = (self.auto_village or self.config.bot.auto_first) if mode == "auto" else mode
         if village == "builder" and self._not_yet("builder_base", "the Builder Base (farming the home village)"):
+            return "home"
+        if village == "builder" and mode == "auto" and self._no_boat:
             return "home"
         return village
 
@@ -766,8 +863,22 @@ class Bot:
     def builder_cycle(self) -> bool:
         """One builder base battle (sailing over first if needed)."""
         if screens.settle(self.game) is not screens.Screen.BUILDER:
+            if self.village is None and self.config.bot.read_village:
+                # Not known yet whether this account has the builder base (it opens at Town Hall 4):
+                # the village data says, before looking for a boat that may not be repaired yet.
+                self.know_village()
+                if self.playing() != "builder":
+                    return self.cycle()
             self.status("Sailing to the builder base")
-            builder.go_to_builder_base(self.game)
+            try:
+                builder.go_to_builder_base(self.game)
+            except builder.BuilderError as exc:
+                if self.config.bot.mode != "auto" or "not visible" not in str(exc):
+                    raise
+                # Auto: the home village is farmed too, so farm it rather than stop.
+                log.warning("No boat to the builder base (%s): farming the home village only", exc)
+                self._no_boat = True
+                return self.cycle()
             self.game.refresh()
         if self.check_account():
             return self.cycle()
@@ -819,7 +930,8 @@ class Bot:
                 self.status("Upgrading (builder base)")
                 last = not bcfg.walls and not may_leave
                 self.session["upgrades"] += upgrade.upgrade_builder_base(self.game, bcfg, self.read_resources, full,
-                                                                         last=last)
+                                                                         last=last, total=self.village.builder_base_builders
+                                                                         if self.village else 0)
                 self._left_selected = last
         if may_leave and set(wanted) <= self.full_storages("builder"):
             self._village_full("builder")
@@ -884,6 +996,8 @@ class Bot:
         cfg = self.config
         self.game.habits = cfg.human.active()  # a profile switched in may differ
         self.ensure_game_running()
+        if self._check_account_first():
+            return self.cycle()  # with that account's settings
         if self.playing() == "builder":
             return self.builder_cycle()
         where = screens.settle(self.game)  # deal with chests, rewards, results, popups...
@@ -901,7 +1015,7 @@ class Bot:
             wanted = [k for k in wanted if k != "dark"]  # (there's none to fill yet)
         if wanted and set(wanted) <= self.full_storages(loot=before):
             self._no_battle()
-            if cfg.bot.mode == "auto" and "builder_base" not in self.locked():  # on to the builder base
+            if cfg.bot.mode == "auto" and "builder_base" not in self.locked() and not self._no_boat:  # on to the builder base
                 self._village_full("home")
                 return False
             self.storage_full = True
@@ -1005,13 +1119,14 @@ class Bot:
                     raise
                 except search.SearchBlocked as exc:  # a battle left midway: closing the game a while clears it
                     self._wait_out_blocked(exc)
-                except (screens.NotLoggedIn, screens.MaintenanceBreak) as exc:  # restarting the game won't help
+                except (screens.NotLoggedIn, screens.MaintenanceBreak, SameAccount) as exc:  # restarting won't help
                     log.error("%s: stopping", exc)
                     self._save_error_screen()
                     raise
                 except Exception as exc:  # keep farming through recoverable failures
                     self.errors += 1
-                    log.error("Cycle failed (%d in a row): %s", self.errors, exc)
+                    log.error("Cycle failed (%d in a row): %s: %s [%s]", self.errors, type(exc).__name__, exc,
+                              self._diagnostics())
                     self._save_error_screen()
                     if self.errors >= MAX_CONSECUTIVE_ERRORS:
                         raise RoundsFailed(f"{self.errors} rounds in a row failed, though the game was restarted "

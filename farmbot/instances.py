@@ -23,6 +23,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from farmbot.config import Config, DeviceConfig, ensure_config, load_config, save_config
 from farmbot.device import DeviceError
@@ -291,12 +292,41 @@ def port_clash(device: DeviceConfig, others: dict[int, DeviceConfig], found: lis
 # The farms playing now, each with its emulator instance: COCFARM never
 # closes an emulator another farm plays (to free a port, say).
 active: dict[int, DeviceConfig] = {}
+# The farms among them connected to their emulator (past starting it).
+connected: set[int] = set()
+# The account each farm's game is in (its profile, as read in the game).
+accounts_playing: dict[int, str] = {}
+_accounts_lock = threading.Lock()
 
 
-def farm_playing(mode: str) -> int | None:
-    """Another farm (not this thread's) playing on an emulator of this kind."""
+def claim_account(name: str) -> int | None:
+    """This thread's farm plays account ``name``: kept, unless another farm
+    already plays it. Returns that farm (and claims nothing), or None."""
     me = current() or 1
-    return next((n for n, cfg in list(active.items()) if n != me and cfg.mode == mode), None)
+    with _accounts_lock:
+        other = next((n for n, playing in accounts_playing.items() if n != me and playing == name), None)
+        if other is None:
+            accounts_playing[me] = name
+        return other
+
+
+# Each farm's window's ears while it connects: "status" (a line to show),
+# "moved" (its LDPlayer instance changed: was, now), "stopped" (Stop pressed?).
+hooks: dict[int, dict[str, Callable]] = {}
+
+
+def hook(name: str, *args):
+    """Call this thread's farm's ``name`` hook, if it has one (None if not)."""
+    call = hooks.get(current() or 1, {}).get(name)
+    return call(*args) if call is not None else None
+
+
+def farm_playing(mode: str, holds: Callable[[DeviceConfig], bool] | None = None) -> int | None:
+    """Another farm (not this thread's) playing on an emulator of this kind
+    (and, given ``holds``, on the instance it accepts)."""
+    me = current() or 1
+    return next((n for n, cfg in list(active.items())
+                 if n != me and cfg.mode == mode and (holds is None or holds(cfg))), None)
 
 
 def key_of(cfg: DeviceConfig) -> str:
@@ -398,10 +428,9 @@ def add(device: DeviceConfig | str, source: int = 1, root: Path | None = None, a
     config = load_config(config_path(source, root))
     if isinstance(device, str):
         set_key(config.device, device)
-    else:  # its emulator instance, with the source's display, cores and memory
+    else:  # its emulator instance, with the source's ADB, start-up and sizes
         base, config.device = config.device, copy.deepcopy(device)
-        for name in ("display_width", "display_height", "display_dpi", "cpus", "memory", "set_display",
-                     "set_resources", "enable_adb", "launch_emulator", "launch_timeout", "package", *SIZES):
+        for name in ("enable_adb", "mute", "launch_emulator", "launch_timeout", "package", *SIZES):
             setattr(config.device, name, copy.deepcopy(getattr(base, name)))
     for other in taken:
         if same_instance(device_of(other, root), config.device):
@@ -490,23 +519,78 @@ def bluestacks_manager() -> Path | None:
     return path if path.is_file() else None
 
 
-def create_instance(cfg: DeviceConfig, run=None, close: bool = False, sleep=time.sleep) -> str:
+SPARE_ROOM = 1 << 30  # bytes kept free on top of the copy
+
+
+def _room_for(folder: Path, drive: Path) -> None:
+    """Stop before copying ``folder`` (an instance's disks: several GB) to a
+    drive without room for it."""
+    import shutil
+
+    if not folder.is_dir():
+        return
+    size = sum(f.stat().st_size for f in folder.rglob("*") if f.is_file())
+    free = shutil.disk_usage(drive).free
+    if free < size + SPARE_ROOM:
+        raise DeviceError(f"not enough disk space to copy the instance: it needs {(size + SPARE_ROOM) / 2**30:.1f} GB "
+                          f"and {drive.anchor or drive} has {free / 2**30:.1f} GB free")
+
+
+SPARE_TITLE = "COCFARM spare"  # an empty instance holding a number whose port is another LDPlayer's
+
+
+def _spares(install, listed: list, avoid, run) -> list:
+    """LDPlayer gives a new instance the lowest free number: while that
+    number's port is another LDPlayer's (in ``avoid``), an empty spare
+    instance takes it, so the copy lands past it. Returns the instances now."""
+    from farmbot import ldplayer
+
+    def lowest(found) -> int:
+        taken = {i.index for i in found}
+        return next(k for k in range(len(taken) + 1) if k not in taken)
+
+    while (k := lowest(listed)) in avoid:
+        log.info("Adding an empty instance as number %d: its port is another LDPlayer's", k + 1)
+        run([str(install.console), "add", "--name", f"{SPARE_TITLE} {k + 1}"])
+        listed = ldplayer.instances(install, run)
+        if all(i.index != k for i in listed):
+            raise DeviceError(f"{install.name} didn't add an instance")
+    return listed
+
+
+def _remove_spares(install, listed: list, run) -> None:
+    """The copy has its number: the empty spares that kept it off another
+    LDPlayer's port go again (numbers aren't handed down, so the copy keeps
+    its own), and no instances pile up in the emulator."""
+    for spare in listed:
+        if spare.title.startswith(SPARE_TITLE) and not spare.running and spare.index != 0:
+            log.info("Removing the empty instance %s", spare.title)
+            try:
+                run([str(install.console), "remove", "--index", str(spare.index)])
+            except DeviceError as exc:  # (it stays: harmless, and removed after the next copy)
+                log.info("Couldn't remove %s: %s", spare.title, exc)
+
+
+def create_instance(cfg: DeviceConfig, run=None, close: bool = False, sleep=time.sleep,
+                    avoid: set[int] | frozenset[int] = frozenset(), installs=None) -> str:
     """Make a new instance of ``cfg``'s emulator, a copy of the one ``cfg``
     plays (with the game installed). Returns the new instance's key. A
     running one can't be copied: with ``close`` it's closed first, else
-    :class:`StillOpen` is raised."""
+    :class:`StillOpen` is raised. LDPlayer: the copy never gets a number in
+    ``avoid`` (whose ports another LDPlayer's instances use)."""
     from farmbot import ldplayer, mumu
 
     copying = _copying if run is None else None  # tests pass their own run for everything
     if cfg.mode == "ldplayer":
         run = run or ldplayer._run
-        install = ldplayer.pick_install(cfg, ldplayer.find_installs())
+        install = ldplayer.pick_install(cfg, installs if installs is not None else ldplayer.find_installs())
         if install is None:
             raise DeviceError("LDPlayer was not found")
         before = ldplayer.instances(install, run)
         source = next((i for i in before if i.index == cfg.ldplayer_index), None)
         if source is None:
             raise DeviceError(f"{install.name} has no instance {cfg.ldplayer_index + 1}")
+        _room_for(install.path / "vms" / f"leidian{source.index}", install.path)
         if source.running:
             if not close:
                 raise StillOpen(source.title)
@@ -514,6 +598,7 @@ def create_instance(cfg: DeviceConfig, run=None, close: bool = False, sleep=time
             run([str(install.console), "quit", "--index", str(source.index)])
             _wait_closed(lambda: any(i.running for i in ldplayer.instances(install, run) if i.index == source.index),
                          sleep)
+        before = _spares(install, before, avoid, run)
         titles = {i.title for i in before}
         k = 1
         while f"LDPlayer-{k}" in titles:
@@ -524,6 +609,10 @@ def create_instance(cfg: DeviceConfig, run=None, close: bool = False, sleep=time
         made = [i for i in ldplayer.instances(install, run) if i.index not in {b.index for b in before}]
         if not made:
             raise DeviceError(f"{install.name} didn't make the copy")
+        if made[0].index in avoid:
+            raise DeviceError(f"{install.name} made the copy as instance {made[0].index + 1}, whose port another "
+                              "LDPlayer's instance uses")
+        _remove_spares(install, before, run)
         return str(made[0].index)
     if cfg.mode == "mumu":
         run = run or mumu._run

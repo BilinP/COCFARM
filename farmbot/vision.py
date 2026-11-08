@@ -54,10 +54,13 @@ class TemplateLibrary:
 
     def paths(self, name: str) -> list[Path]:
         target = self.root / name
-        if target.is_dir():
-            return sorted(target.glob("*.png"))
+        # ``name.png``, and any other looks of it in a ``name/`` directory
+        # (a button drawn a little differently on another emulator or theme).
         file = target.with_suffix(".png")
-        return [file] if file.exists() else []
+        found = [file] if file.exists() else []
+        if target.is_dir():
+            found += sorted(target.glob("*.png"))
+        return found
 
     def has(self, name: str) -> bool:
         return bool(self.paths(name))

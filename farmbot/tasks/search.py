@@ -25,6 +25,18 @@ class SearchBlocked(SearchError):
     minutes clears it."""
 
 
+class NextNotFound(SearchError):
+    """No base showed: its Next button never came (or went away)."""
+
+
+class LootUnreadable(SearchError):
+    """The bases showed, but their loot couldn't be read."""
+
+
+class NextDidNothing(SearchError):
+    """Next was tapped (twice) and the same base is still showing."""
+
+
 @dataclass(frozen=True)
 class Loot:
     gold: int
@@ -245,11 +257,10 @@ def start_search(game: Game, super_troops: bool = False, dark: int | None = None
     # The battle menu may already be open (e.g. after a failed round).
     if not game.find(T.FIND_MATCH) and not game.click(T.BATTLE):
         raise SearchError("battle button not visible; is the home village showing?")
-    # The menu has two "Find a Match" buttons; the regular one is on the left.
-    if not game.click_when_visible(T.FIND_MATCH, timeout=5, leftmost=True):
+    if not _find_a_match(game, timeout=5):
         # A tap on Battle can go unanswered (the village just back from an
         # attack, say): still on the village, tap it once more.
-        if not (game.click(T.BATTLE) and game.click_when_visible(T.FIND_MATCH, timeout=5, leftmost=True)):
+        if not (game.click(T.BATTLE) and _find_a_match(game, timeout=5)):
             raise SearchError("find-a-match button did not appear")
     # Newer versions confirm the army first; older ones go straight to scouting.
     boosted = 0
@@ -268,20 +279,140 @@ def start_search(game: Game, super_troops: bool = False, dark: int | None = None
     return boosted
 
 
-def _wait_for_base(game: Game, timeout: float) -> bool:
-    """Until a base shows (its Next button). Raises :class:`SearchBlocked`
-    if the game says it can't attack."""
+# The battle menu has two "Find a Match" buttons: the regular Battle card's
+# (x about 227 on the bot's screen) and Ranked Battle's (about 586), which
+# spends one of the day's ranked attacks. Only one left of this is tapped:
+# while a battle left midway still runs, the regular card shows a countdown
+# instead, and as the menu opens Ranked Battle's can be drawn first, so
+# "the leftmost one" alone would be Ranked Battle's.
+REGULAR_MATCH_RIGHT = 407
+
+
+def _find_a_match(game: Game, timeout: float) -> bool:
+    """Tap the regular Battle's Find a Match, never Ranked Battle's. Raises
+    :class:`SearchBlocked` if its card shows "Attack available in" (the
+    lockout, shown in the menu). True if it was tapped."""
     deadline = game.clock() + timeout
+    while True:
+        game.refresh()
+        if game.has(T.ATTACK_COOLDOWN) and game.find(T.ATTACK_COOLDOWN):
+            log.warning("Attack countdown in the battle menu: %s", _screen_state(game))
+            raise SearchBlocked("lockout screen detected (attack countdown): the Battle card says \"Attack "
+                                "available in\" (a battle left without surrendering still runs)")
+        if game.click(T.FIND_MATCH, region=Rect(0, 0, REGULAR_MATCH_RIGHT, game.size[1]), leftmost=True):
+            return True
+        if game.clock() >= deadline:
+            return False
+        game.wait(0.5, exact=True)
+
+
+NEXT_TIMEOUT = 40  # s for a base to show (slow emulators and networks take a while on the clouds)
+RECALIBRATE_AFTER = 10  # s without Next before the UI scale is measured again on this screen
+# "Unable to attack Village!" is drawn a little differently on some emulators:
+# looked for less strictly than other pictures (it's only looked for here).
+UNABLE_THRESHOLD = 0.72
+# ...and the screen it's on is nearly all white: what's left when the picture misses.
+WHITE_PIXEL = (40, 215)  # saturation at most, value at least
+LOCKOUT_WHITE = 0.6  # share of the screen that white
+
+
+def white_share(screen) -> float:
+    """Share of ``screen`` that is plain white (the "Unable to attack" screen)."""
+    import cv2
+
+    small = cv2.resize(screen, None, fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA)
+    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+    white = (hsv[..., 1] <= WHITE_PIXEL[0]) & (hsv[..., 2] >= WHITE_PIXEL[1])
+    return float(white.mean())
+
+
+def _unable_to_attack(game: Game) -> bool:
+    return game.has(T.UNABLE_TO_ATTACK) and game.find(T.UNABLE_TO_ATTACK, threshold=UNABLE_THRESHOLD) is not None
+
+
+def _screen_state(game: Game) -> str:
+    """What the screen looks like, for the log: each picture's score, the UI
+    scale and how much of it is white."""
+    return (f"{game.scores(T.NEXT, T.UNABLE_TO_ATTACK, T.RETURN_HOME)}; UI scale {game.ui_scale or 1.0:.2f}; "
+            f"white {white_share(game.screen):.0%}")
+
+
+def _blocked(game: Game, why: str) -> SearchBlocked:
+    """The lockout: Return Home first if it's there, then the error that
+    closes the game for a few minutes."""
+    log.warning("Lockout screen (%s): %s", why, _screen_state(game))
+    for button in (T.LOCKOUT_RETURN_HOME, T.RETURN_HOME):
+        if game.has(button) and game.click(button):
+            log.info("Pressed Return Home on the lockout screen")
+            game.wait(1.0)
+            break
+    return SearchBlocked(f"lockout screen detected ({why}): Clash of Clans says \"Unable to attack Village! "
+                         "Try again later.\" (a battle left without surrendering still runs)")
+
+
+def _wait_for_base(game: Game, timeout: float = NEXT_TIMEOUT) -> bool:
+    """Until a base shows (its Next button). Raises :class:`SearchBlocked`
+    if the game says it can't attack. Halfway through a long wait the UI
+    scale is measured again, in case Next is there at another size."""
+    start = game.clock()
+    deadline = start + timeout
+    recalibrated = False
     while True:
         game.refresh()
         if game.find(T.NEXT):
             return True
-        if game.has(T.UNABLE_TO_ATTACK) and game.find(T.UNABLE_TO_ATTACK):
-            raise SearchBlocked("Clash of Clans says \"Unable to attack Village! Try again later.\" "
-                                "(a battle left without surrendering still runs)")
+        if _unable_to_attack(game):
+            raise _blocked(game, "its words")
+        if game.has(T.RETURN_HOME) and game.find(T.RETURN_HOME):
+            # A result screen instead of a base: the lockout's own Return
+            # Home (its words drawn too differently to match), or a battle
+            # left on its result.
+            if white_share(game.screen) >= LOCKOUT_WHITE:
+                raise _blocked(game, "a white screen with Return Home")
+            log.warning("A battle result showed instead of a base: going home (%s)", _screen_state(game))
+            game.click(T.RETURN_HOME)
+            game.wait(1.0)
+            raise NextNotFound("next button never appeared: a battle result showed instead of a base")
+        if not recalibrated and game.clock() - start >= RECALIBRATE_AFTER:
+            recalibrated = True
+            if game.recalibrate(T.NEXT) and game.find(T.NEXT):
+                return True
         if game.clock() >= deadline:
+            if white_share(game.screen) >= LOCKOUT_WHITE:
+                raise _blocked(game, "a white screen where a base should be")
+            log.warning("Next not detected after %ds: %s", timeout, _screen_state(game))
             return False
-        game.wait(0.5)
+        game.wait(0.5, exact=True)
+
+
+def _press_next(game: Game, delay: float) -> None:
+    """Tap Next (looked for once more if it's gone a moment), then wait."""
+    if not game.click(T.NEXT):
+        game.wait(1.0, exact=True)
+        game.refresh()
+        if not game.click(T.NEXT):
+            log.warning("Next not detected to tap: %s", _screen_state(game))
+            raise NextNotFound("next button disappeared")
+    game.wait(delay)
+
+
+SAME_VIEW = 8.0  # mean grey difference (of 255) below which two looks at a base are the same base
+
+
+def _view(screen):
+    """A small grey picture of the screen: enough to tell two bases apart."""
+    import cv2
+
+    small = cv2.resize(screen, None, fx=0.125, fy=0.125, interpolation=cv2.INTER_AREA)
+    return cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype("int16")
+
+
+def same_base(before, after) -> bool:
+    """Whether two small views (see :func:`_view`) show the same base: the
+    loot alone can be the same on two bases."""
+    if before is None or after is None or before.shape != after.shape:
+        return False
+    return float(abs(after - before).mean()) < SAME_VIEW
 
 
 MAX_UNREADABLE = 3  # bases in a row whose loot can't be read before giving up
@@ -298,11 +429,12 @@ def search(game: Game, criteria: SearchConfig, regions: RegionsConfig, on_base: 
     if the search gets stuck or exceeds ``criteria.max_searches``.
     """
     last: Loot | None = None
+    last_view = None
     repeats = unreadable = 0
     zoomed = zoom_out
     for count in range(1, criteria.max_searches + 1):
-        if not _wait_for_base(game, timeout=20):
-            raise SearchError("next button never appeared; search screen not loaded")
+        if not _wait_for_base(game):
+            raise NextNotFound(f"next button never appeared in {NEXT_TIMEOUT}s; search screen not loaded")
         game.wait(0.5)  # let the loot counters finish animating
         if count == 1 and zoom_out:
             game.zoom_out()
@@ -317,11 +449,10 @@ def search(game: Game, criteria: SearchConfig, regions: RegionsConfig, on_base: 
         if loot is None:
             unreadable += 1
             if unreadable >= MAX_UNREADABLE:
-                raise SearchError("could not read available loot; check regions and the loot font")
-            log.warning("Base %d: could not read its loot; skipping it", count)
-            if not game.click(T.NEXT):
-                raise SearchError("next button disappeared")
-            game.wait(criteria.next_delay)
+                raise LootUnreadable(f"could not read available loot on {unreadable} bases in a row (UI scale "
+                                     f"{game.ui_scale or 1.0:.2f}); check regions and the loot font")
+            log.warning("Base %d: loot OCR failed; skipping it", count)
+            _press_next(game, criteria.next_delay)
             continue
         unreadable = 0
         accepted = is_worth_attacking(loot, criteria)
@@ -332,14 +463,15 @@ def search(game: Game, criteria: SearchConfig, regions: RegionsConfig, on_base: 
         look_at_base(game, loot, criteria, accepted, look)
         if accepted:
             return loot
-        if loot == last:
+        view = _view(game.screen)
+        if loot == last and same_base(last_view, view):
             repeats += 1
             if repeats >= 2:
-                raise SearchError("loot did not change after pressing next; search is stuck")
+                raise NextDidNothing("next tap did not change the base (tapped again, still the same); "
+                                     "search is stuck")
+            log.info("Base %d is the one before: the Next tap didn't take; tapping it again", count)
         else:
             repeats = 0
-        last = loot
-        if not game.click(T.NEXT):
-            raise SearchError("next button disappeared")
-        game.wait(criteria.next_delay)
+        last, last_view = loot, view
+        _press_next(game, criteria.next_delay)
     raise SearchError(f"no base matched after {criteria.max_searches} searches")

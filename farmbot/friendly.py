@@ -125,6 +125,11 @@ class Problem:
 
 # (pattern, title, why, action, button). {emulator} becomes the emulator's name.
 RULES = [
+    (r"is already playing the account",
+     "Another farm plays this account",
+     "Two farms on one Clash account log each other out (\"Another device is connecting\"), so this farm closed "
+     "the game and stopped, leaving the account to the other. Sign this emulator's game in to another account, "
+     "or farm the account from one farm only.", "retry", "Try again"),
     (r"reached BlueStacks instead",
      "BlueStacks is in LDPlayer's way",
      "Both emulators use the same connection (port 5555), so with BlueStacks open COCFARM reaches it instead of "
@@ -149,9 +154,17 @@ RULES = [
      "COCFARM closed it and started it again three times, but it still didn't answer, so the bot stopped. "
      "Restart your PC, or open the emulator yourself and check the game loads, then press Start.",
      "retry", "Try again"),
-    (r"is not running",
+    (r"hung while starting|isn't running \d+s after it was started",
+     "{emulator} didn't finish starting",
+     "It got stuck while starting up. Close the emulator (or restart your PC if it won't close), then try again.",
+     "retry", "Try again"),
+    (r"is not running|no BlueStacks window called",
      "{emulator} isn't open",
-     "The bot plays the game inside it.", "autostart", "Start it automatically"),
+     "The bot plays the game inside it.", "autostart", "Open it automatically"),
+    (r"ldconsole failed|MuMuManager",
+     "{emulator} didn't respond to COCFARM",
+     "COCFARM controls the emulator with the emulator's own tool, and that tool failed. Restart the emulator, "
+     "then try again.", "retry", "Try again"),
     (r"adb not found",
      "A part COCFARM needs to talk to the emulator is missing",
      "Without it the bot can't control the game.", "setup", "Open Setup"),
@@ -159,9 +172,13 @@ RULES = [
      "{emulator} took too long to answer",
      "It may be restarting after COCFARM set it up, or your PC is busy. Wait a moment, then try again.",
      "retry", "Try again"),
-    (r"did not open|did not close",
+    (r"did not open",
      "{emulator} took too long to open",
      "Your PC may be busy. It usually works on a second try.", "retry", "Try again"),
+    (r"did not close|didn't close",
+     "{emulator} didn't close",
+     "COCFARM closes it to start it again, but it stayed open. Close it yourself, then try again.",
+     "retry", "Try again"),
     (r"did not accept|did not answer|could not connect|offline|refused|adb failed|no devices",
      "Can't connect to {emulator}",
      "COCFARM controls the game through the emulator. Make sure it's open and the game has loaded.",
@@ -177,17 +194,52 @@ RULES = [
      "Clash of Clans is on a maintenance break",
      "Supercell is updating the game, so nothing can be played for now (usually under an hour). The bot "
      "stopped; press Start once the game is back.", "retry", "Try again"),
+    (r"in front instead of the game",
+     "Clash of Clans closed",
+     "The game crashed or was closed, so the bot stopped tapping. It opens the game again when you try again.",
+     "retry", "Try again"),
+    (r"lockout screen",
+     "The game won't start a new battle yet",
+     "A battle that was left early is still running, so attacking is locked for a few minutes. Try again "
+     "once the Battle button no longer shows a countdown.", "retry", "Try again"),
+    (r"no base matched after",
+     "No base had enough loot",
+     "It searched as many bases as it's allowed without finding one above your loot minimums. Lower the "
+     "minimums on the Home village page, then try again.", "retry", "Try again"),
+    (r"no cards found in the troop bar",
+     "No army to attack with",
+     "The troop bar was empty when the battle started. Train an army in the game, then try again.",
+     "retry", "Try again"),
+    (r"no deploy points",
+     "COCFARM couldn't find where to drop troops",
+     "It couldn't see the base's edges. Make sure the game isn't zoomed in and nothing covers the base, then try "
+     "again.", "retry", "Try again"),
+    (r"after the Raid Weekend began",
+     "This account can't raid this weekend",
+     "It joined its clan after this Raid Weekend began, so the game won't let it raid until the next one.",
+     "retry", "Try again"),
     (r"couldn't get back to a village",
      "The game is stuck on a screen COCFARM doesn't recognise",
      "It needs the village showing to carry on. Close whatever is open in the game, then try again.",
      "retry", "Try again"),
-    (r"battle button|find-a-match|next button|search screen|could not read available loot",
+    (r"battle button|find-a-match|next button|next tap|search screen|could not read available loot|"
+     r"result screen not detected|boat to the builder base|builder base didn't load|Find Now|no opponent found|"
+     r"builder battle result|sail back",
      "COCFARM lost its way in the game",
      "Usually a popup or an update screen is in the way. Check the game, then try again.", "retry", "Try again"),
     (r"pictures? missing|no template named|cannot read template",
      "A button picture is missing",
      "The bot finds buttons by their pictures; without this one it can't go on.", "pictures", "Open Pictures"),
 ]
+
+
+PLAIN_STARTS = ("The ", "A ", "An ", "No ", "Another ", "Can't ", "Something ", "This ")  # not a name
+
+
+def in_sentence(title: str) -> str:
+    """A problem's title inside a sentence: "The game …" → "the game …",
+    while a name ("BlueStacks …", "Clash of Clans …") keeps its capital."""
+    return title[0].lower() + title[1:] if title.startswith(PLAIN_STARTS) else title
 
 
 def explain(message: str, emulator: str = "the emulator") -> Problem:

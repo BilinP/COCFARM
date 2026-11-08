@@ -37,18 +37,11 @@ class DeviceConfig:
     # as ClashFarmer does. Off: drive the BlueStacks window instead, which
     # needs it in front and moves the mouse.
     enable_adb: bool = True
-    # Set the BlueStacks instance's display to this resolution and DPI when
-    # connecting (BlueStacks restarts once if it had another). The bot's
-    # pictures and the starting profile were made at 860 x 672, 240 DPI.
-    set_display: bool = True
-    display_width: int = 860
-    display_height: int = 672
-    display_dpi: int = 240
-    # Give the emulator this many CPU cores and this much memory (MB): the
-    # least the game runs well on, leaving the rest of the PC free.
-    set_resources: bool = True
-    cpus: int = 2
-    memory: int = 4096
+    # Turn the emulator's sound down to nothing each time the bot connects
+    # (through ADB; off: the volume is left as it is).
+    mute: bool = True
+    # The display, CPU cores, memory, frame rate and phone model aren't
+    # settings: every emulator is set to farmbot.standard when it connects.
     serial: str = "127.0.0.1:5555"
     adb_path: str = "adb"  # "adb" = BlueStacks' own HD-Adb.exe when available
     package: str = "com.supercell.clashofclans"
@@ -104,11 +97,25 @@ def town_hall_minimums(town_hall: int) -> dict[str, int]:
     return {"gold": amount, "elixir": amount, "dark": 0}
 
 
+# Small storages (a low Town Hall): a share of them is under a step, so the
+# minimum is the Town Hall amount that's at most this share of the storage
+# (a 16,000 gold storage asks 3,000, a Town Hall 2's) rather than a whole
+# step, which no base near that Town Hall offers.
+SMALL_STORAGE_SHARE = 0.2
+
+
+def _storage_minimum(kind: str, held: int) -> int:
+    step, share = SEARCH_STEPS[kind], SEARCH_SHARES[kind]
+    if kind != "dark" and held * share < step:
+        fits = [v for v in SEARCH_BY_TOWN_HALL.values() if v <= min(held * SMALL_STORAGE_SHARE, step)]
+        return max(fits, default=SEARCH_BY_TOWN_HALL[1])
+    return max(step, round(held * share / step) * step)
+
+
 def _from_storage(storage: dict[str, int]) -> dict[str, int]:
     if not {"gold", "elixir"} <= set(storage):
         return {}
-    return {k: max(SEARCH_STEPS[k], round(storage[k] * share / SEARCH_STEPS[k]) * SEARCH_STEPS[k])
-            for k, share in SEARCH_SHARES.items() if k in storage}
+    return {k: _storage_minimum(k, storage[k]) for k in SEARCH_SHARES if k in storage}
 
 
 def search_minimums_for(storage: dict[str, int], current: dict[str, int],
@@ -122,6 +129,8 @@ def search_minimums_for(storage: dict[str, int], current: dict[str, int],
         return {}
     fitted = _from_storage(storage)
     untouched = [SEARCH_DEFAULTS, *(town_hall_minimums(t) for t in range(1, MAX_TOWN_HALL + 1))]
+    # (the lowest older versions set from small storages: a whole step)
+    untouched.append({**SEARCH_DEFAULTS, "gold": SEARCH_STEPS["gold"], "elixir": SEARCH_STEPS["elixir"]})
     if fitted:
         untouched.append({**SEARCH_DEFAULTS, **fitted})
     if current not in untouched:
@@ -352,6 +361,8 @@ class CapitalConfig:
     # A heal goes on the units once their health bars fall under this share.
     miner_heal_at: float = 0.7  # Super Miners: kept going together
     fortress_heal_at: float = 0.5  # Flying Fortresses
+    # Save every raid's screens, taps and log (screens/raids/<time>/), to replay them offline.
+    record: bool = False
 
 
 @dataclass
@@ -475,6 +486,14 @@ class UpgradeConfig:
     buildings: bool = True
     # The kind of building that gets builders first ("none": dearest of any kind).
     first: str = "none"
+    # Buildings not built yet ("New" in the list) are built first, and new
+    # walls (free) put down; the Town Hall is upgraded like any building
+    # (when it can't be yet, the next upgrade instead).
+    new_buildings: bool = True
+    town_hall: bool = True
+    # How many of the village's builders upgrades may keep busy (walls aside),
+    # once the village data says how many there are. 0: all but one.
+    builders: int = 0
 
 
 WALL_RESOURCES = ("gold", "elixir", "both")
@@ -540,6 +559,9 @@ class BuilderConfig:
     upgrade_lab: bool = True
     upgrade_buildings: bool = True
     upgrade_first: str = "none"  # the kind of building that gets builders first
+    # How many of the builder base's builders upgrades may keep busy, once the
+    # village data says how many there are (the Master Builder, O.T.T.O). 0: all but one.
+    upgrade_builders: int = 0
     battle_timeout: float = 400.0  # both stages together
     return_home_after: bool = False  # sail back to the home village when the bot stops
     # The troop bar (bot coordinates at 860 x 672).
@@ -690,6 +712,9 @@ class Config:
 # dead-base search is out for now; Clan Castle troops come with the siege machine): older farmbot.toml files may still have
 # them, so they're skipped quietly.
 REMOVED_SETTINGS = {"redline.reveal_tap",  # never used: inside a base, grass by buildings can take a troop
+                    # Every emulator is set to farmbot.standard: the display, cores and memory aren't choices.
+                    "device.set_display", "device.display_width", "device.display_height", "device.display_dpi",
+                    "device.set_resources", "device.cpus", "device.memory",
                     "bot.quick_train", "bot.army_recipe", "clan.request_text", "search.dead_base",
                     "search.dead_base_collectors", "attack.use_cc",
                     "search.min_total", "search.dark_weight",

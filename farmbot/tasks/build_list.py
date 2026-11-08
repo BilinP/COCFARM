@@ -8,13 +8,17 @@ Each row shows what an upgrade costs, a number with the resource's icon at
 the right. The filter menu (the slider button left of the title) narrows a
 tab to one resource and one type and sorts it by cost, so the rows left are
 exactly the candidates for an upgrade. Tapping a row opens its upgrade window
-(walls instead select a wall in the village: see village.py).
+(walls instead select a wall in the village: see village.py). A building not
+built yet ("New" under its name) is instead put down on the map, at a free
+spot the game picks, with a green tick (to build it there) and a red cross
+over it; the list closes. A row that can't be upgraded yet opens "Upgrade
+Locked" (the Town Hall, until the buildings it lists are built).
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
@@ -59,11 +63,30 @@ GREY_SATURATION = 40  # a grey button: nothing of that type to upgrade, so it ca
 
 COST_ICONS = {"gold": T.COST_GOLD, "elixir": T.COST_ELIXIR, "dark": T.COST_DARK}
 ICON_COLUMN = 90  # the cost icons sit this far from the screen's right edge, at most
+# A price icon is found from this likeness (the Town Hall row's, under its green tag: 0.85; anything else
+# in that column: 0.71 at most)
+COST_THRESHOLD = 0.78
 # A row's price, in icon heights left of its icon.
 PRICE_LEFT, PRICE_WIDTH = 8.0, 7.4
 ROW_TAP_FROM_RIGHT = 280  # where a row is tapped: on its name, clear of the price
 ROW_TAP_ABOVE = 0.6  # ...this many icon heights above the price line
-WALL_ROW_BAND = (-50, 0)  # a "Wall x" text this far above a price is a wall row
+WALL_ROW_BAND = (-50, 0)  # a "Wall x" (or "Town Hall") text this far above a price is its row
+FREE_TAP_ABOVE = 1.0  # a "FREE" row (a new wall) is tapped this many "FREE" heights above the word
+
+# Putting a new building down: the red cross sits left of the green tick, at
+# the same height, this many tick widths from it (middle to middle).
+PLACE_GAP = (1.2, 3.5)
+PLACE_ROW = 0.5  # ...and no more than this many tick heights above or below it
+PLACE_GREEN = (35, 85), 100  # the tick's hue (from, to) and saturation at least: it can be built there
+PLACE_TIMEOUT = 3
+PLACE_THRESHOLD = 0.7  # the two together are found at a lower likeness than one alone (the map shows through)
+
+# What tapping a row did (upgrade_row): the first two started something.
+UPGRADED, PLACED, LOCKED, FAILED = "upgraded", "placed", "locked", ""
+
+
+def started(outcome: str) -> bool:
+    return outcome in (UPGRADED, PLACED)
 
 # The first row of a tab, on its own: a dark grey bar (an upgrade or research
 # under way) or a brown heading/row.
@@ -107,6 +130,10 @@ class BuildList:
     resource_filter: dict[str, str]  # resource -> filter menu button
     cost_icons: dict[str, str]  # resource -> a row's price icon
     builder_base: bool = False
+    # The rows the bot leaves alone, by the words on them: walls (upgraded
+    # on their own, see village.py), and the Town Hall when it's left to the
+    # player (see ``leaving_town_hall``).
+    left_out: tuple[str, ...] = (T.WALL_SUGGESTION,)
 
     @property
     def resources(self) -> tuple[str, ...]:
@@ -114,6 +141,11 @@ class BuildList:
 
 
 HOME = BuildList(TABS, TAB_FROM_BOTTOM, RESOURCE_FILTER, COST_ICONS)
+
+
+def leaving_town_hall(lst: BuildList) -> BuildList:
+    """``lst``, with the Town Hall's row left alone too."""
+    return replace(lst, left_out=(*lst.left_out, T.TOWN_HALL_ROW))
 # The builder base's tabs are tapped higher: low down, a tap can miss them.
 BUILDER = BuildList({"buildings": 371, "army": 124}, 75, {"gold": T.BB_FILTER_GOLD, "elixir": T.BB_FILTER_ELIXIR},
                     {"gold": T.BB_COST_GOLD, "elixir": T.BB_COST_ELIXIR}, builder_base=True)
@@ -226,19 +258,24 @@ def busy(game: Game) -> bool:
             and BUSY_VALUE[0] <= hsv[2] <= BUSY_VALUE[1])
 
 
+def _left_out(game: Game, lst: BuildList = HOME) -> list[int]:
+    """Where the names of the rows ``lst`` leaves alone are."""
+    return [m.y for name in lst.left_out if game.has(name) for m in game.find_all(name)]
+
+
 def rows(game: Game, kinds: tuple[str, ...] = ("gold", "elixir", "dark"), lst: BuildList = HOME) -> list[Row]:
-    """The priced rows on show, top to bottom (walls and rows whose price
-    can't be read are left out; so are upgrades under way, which show a
-    timer and no price)."""
+    """The priced rows on show, top to bottom (the rows ``lst`` leaves out
+    and rows whose price can't be read are left out; so are upgrades under
+    way, which show a timer and no price, and new walls, "FREE")."""
     w, h = game.size
     screen = game._current()
     column = Rect(w - ICON_COLUMN, LIST_TOP, ICON_COLUMN, h - LIST_BOTTOM_FROM_BOTTOM - LIST_TOP)
-    walls = [m.y for m in game.find_all(T.WALL_SUGGESTION)] if game.has(T.WALL_SUGGESTION) else []
+    walls = _left_out(game, lst)
     found = []
     for kind in kinds:
         if not game.has(lst.cost_icons[kind]):
             continue
-        for m in game.find_all(lst.cost_icons[kind], region=column):
+        for m in game.find_all(lst.cost_icons[kind], threshold=COST_THRESHOLD, region=column):
             if any(WALL_ROW_BAND[0] <= y - m.y <= WALL_ROW_BAND[1] for y in walls):
                 continue
             price = game.vision.read_number(screen, Rect(m.x - round(PRICE_LEFT * m.h), m.y - m.h // 2 - 2,
@@ -259,15 +296,18 @@ def list_still(before: np.ndarray | None, after: np.ndarray | None) -> bool:
     return float(np.abs(after[area].astype(np.int16) - before[area].astype(np.int16)).mean()) < LIST_STILL
 
 
-def first_affordable(game: Game, budget: dict[str, int], lst: BuildList = HOME) -> Row | None:
+def first_affordable(game: Game, budget: dict[str, int], lst: BuildList = HOME,
+                     skip: set[tuple[str, int]] | None = None) -> Row | None:
     """In a tab sorted Cost Max, scroll down to the first row that
     ``budget`` (resource -> amount) covers: the dearest upgrade it can pay
-    for. ``None`` if the list ends without one."""
+    for, passing over rows priced as in ``skip`` (resource, price): ones
+    already tried that wouldn't upgrade. ``None`` if the list ends without one."""
     w, h = game.size
     x, y = w - LIST_SWIPE_X, h - LIST_SWIPE_FROM_BOTTOM
     game.refresh()
     for _ in range(MAX_SORTED_SCROLLS):
-        found = [r for r in rows(game, tuple(budget), lst) if r.price <= budget[r.kind]]
+        found = [r for r in rows(game, tuple(budget), lst)
+                 if r.price <= budget[r.kind] and (r.kind, r.price) not in (skip or ())]
         if found:
             return found[0]
         before = game.screen
@@ -292,9 +332,9 @@ def top_row_affordable(game: Game, kinds: tuple[str, ...], lst: BuildList = HOME
     game.refresh()
     w, h = game.size
     column = Rect(w - ICON_COLUMN, LIST_TOP, ICON_COLUMN, h - LIST_BOTTOM_FROM_BOTTOM - LIST_TOP)
-    walls = [m.y for m in game.find_all(T.WALL_SUGGESTION)] if game.has(T.WALL_SUGGESTION) else []
+    walls = _left_out(game, lst)
     icons = [m for kind in kinds if game.has(lst.cost_icons[kind])
-             for m in game.find_all(lst.cost_icons[kind], region=column)
+             for m in game.find_all(lst.cost_icons[kind], threshold=COST_THRESHOLD, region=column)
              if not any(WALL_ROW_BAND[0] <= y - m.y <= WALL_ROW_BAND[1] for y in walls)]
     if not icons:
         return None
@@ -387,27 +427,36 @@ def close_windows(game: Game, list_close_y: int) -> None:
         game.wait(0.8)
 
 
-def upgrade_row(game: Game, row: Row, lst: BuildList = HOME) -> bool:
+def upgrade_row(game: Game, row: Row, lst: BuildList = HOME) -> str:
     """Tap ``row`` and press its upgrade window's green Confirm (in the
-    builder base: its price button), once. True if it was pressed (the
-    caller checks the resource went down)."""
+    builder base: its price button), once; or, for a building not built
+    yet, build it where the game puts it. UPGRADED or PLACED if that was
+    pressed (the caller checks the resource went down; after PLACED the
+    list has closed), LOCKED if the game says it can't be upgraded yet,
+    FAILED otherwise. Nothing is left open over the list, or being put down."""
     game.refresh()
     list_close = game.find(T.CLOSE)
     list_y = list_close.y if list_close else 0
     w, _ = game.size
     confirm = None
+    locked = False
     for _ in range(2):  # a tap just after the filter menu closes can be missed: once more if nothing opened
         game.tap(w - ROW_TAP_FROM_RIGHT, row.y - round(ROW_TAP_ABOVE * row.h))
         deadline = game.clock() + CONFIRM_TIMEOUT
         while confirm is None and game.clock() < deadline:
             game.wait(0.5)
             game.refresh()
+            if placing(game):
+                return PLACED if place(game) else FAILED
+            if game.has(T.UPGRADE_LOCKED) and game.find(T.UPGRADE_LOCKED):
+                locked = True
+                break
             if lst.builder_base:
                 confirm = pay_button(game, row.kind)
             else:
                 m = green_confirm(game)
                 confirm = (m.x, m.y) if m else None
-        if confirm is not None or any(m.y > list_y + 40 for m in game.find_all(T.CLOSE)):
+        if locked or confirm is not None or any(m.y > list_y + 40 for m in game.find_all(T.CLOSE)):
             break  # a window opened (to pay, or saying why not)
     if confirm is not None and asks_for_gems(game, confirm[1]):
         # Some events make upgrades and research cost gems too: never paid.
@@ -416,12 +465,103 @@ def upgrade_row(game: Game, row: Row, lst: BuildList = HOME) -> bool:
     if confirm is not None:
         game.tap(*confirm)
         game.wait(1.5)
+    elif locked:
+        log.info("Upgrades: that upgrade is locked until other buildings are built; on to the next")
     else:
         log.info("Upgrades: no upgrade window for that row (busy?)")
     # Pets keep their window open (with a gem "Finish Now" where Confirm
     # was); a busy laboratory offers its Goblin Researcher for gems.
     close_windows(game, list_y)
-    return confirm is not None
+    return UPGRADED if confirm is not None else LOCKED if locked else FAILED
+
+
+def placing(game: Game) -> tuple[Match, Match] | None:
+    """The green tick and red cross over a building being put down, if one
+    is: the tick with the cross just left of it, at the same height (either
+    alone could be something else on the map)."""
+    if not (game.has(T.PLACE_OK) and game.has(T.PLACE_CANCEL)):
+        return None
+    crosses = game.find_all(T.PLACE_CANCEL, threshold=PLACE_THRESHOLD)
+    for tick in game.find_all(T.PLACE_OK, threshold=PLACE_THRESHOLD):
+        for cross in crosses:
+            gap = (tick.x - cross.x) / max(tick.w, 1)
+            if PLACE_GAP[0] <= gap <= PLACE_GAP[1] and abs(tick.y - cross.y) <= PLACE_ROW * tick.h:
+                return tick, cross
+    return None
+
+
+def _green(screen: np.ndarray, m: Match) -> bool:
+    hsv = _median_hsv(screen, m.x - m.w // 2, m.y - m.h // 2, m.x + m.w // 2, m.y + m.h // 2)
+    (low, high), saturation = PLACE_GREEN
+    return hsv is not None and low <= hsv[0] <= high and hsv[1] >= saturation
+
+
+def place(game: Game) -> bool:
+    """Build the building being put down where the game put it (its tick),
+    if it may go there; otherwise take it away again (its cross). True if
+    it was built (the tick and cross went)."""
+    deadline = game.clock() + PLACE_TIMEOUT
+    pair = placing(game)
+    while pair is None and game.clock() < deadline:
+        game.wait(0.5)
+        game.refresh()
+        pair = placing(game)
+    if pair is None:
+        return False
+    tick, cross = pair
+    if not _green(game.screen, tick):
+        log.info("Upgrades: no room for that new building; leaving it for now")
+        game.tap_match(cross)
+        game.wait(1.0)
+        return False
+    game.tap_match(tick)
+    game.wait(1.5)
+    game.refresh()
+    window = game.find_all(T.CLOSE)
+    if not window and placing(game) is None:
+        return True
+    # A window over it (every builder busy, say: it offers to pay gems) is
+    # closed with its X, and the building taken away.
+    log.info("Upgrades: the new building wasn't built%s; taking it away again",
+             " (the game asked for something first)" if window else "")
+    for _ in range(2):
+        if not window:
+            break
+        game.tap_match(max(window, key=lambda m: m.score))
+        game.wait(0.8)
+        game.refresh()
+        window = game.find_all(T.CLOSE)
+    again = placing(game)
+    if again:
+        game.tap_match(again[1])
+        game.wait(1.0)
+    return False
+
+
+def list_shown(game: Game) -> bool:
+    """Whether the list is open: its own X, top right (a window's X sits lower)."""
+    return any(m.y < LIST_TOP for m in game.find_all(T.CLOSE))
+
+
+def free_rows(game: Game, lst: BuildList = HOME) -> list[Match]:
+    """The rows on show that cost nothing ("FREE": new walls, and some new
+    buildings), top to bottom."""
+    if not game.has(T.FREE_ROW):
+        return []
+    w, h = game.size
+    column = Rect(w - LIST_PANEL_W, LIST_TOP, LIST_PANEL_W, h - LIST_BOTTOM_FROM_BOTTOM - LIST_TOP)
+    return sorted(game.find_all(T.FREE_ROW, region=column), key=lambda m: m.y)
+
+
+def place_free(game: Game, m: Match) -> bool:
+    """Tap the "FREE" row whose word is ``m`` and build it where the game
+    puts it. True if it was built (the list has closed either way, if it
+    was put down)."""
+    w, _ = game.size
+    game.tap(w - ROW_TAP_FROM_RIGHT, m.y - round(FREE_TAP_ABOVE * m.h))
+    game.wait(1.0)
+    game.refresh()
+    return place(game)
 
 
 def free_builders(game: Game) -> int | None:

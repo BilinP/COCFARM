@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from farmbot import standard
 from farmbot.config import EMULATORS, DeviceConfig
 from farmbot.device import NO_WINDOW, AdbDevice, Device, DeviceError, GaveUp, NoAnswer
 
@@ -245,15 +246,14 @@ def read_display(install: Install, instance: Instance) -> tuple[int, int, int] |
         return None
 
 
-def wanted_settings(cfg: DeviceConfig) -> dict[str, int]:
-    """The instance settings the bot wants: display (Settings > Display) and
-    CPU cores / memory (Settings > Performance)."""
-    wanted: dict[str, int] = {}
-    if cfg.set_display:
-        wanted.update(fb_width=cfg.display_width, fb_height=cfg.display_height, dpi=cfg.display_dpi)
-    if cfg.set_resources:
-        wanted.update(cpus=cfg.cpus, ram=cfg.memory)
-    return wanted
+def wanted_settings(cfg: DeviceConfig | None = None) -> dict[str, int]:
+    """farmbot.standard as bluestacks.conf keys: display (Settings > Display),
+    CPU cores / memory (Settings > Performance) and frame rate (60, no high
+    frame rate, no vertical sync). The phone model is left as it is:
+    BlueStacks keeps it as a device profile code, not a model name."""
+    return dict(fb_width=standard.WIDTH, fb_height=standard.HEIGHT, dpi=standard.DPI,
+                cpus=standard.CPUS, ram=standard.MEMORY,
+                max_fps=standard.FPS, enable_high_fps=0, enable_vsync=0)
 
 
 def settings_to_change(install: Install, instance: Instance, cfg: DeviceConfig) -> dict[str, int]:
@@ -340,7 +340,7 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
         return device
 
     if install is None:
-        raise DeviceError("BlueStacks 5 was not found. Install it, or enter the device's ADB address in Settings.")
+        raise DeviceError("BlueStacks 5 was not found. Install it, or pick another emulator in Setup.")
     instance = install.instance(cfg.bluestacks_instance)
     if instance is None:
         names = ", ".join(i.display_name for i in install.instances) or "none"
@@ -363,7 +363,7 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
 
     if not running():
         if not cfg.launch_emulator and install.adb_enabled:
-            raise DeviceError("BlueStacks is not running. Start it, or turn on 'Start BlueStacks automatically'.")
+            raise DeviceError("BlueStacks is not running. Start it, or turn on 'Open the emulator automatically' in Setup.")
         start(install, instance)
 
     deadline = clock() + cfg.launch_timeout
@@ -410,6 +410,28 @@ def open_window(install: Install, instance: Instance, cfg: DeviceConfig,
 
 EMULATOR_TRIES = 3  # times the emulator is started before the bot gives up on it
 
+# The sound the game makes (music) and the emulator's own (system, notifications).
+MUTED_STREAMS = (3, 1, 5)
+# Android 9 and newer have "cmd media_session volume"; older ones the "media" tool.
+_MUTE = ("cmd media_session volume --stream {s} --set 0 >/dev/null 2>&1; "
+         "media volume --stream {s} --set 0 >/dev/null 2>&1")
+
+
+def mute(device: Device) -> None:
+    """Turn the emulator's volume down to nothing (``device.mute``): the
+    volume inside Android, so it works the same in every emulator, with
+    nothing restarted. Best effort: a device that won't is left as it is."""
+    if not isinstance(device, AdbDevice):
+        return  # (driving a window: no shell)
+    try:
+        # "; true": one of the two tools missing (exit 127) is no failure.
+        device.shell("; ".join(_MUTE.format(s=s) for s in MUTED_STREAMS) + "; true")
+        out = device.shell("cmd media_session volume --stream 3 --get 2>&1; media volume --stream 3 --get 2>&1; true")
+        m = re.search(r"volume is (\d+)", out)
+        log.info("Muted the emulator (music volume: %s)", m.group(1) if m else "?", extra={"file_only": True})
+    except DeviceError as exc:
+        log.info("Couldn't mute the emulator: %s", exc)
+
 
 def close_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep) -> None:
     """Close the configured emulator (it is started again by ``open_device``)."""
@@ -442,7 +464,10 @@ def open_device_retrying(cfg: DeviceConfig, sleep: Callable[[float], None] = tim
     Only an emulator COCFARM starts by itself is restarted."""
     for attempt in range(1, EMULATOR_TRIES + 1):
         try:
-            return opener(cfg, sleep=sleep)
+            device = opener(cfg, sleep=sleep)
+            if cfg.mute and cfg.mode in EMULATORS:  # (not a phone given by its address)
+                mute(device)
+            return device
         except NoAnswer as exc:
             if cfg.mode not in EMULATORS or not cfg.launch_emulator:
                 raise

@@ -15,6 +15,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import gamedata
+
 log = logging.getLogger(__name__)
 
 VILLAGE_FILE = "village.json"
@@ -24,6 +26,9 @@ TOWN_HALL = 1000001
 LABORATORY = 1000007
 WALL = 1000010
 CLAN_CASTLE = 1000014
+BUILDERS_HUT = 1000015
+BOB_CONTROL = 1000065  # in the builder base: its builder (B.O.B) works in the home village too
+OTTO_OUTPOST = 1000078  # the builder base's second builder (O.T.T.O)
 
 # Town Hall levels that open a feature (only those that are certain: a
 # feature is left out only when it can't be there yet).
@@ -52,6 +57,8 @@ class Village:
     heroes: int = 0
     pets: int = 0
     builder_heroes: int = -1  # the builder base's (-1: not in the export)
+    builders: int = 0  # the home village's builders: a hut each, and B.O.B (0: not in the export)
+    builder_base_builders: int = 0  # the Master Builder, and O.T.T.O (0: no builder base in the export)
     timestamp: int = 0  # when the game made the export (seconds since 1970)
     read_on: str = ""  # the day the bot read it (YYYY-MM-DD)
 
@@ -81,8 +88,14 @@ def parse(text: str | None) -> Village | None:
         return None
     count = lambda key: len(data.get(key) or []) if isinstance(data.get(key), list) else 0
     stamp = data.get("timestamp")
+    base2 = [b.get("data") for b in (data.get("buildings2") if isinstance(data.get("buildings2"), list) else [])
+             if isinstance(b, dict)]
+    bob = BOB_CONTROL in base2
+    huts = buildings.get(BUILDERS_HUT, (0, 0))[1]
     return Village(hall, buildings, heroes=count("heroes"), pets=count("pets"),
                    builder_heroes=count("heroes2") if isinstance(data.get("heroes2"), list) else -1,
+                   builders=huts + bob if huts else 0,
+                   builder_base_builders=(1 + (OTTO_OUTPOST in base2)) if base2 else 0,
                    timestamp=stamp if isinstance(stamp, int) else 0)
 
 
@@ -152,15 +165,6 @@ def describe(village: Village | None) -> str:
     return f"Town Hall {village.town_hall}" if village else ""
 
 
-# The game's ids (less 1000000) for buildings, as the export lists them.
-BUILDING_NAMES = {0: "Army Camp", 1: "Town Hall", 2: "Elixir Collector", 3: "Elixir Storage", 4: "Gold Mine",
-                  5: "Gold Storage", 6: "Barracks", 7: "Laboratory", 8: "Cannon", 9: "Archer Tower", 10: "Wall",
-                  11: "Wizard Tower", 12: "Air Defense", 13: "Mortar", 14: "Clan Castle", 15: "Builder's Hut",
-                  19: "Hidden Tesla", 20: "Spell Factory", 21: "X-Bow", 23: "Dark Elixir Drill",
-                  24: "Dark Elixir Storage", 26: "Dark Barracks", 27: "Inferno Tower", 28: "Air Sweeper",
-                  29: "Dark Spell Factory"}
-TROOP_NAMES = {0: "Barbarian", 1: "Archer", 2: "Goblin", 3: "Giant", 4: "Wall Breaker", 5: "Balloon",
-               6: "Wizard", 7: "Healer", 8: "Dragon", 9: "P.E.K.K.A"}
 
 
 def load_export(path: str | Path | None) -> tuple[dict, str] | None:
@@ -186,12 +190,12 @@ def overview(export: dict) -> dict[str, list[tuple[str, str]]]:
         return [i for i in value if isinstance(i, dict)] if isinstance(value, list) else []
 
     def named(table: dict[int, str], data: int, base: int, kind: str) -> str:
-        return table.get(data - base, f"{kind} #{data - base}")
+        return table.get(data, f"{kind} #{data - base}")
 
     buildings: dict[str, list[tuple[int, int]]] = {}
     for b in items("buildings"):
         if isinstance(b.get("data"), int):
-            name = named(BUILDING_NAMES, b["data"], 1_000_000, "Building")
+            name = named(gamedata.BUILDINGS, b["data"], 1_000_000, "Building")
             buildings.setdefault(name, []).append((int(b.get("lvl", 0) or 0), int(b.get("cnt", 1) or 1)))
     rows = []
     for name, levels in sorted(buildings.items(), key=lambda kv: (kv[0] != "Town Hall", kv[0])):
@@ -199,8 +203,8 @@ def overview(export: dict) -> dict[str, list[tuple[str, str]]]:
         by_level = ", ".join(f"{c} at level {lvl}" if c > 1 or len(levels) > 1 else f"level {lvl}"
                              for lvl, c in sorted(levels, reverse=True))
         rows.append((f"{name}" + (f" ×{total}" if total > 1 else ""), by_level))
-    army = [(named(TROOP_NAMES, u["data"], 4_000_000, "Troop"), f"level {u.get('lvl', 0)}")
-            for u in items("units") if isinstance(u.get("data"), int)]
+    army = [(named(gamedata.TROOPS, u["data"], 4_000_000, "Troop"), f"level {u.get('lvl', 0)}")
+            for u in items("units") + items("siege_machines") if isinstance(u.get("data"), int)]
     counts = [(label, str(len(items(key)))) for key, label in
               (("spells", "Spells"), ("heroes", "Heroes"), ("pets", "Pets"), ("siege_machines", "Siege machines"),
                ("equipment", "Hero equipment"), ("traps", "Traps"), ("obstacles", "Obstacles (trees, rocks...)"))]

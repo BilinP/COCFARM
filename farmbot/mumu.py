@@ -23,11 +23,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
+from farmbot import standard
 from farmbot.config import DeviceConfig
-from farmbot.device import NO_WINDOW, AdbDevice, DeviceError, NoAnswer
+from farmbot.device import NO_WINDOW, AdbDevice, DeviceError, NoAnswer, switch_off_ad_apps
 
 log = logging.getLogger(__name__)
 
+AD_PACKAGES = ("com.mumu.store",)  # MuMu's store, which shows other games' ads (with "Remove Ads") over the game
 MANAGER_EXE = "MuMuManager.exe"
 ADB_EXE = "adb.exe"
 TOOL_DIRS = ("nx_main", "shell")  # where the manager and adb live (MuMu 12's newer and older layouts)
@@ -185,43 +187,53 @@ def instances(install: Install, run: Runner = _run) -> list[Instance]:
     return parse_info(run([str(install.manager), "info", "-v", "all"]))
 
 
-def read_settings(install: Install, index: int, run: Runner = _run) -> dict:
-    """The screen, CPU cores and memory the instance is set to."""
-    data = _json(run([str(install.manager), "setting", "-v", str(index), "-a"]))
-
-    def number(key: str) -> float | None:
-        try:
-            return float(data[key])
-        except (KeyError, ValueError):
-            return None
-
-    custom = str(data.get("resolution_mode", "")) == "custom"
-    return {"width": number("resolution_width.custom") if custom else None,
-            "height": number("resolution_height.custom") if custom else None,
-            "dpi": number("resolution_dpi.custom") if custom else None,
-            "cpus": number("performance_cpu.custom") if data.get("performance_mode") == "custom" else None,
-            "memory": number("performance_mem.custom") if data.get("performance_mode") == "custom" else None}
+def read_settings(install: Install, index: int, run: Runner = _run) -> dict[str, str]:
+    """The instance's settings as MuMuManager lists them (all strings)."""
+    return {k: str(v) for k, v in _json(run([str(install.manager), "setting", "-v", str(index), "-a"])).items()}
 
 
 def _gb(mb: int) -> float:
     return round(mb / 1024, 2)
 
 
-def setup_needed(settings: dict, cfg: DeviceConfig) -> list[str]:
-    """What has to change on the instance, in words (empty: nothing)."""
-    changes = []
-    if cfg.set_display and (settings.get("width"), settings.get("height"), settings.get("dpi")) != (
-            cfg.display_width, cfg.display_height, cfg.display_dpi):
-        changes.append(f"display -> {cfg.display_width}x{cfg.display_height} {cfg.display_dpi} DPI")
-    if cfg.set_resources and (settings.get("cpus") != cfg.cpus or settings.get("memory") != _gb(cfg.memory)):
-        changes.append(f"CPU {cfg.cpus}, memory {_gb(cfg.memory):g} GB")
-    return changes
+# What farmbot.standard is in MuMuManager's keys. Numbers are compared as
+# numbers ("860.000000" is 860), the rest as written.
+WANTED: dict[str, str] = {
+    "resolution_mode": "custom",
+    "resolution_width.custom": str(standard.WIDTH),
+    "resolution_height.custom": str(standard.HEIGHT),
+    "resolution_dpi.custom": str(standard.DPI),
+    "performance_mode": "custom",
+    "performance_cpu.custom": str(standard.CPUS),
+    "performance_mem.custom": f"{_gb(standard.MEMORY):g}",
+    "max_frame_rate": str(standard.FPS),
+    "dynamic_adjust_frame_rate": "false",
+    "vertical_sync": "false",
+    "phone_brand": standard.BRAND,
+    "phone_model": standard.MODEL_NAME,
+    "phone_miit": standard.MODEL,
+}
 
 
-def set_up(install: Install, inst: Instance, cfg: DeviceConfig, run: Runner = _run,
+def _same(have: str | None, want: str) -> bool:
+    if have is None:
+        return False
+    try:
+        return float(have) == float(want)
+    except ValueError:
+        return have.strip().lower() == want.lower()
+
+
+def setup_needed(settings: dict[str, str]) -> dict[str, str]:
+    """The settings that differ from farmbot.standard, as key -> wanted value
+    (empty: nothing to change)."""
+    return {k: v for k, v in WANTED.items() if not _same(settings.get(k), v)}
+
+
+def set_up(install: Install, inst: Instance, changes: dict[str, str], run: Runner = _run,
            sleep: Callable[[float], None] = time.sleep) -> None:
-    """Shut the instance down if needed, then apply the display, CPU and
-    memory settings. It is started again by :func:`open_device`."""
+    """Shut the instance down if needed, then write ``changes``. It is
+    started again by :func:`open_device`."""
     manager, index = str(install.manager), str(inst.index)
     if inst.started:
         log.info("Closing %s to change its settings", install.name)
@@ -232,17 +244,9 @@ def set_up(install: Install, inst: Instance, cfg: DeviceConfig, run: Runner = _r
             if current is None or not current.started:
                 break
     args = [manager, "setting", "-v", index]
-    if cfg.set_display:
-        args += ["-k", "resolution_mode", "-val", "custom",
-                 "-k", "resolution_width.custom", "-val", str(cfg.display_width),
-                 "-k", "resolution_height.custom", "-val", str(cfg.display_height),
-                 "-k", "resolution_dpi.custom", "-val", str(cfg.display_dpi)]
-    if cfg.set_resources:
-        args += ["-k", "performance_mode", "-val", "custom",
-                 "-k", "performance_cpu.custom", "-val", str(cfg.cpus),
-                 "-k", "performance_mem.custom", "-val", f"{_gb(cfg.memory):g}"]
-    if len(args) > 4:
-        run(args)
+    for key, value in changes.items():
+        args += ["-k", key, "-val", value]
+    run(args)
 
 
 def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], None] = time.sleep,
@@ -259,17 +263,18 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
     if inst is None:
         raise DeviceError(f"{install.name} has no instance {cfg.mumu_index + 1} "
                           f"(have: {', '.join(str(i.index + 1) for i in found) or 'none'}).")
-    changes = setup_needed(read_settings(install, inst.index, run), cfg)
+    changes = setup_needed(read_settings(install, inst.index, run))
     if changes:
-        log.warning("Setting up %s: %s (restarts it)", install.name, "; ".join(changes))
-        set_up(install, inst, cfg, run, sleep)
+        log.warning("Setting up %s: %s (restarts it)", install.name,
+                    ", ".join(f"{k}={v}" for k, v in changes.items()))
+        set_up(install, inst, changes, run, sleep)
         inst.running = inst.started = False
     if inst.started and inst.state == "stopping":
         # Still closing (a restart): it can't be launched until it's down.
         inst = _wait_stopped(install, inst, run, sleep)
     if not inst.started:
         if not cfg.launch_emulator:
-            raise DeviceError(f"{install.name} is not running. Start it, or turn on 'Start the emulator automatically'.")
+            raise DeviceError(f"{install.name} is not running. Start it, or turn on 'Open the emulator automatically' in Setup.")
         log.info("Starting %s (instance %d)", install.name, inst.index + 1)
         run([str(install.manager), "control", "-v", str(inst.index), "launch"])
     deadline = clock() + cfg.launch_timeout
@@ -289,6 +294,7 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
                 device = make(current.serial, str(install.adb))
                 device.connect()
                 if device.shell("getprop", "sys.boot_completed").strip() == "1" and device.foreground_package():
+                    switch_off_ad_apps(device, AD_PACKAGES, install.name)
                     log.info("Connected to %s at %s", install.name, current.serial)
                     return device
         except NoAnswer:

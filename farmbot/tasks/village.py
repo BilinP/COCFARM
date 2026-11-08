@@ -179,11 +179,32 @@ def close_rate_dialog(game: Game) -> bool:
     return True
 
 
+AD_CLOSE_RIGHT = 0.74  # an ad's X: this many "Remove Ads" badge widths right of the badge's middle
+
+
+def close_ad(game: Game) -> bool:
+    """An ad in the game ("Remove Ads" at its top right): close it with the
+    small X beside that badge. Its Okay and its picture both open the
+    advertised game in the Play Store. True if one was closed."""
+    if not game.has(T.REMOVE_ADS):
+        return False
+    badge = game.find(T.REMOVE_ADS)
+    if badge is None:
+        return False
+    log.info("Closing an ad with its X (never its Okay, which opens the ad)")
+    game.tap(badge.x + round(AD_CLOSE_RIGHT * badge.w), badge.y)
+    game.wait(1.5)
+    return True
+
+
 def clear_popups(game: Game, rounds: int = 5) -> int:
     """Press any known dismiss/reconnect button until none is visible."""
     pressed = 0
     for _ in range(rounds):
         game.refresh()
+        if close_ad(game):  # before Okay, which is on ads too
+            pressed += 1
+            continue
         if pick_reward(game):
             pressed += 1
             continue

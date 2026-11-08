@@ -4,10 +4,12 @@ can show before the rest of COCFARM loads."""
 
 from __future__ import annotations
 
+import math
 import sys
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QRectF, Qt, QTimer, QVariantAnimation
+from PySide6.QtCore import QEasingCurve, QEvent, QEventLoop, QObject, QRectF, Qt, QTimer, QVariantAnimation
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -170,6 +172,101 @@ def close() -> None:
     splash, _splash = _splash, None
     if splash is not None:
         splash.close()
+
+
+LIGHT_BACKGROUND = QColor("#f3f3f3")  # the window's light theme
+LIGHT_FAINT = QColor("#606060")
+PULSE = 0.09  # the logo grows and shrinks by this much while it loads
+PULSE_S = 1.2  # one breath, in seconds
+FRAME_S = 1 / 40
+EVENTS_S = 0.5  # while it loads, Windows' messages are handled this often
+REVEAL_GROW = 5.0  # loaded: the logo grows to this many times its size as the window shows through
+REVEAL_MS = 450
+
+
+class Overlay(QWidget):
+    """A window covered while another farm's window is built: the logo in
+    the middle, breathing. The build holds the window's thread, so it calls
+    :meth:`tick` as it goes to keep the logo moving. :meth:`reveal` then
+    grows the logo while the cover fades, showing the window under it."""
+
+    def __init__(self, window: QWidget, dark: bool, text: str = "", scale: float = 1.0) -> None:
+        super().__init__(window)
+        self.dark, self.text, self.base = dark, text, scale
+        self.logo = QPixmap(str(LOGO))
+        self.started = time.monotonic()
+        self.last_frame = self.last_events = 0.0
+        self.revealing = 0.0  # 0: loading (breathing); up to 1: fully shown through
+        # Covers it all while loading: nothing under it is drawn again for each frame.
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        self.setGeometry(window.rect())
+        window.installEventFilter(self)  # follows the window's size (maximized as it shows)
+        self.timer = QTimer(self, interval=16, timeout=self.update)  # breathes between ticks too
+        self.timer.start()
+        self.raise_()
+        self.show()
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802 (Qt's name)
+        if obj is self.parent() and event.type() == QEvent.Type.Resize:
+            self.setGeometry(obj.rect())
+        return False
+
+    def scale(self) -> float:
+        """The logo's size now, as a share of LOGO_SIZE."""
+        if self.revealing:
+            return self.base
+        breath = math.sin(2 * math.pi * (time.monotonic() - self.started) / PULSE_S)
+        return self.base * (1 + PULSE * breath)
+
+    def tick(self) -> None:
+        """Draw the next frame, if it's time: called while the window is built."""
+        now = time.monotonic()
+        if now - self.last_frame < FRAME_S:
+            return
+        self.last_frame = now
+        self.repaint()  # just the cover, at once: handling every waiting event would slow the build
+        if now - self.last_events >= EVENTS_S:  # so Windows doesn't call COCFARM "Not responding"
+            self.last_events = now
+            # Not the mouse or keyboard: a click now would reach a half-made page.
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+
+    def reveal(self) -> None:
+        """Grow the logo away and fade the cover, showing the window."""
+        self.timer.stop()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)  # the window is usable at once
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)  # see-through as it fades
+        self.base = self.scale()
+        self.revealing = 1e-6
+
+        def step(t: float) -> None:
+            self.revealing = max(t, 1e-6)
+            self.update()
+
+        def done() -> None:
+            self.hide()
+            self.deleteLater()
+
+        _animate(REVEAL_MS, QEasingCurve.Type.InOutCubic, step, done)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt's name)
+        t = self.revealing
+        p = QPainter(self)
+        p.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
+        p.setOpacity(1 - t)
+        p.fillRect(self.rect(), BACKGROUND if self.dark else LIGHT_BACKGROUND)
+        middle = self.rect().center()
+        if not self.logo.isNull():
+            size = LOGO_SIZE * self.scale() * (1 + (REVEAL_GROW - 1) * t)
+            p.setOpacity(1 - t * t)  # the logo stays a moment longer than the cover
+            p.drawPixmap(QRectF(middle.x() - size / 2, middle.y() - size / 2 - 20, size, size),
+                         self.logo, QRectF(self.logo.rect()))
+        if self.text and not t:
+            p.setOpacity(1)
+            p.setPen(FAINT if self.dark else LIGHT_FAINT)
+            p.setFont(QApplication.font())
+            p.drawText(QRectF(0, middle.y() + LOGO_SIZE / 2 + 10, self.width(), 24),
+                       Qt.AlignmentFlag.AlignCenter, self.text)
+        p.end()
 
 
 def finish(window) -> None:

@@ -24,11 +24,13 @@ from pathlib import Path
 from typing import Callable
 
 from farmbot import ports
+from farmbot import standard
 from farmbot.config import DeviceConfig
-from farmbot.device import NO_WINDOW, AdbDevice, DeviceError, NoAnswer
+from farmbot.device import NO_WINDOW, AdbDevice, DeviceError, NoAnswer, switch_off_ad_apps
 
 log = logging.getLogger(__name__)
 
+AD_PACKAGES = ("com.android.ld.appstore",)  # LDPlayer's store, whose "Top-Up via LDPlayer" ad opens over the game
 CONSOLE_EXE = "ldconsole.exe"
 ADB_EXE = "adb.exe"
 DEFAULT_ROOTS = (Path("C:/LDPlayer"), Path("D:/LDPlayer"), Path("C:/Program Files/LDPlayer"))
@@ -168,22 +170,11 @@ def instances(install: Install, run: Runner = _run) -> list[Instance]:
 
 
 def read_settings(install: Install, index: int) -> dict:
-    """CPU cores, memory and the ADB switch from the instance's config file."""
+    """The instance's config file (empty if it can't be read)."""
     try:
-        data = json.loads(install.config_file(index).read_text(encoding="utf-8"))
+        return json.loads(install.config_file(index).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return {"cpus": data.get("advancedSettings.cpuCount"), "memory": data.get("advancedSettings.memorySize"),
-            "adb": bool(data.get("basicSettings.adbDebug"))}
-
-
-def enable_adb(install: Install, index: int) -> None:
-    """Switch on "Local ADB connection" (only while the instance is stopped:
-    LDPlayer rewrites the file when it closes)."""
-    path = install.config_file(index)
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["basicSettings.adbDebug"] = 1
-    path.write_text(json.dumps(data, indent=4, ensure_ascii=False), encoding="utf-8")
 
 
 def _memory(mb: int) -> int:
@@ -191,39 +182,74 @@ def _memory(mb: int) -> int:
     return next((m for m in MEMORY_SIZES if m >= mb), MEMORY_SIZES[-1])
 
 
-def setup_needed(inst: Instance, settings: dict, cfg: DeviceConfig) -> list[str]:
-    """What has to change on the instance, in words (empty: nothing)."""
-    changes = []
-    if cfg.set_display and (inst.width, inst.height, inst.dpi) != (cfg.display_width, cfg.display_height, cfg.display_dpi):
-        changes.append(f"display {inst.width}x{inst.height} {inst.dpi} DPI -> "
-                       f"{cfg.display_width}x{cfg.display_height} {cfg.display_dpi} DPI")
-    if cfg.set_resources and settings:
-        if settings.get("cpus") != cfg.cpus:
-            changes.append(f"CPU {settings.get('cpus')} -> {cfg.cpus}")
-        if settings.get("memory") != _memory(cfg.memory):
-            changes.append(f"memory {settings.get('memory')} MB -> {_memory(cfg.memory)} MB")
-    if cfg.enable_adb and settings and not settings.get("adb"):
-        changes.append("ADB on")
+# farmbot.standard as ``ldconsole modify`` flags, with the config-file key
+# each one is read back from.
+MODIFY = {"--cpu": ("advancedSettings.cpuCount", standard.CPUS),
+          "--memory": ("advancedSettings.memorySize", _memory(standard.MEMORY)),
+          "--manufacturer": ("propertySettings.phoneManufacturer", standard.MANUFACTURER),
+          "--model": ("propertySettings.phoneModel", standard.MODEL)}
+# What ldconsole can't set: written into the config file while the instance
+# is stopped (LDPlayer rewrites the file when it closes). Frame rate: 60, no
+# vertical sync, no "high frame rate" mode.
+CONFIG = {"basicSettings.fps": standard.FPS, "basicSettings.verticalSync": False,
+          "basicSettings.heightFrameRate": False}
+ADB_KEY = "basicSettings.adbDebug"
+
+
+def _same(have, want) -> bool:
+    if isinstance(want, str):
+        return str(have or "").strip().lower() == want.lower()
+    if isinstance(want, bool):
+        return bool(have) == want
+    return have == want
+
+
+def setup_needed(inst: Instance, settings: dict, cfg: DeviceConfig) -> dict[str, object]:
+    """What has to change for farmbot.standard, as ``modify`` flags and
+    config-file keys -> wanted value (empty: nothing). A config file that
+    can't be read leaves only the display to check."""
+    changes: dict[str, object] = {}
+    if (inst.width, inst.height, inst.dpi) != (standard.WIDTH, standard.HEIGHT, standard.DPI):
+        changes["--resolution"] = f"{standard.WIDTH},{standard.HEIGHT},{standard.DPI}"
+    if not settings:
+        return changes
+    for flag, (key, want) in MODIFY.items():
+        if not _same(settings.get(key), want):
+            changes[flag] = want
+    for key, want in CONFIG.items():
+        if not _same(settings.get(key), want):
+            changes[key] = want
+    if cfg.enable_adb and not settings.get(ADB_KEY):
+        changes[ADB_KEY] = 1
     return changes
 
 
-def set_up(install: Install, inst: Instance, cfg: DeviceConfig, run: Runner = _run,
+def describe_changes(inst: Instance, settings: dict, changes: dict[str, object]) -> str:
+    """The changes in words, e.g. "--cpu 3 -> 2"."""
+    def was(name: str):
+        if name == "--resolution":
+            return f"{inst.width},{inst.height},{inst.dpi}"
+        return settings.get(MODIFY[name][0] if name in MODIFY else name)
+    return ", ".join(f"{name.lstrip('-')} {was(name)} -> {want}" for name, want in changes.items())
+
+
+def set_up(install: Install, inst: Instance, changes: dict[str, object], run: Runner = _run,
            sleep: Callable[[float], None] = time.sleep) -> None:
-    """Stop the instance if needed, then apply the display, CPU, memory and
-    ADB settings. It is started again by :func:`open_device`."""
+    """Stop the instance if needed, then apply ``changes`` (from
+    :func:`setup_needed`). It is started again by :func:`open_device`."""
     console, index = str(install.console), str(inst.index)
     if inst.running:
         log.info("Closing %s to change its settings", install.name)
         _quit(install, inst, run, sleep)
-    args = [console, "modify", "--index", index]
-    if cfg.set_display:
-        args += ["--resolution", f"{cfg.display_width},{cfg.display_height},{cfg.display_dpi}"]
-    if cfg.set_resources:
-        args += ["--cpu", str(min(max(cfg.cpus, 2), 4)), "--memory", str(_memory(cfg.memory))]
-    if len(args) > 4:
-        run(args)
-    if cfg.enable_adb and not read_settings(install, inst.index).get("adb", True):
-        enable_adb(install, inst.index)
+    flags = [arg for name, want in changes.items() if name.startswith("--") for arg in (name, str(want))]
+    if flags:
+        run([console, "modify", "--index", index, *flags])
+    keys = {name: want for name, want in changes.items() if not name.startswith("--")}
+    if keys:  # after modify, which rewrites the same file
+        path = install.config_file(inst.index)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.update(keys)
+        path.write_text(json.dumps(data, indent=4, ensure_ascii=False), encoding="utf-8")
 
 
 def _quit(install: Install, inst: Instance, run: Runner, sleep: Callable[[float], None]) -> None:
@@ -297,12 +323,21 @@ def clear_port(install: Install, inst: Instance, installs: list[Install], run: R
     if kind in ("ldplayer", "bluestacks", "mumu"):
         from farmbot import instances as farms
 
-        farm = farms.farm_playing(kind)
+        def holds(cfg: DeviceConfig) -> bool:
+            """The farm on the LDPlayer instance holding the port (same index, the other install)."""
+            if kind != "ldplayer" or other is None:
+                return True
+            mine = pick_install(cfg, installs)
+            return cfg.ldplayer_index == inst.index and mine is not None and mine.path == other.path
+
+        farm = farms.farm_playing(kind, holds)
         if farm is not None:  # never close another farm's emulator
             holder = other.name if other else farms.EMULATOR_NAMES[kind]
-            raise DeviceError(f"farm {farm}'s {holder} is using port {inst.port}, which {install.name} instance "
-                              f"{inst.index + 1} needs. Only one of the two can play: give one of them another "
-                              "instance on the Farms page.")
+            message = (f"farm {farm}'s {holder} is using port {inst.port}, which {install.name} instance "
+                       f"{inst.index + 1} needs. Only one of the two can play: give one of them another "
+                       "instance on the Farms page.")
+            # Another emulator (MuMu's first instance also listens on 5555): this farm can move.
+            raise DeviceError(message) if kind == "ldplayer" else PortHeldByFarm(message, farm, f"farm {farm}'s {holder}")
     if kind == "ldplayer":
         name = other.name
         log.warning("Closing %s: it is using port %d, which %s needs", name, inst.port, install.name)
@@ -333,6 +368,99 @@ def clear_port(install: Install, inst: Instance, installs: list[Install], run: R
     raise DeviceError(f"{name} did not close (it still holds port {inst.port}, which {install.name} needs)")
 
 
+MOVE_WAIT = 1800  # seconds a farm waits for another to copy its instance away (copying takes minutes)
+
+
+class PortHeldByFarm(DeviceError):
+    """Another farm's emulator (not an LDPlayer) holds this instance's port."""
+
+    def __init__(self, message: str, farm: int, holder: str):
+        super().__init__(message)
+        self.farm, self.holder = farm, holder
+
+
+def sharing_farm(install: Install, inst: Instance, installs: list[Install]) -> int | None:
+    """Another farm playing another LDPlayer's instance with this one's
+    number, so its port: only one of the two could connect."""
+    from farmbot import instances as farms
+
+    def shares(cfg: DeviceConfig) -> bool:
+        if cfg.ldplayer_index != inst.index:
+            return False
+        theirs = pick_install(cfg, installs)
+        return theirs is not None and theirs.path != install.path
+
+    return farms.farm_playing("ldplayer", shares)
+
+
+def _used_elsewhere(install: Install, installs: list[Install], run: Runner) -> set[int]:
+    """The instance numbers the other LDPlayers have (their ports are taken)."""
+    used: set[int] = set()
+    for other in installs:
+        if other.path != install.path:
+            try:
+                used |= {i.index for i in instances(other, run)}
+            except DeviceError as exc:
+                log.warning("Couldn't list %s's instances: %s", other.name, exc)
+    return used
+
+
+def move_off_shared_port(cfg: DeviceConfig, install: Install, inst: Instance, installs: list[Install],
+                         other: int, run: Runner = _run, sleep: Callable[[float], None] = time.sleep,
+                         owner_of: Callable[[int], Path | None] | None = None, holder: str = "") -> Instance:
+    """Copy this farm's instance (the game and its login with it) to a new
+    one whose port no other LDPlayer (nor, with ``owner_of``, any other
+    program) uses, and play that from now on (``cfg.ldplayer_index``
+    changes). The old instance is kept. ``holder``: what holds the port,
+    if not another LDPlayer's instance."""
+    from farmbot import instances as farms
+
+    log.warning("%s has the same port (%d) as %s instance %d: copying this instance to one with a port of its "
+                "own (takes a few minutes)", holder or f"Farm {other}'s LDPlayer instance {inst.index + 1}",
+                inst.port, install.name, inst.index + 1)
+    avoid = _used_elsewhere(install, installs, run)
+    if owner_of is not None:  # ports held by other programs (MuMu: 5555): never copied to
+        listed = {i.index for i in instances(install, run)}
+        avoid |= {k for k in range(len(listed) + len(avoid) + 2) if k not in listed and owner_of(5555 + 2 * k)}
+    farms.hook("status", f"Copying {install.name} instance {inst.index + 1} to one with a port of its own "
+                         "(a few minutes)…")
+    key = farms.create_instance(cfg, run=None if run is _run else run, close=True, sleep=sleep,
+                                avoid=avoid, installs=installs)
+    moved = next((i for i in instances(install, run) if i.index == int(key)), None)
+    if moved is None:
+        raise DeviceError(f"{install.name} has no instance {int(key) + 1} after copying")
+    log.warning("This farm now plays %s instance %d (port %d). Instance %d is kept: delete it on the Farms page "
+                "if you don't need it", install.name, moved.index + 1, moved.port, inst.index + 1)
+    cfg.ldplayer_index = moved.index
+    farms.hook("moved", inst.index, moved.index)  # kept in its settings straight away
+    return moved
+
+
+def wait_for_move(inst: Instance, other: int, sleep: Callable[[float], None] = time.sleep,
+                  clock: Callable[[], float] = time.monotonic) -> bool:
+    """Wait while farm ``other`` copies its instance away from this one's
+    port. True once it has (or stopped); False if it connected there instead."""
+    from farmbot import instances as farms
+
+    from farmbot.game import Stopped
+
+    log.info("Farm %d shares this instance's port (%d): waiting while it moves to an instance of its own",
+             other, inst.port)
+    farms.hook("status", f"Waiting for farm {other} to move to an emulator instance of its own…")
+    deadline = clock() + MOVE_WAIT
+    while True:
+        if farms.hook("stopped"):
+            raise Stopped("stopped while waiting for another farm to move")
+        theirs = farms.active.get(other)
+        if theirs is None or theirs.ldplayer_index != inst.index:
+            return True
+        if other in farms.connected:
+            return False
+        if clock() >= deadline:
+            raise DeviceError(f"farm {other} didn't move off port {inst.port} within {MOVE_WAIT // 60} minutes")
+        sleep(5)
+
+
 class WrongEmulator(DeviceError):
     """The address answered, but from another emulator."""
 
@@ -353,25 +481,47 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
     installs = find()
     install = pick_install(cfg, installs)
     if install is None:
-        raise DeviceError("LDPlayer was not found. Install LDPlayer 9 or newer, or pick its folder in Settings.")
+        raise DeviceError("LDPlayer was not found. Install LDPlayer 9 or newer, or pick another emulator in Setup.")
     found = instances(install, run)
     inst = next((i for i in found if i.index == cfg.ldplayer_index), None)
     if inst is None:
         raise DeviceError(f"{install.name} has no instance {cfg.ldplayer_index + 1} "
                           f"(have: {', '.join(str(i.index + 1) for i in found) or 'none'}).")
-    changes = setup_needed(inst, read_settings(install, inst.index), cfg)
+    other = sharing_farm(install, inst, installs)
+    if other is not None:
+        from farmbot import instances as farms
+
+        # One of the two moves to an instance with a port of its own: the
+        # later farm, or this one if the other is already playing.
+        me = farms.current() or 1
+        if other in farms.connected or other < me or not wait_for_move(inst, other, sleep, clock):
+            inst = move_off_shared_port(cfg, install, inst, installs, other, run, sleep)
+        elif inst.running and (owner_of or ports.owner)(inst.port) is None:
+            # It started while the other held the port: no connection until started again.
+            log.info("Restarting %s to get its connection", install.name)
+            _quit(install, inst, run, sleep)
+            inst.running = False
+    settings = read_settings(install, inst.index)
+    changes = setup_needed(inst, settings, cfg)
     if changes:
-        log.warning("Setting up %s: %s (restarts it)", install.name, "; ".join(changes))
-        set_up(install, inst, cfg, run, sleep)
+        log.warning("Setting up %s: %s (restarts it)", install.name, describe_changes(inst, settings, changes))
+        set_up(install, inst, changes, run, sleep)
         inst.running = False
-    if clear_port(install, inst, installs, run, sleep, owner_of) and inst.running:
+    try:
+        cleared = clear_port(install, inst, installs, run, sleep, owner_of)
+    except PortHeldByFarm as exc:
+        # Another farm's MuMu or BlueStacks holds the port: this farm moves.
+        inst = move_off_shared_port(cfg, install, inst, installs, exc.farm, run, sleep, owner_of or ports.owner,
+                                    exc.holder)
+        cleared = clear_port(install, inst, installs, run, sleep, owner_of)
+    if cleared and inst.running:
         # It started after the other one, so without a connection: start it again.
         log.info("Restarting %s to get its connection", install.name)
         _quit(install, inst, run, sleep)
         inst.running = False
     if not inst.running:
         if not cfg.launch_emulator:
-            raise DeviceError(f"{install.name} is not running. Start it, or turn on 'Start the emulator automatically'.")
+            raise DeviceError(f"{install.name} is not running. Start it, or turn on 'Open the emulator automatically' in Setup.")
         log.info("Starting %s (instance %d)", install.name, inst.index + 1)
         run([str(install.console), "launch", "--index", str(inst.index)])
     launched = clock()
@@ -390,6 +540,7 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
                     # quietly farm in the wrong emulator.
                     raise WrongEmulator(f"{inst.serial} reached BlueStacks instead of {install.name}: both use "
                                         f"port {5555 + 2 * inst.index}. Close BlueStacks, or pick BlueStacks in Setup.")
+                switch_off_ad_apps(device, AD_PACKAGES, install.name)
                 log.info("Connected to %s at %s", install.name, inst.serial)
                 return device
         except WrongEmulator:
