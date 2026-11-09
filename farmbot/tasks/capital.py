@@ -9,13 +9,20 @@ along is picked, and its Attack opens "Attack Now?". The army is the
 player's own, set in the game (it must be full to attack), and is read from
 the troop bar once the raid starts:
 
-* the troops are dropped in one clump; Super Miners are healed where they
-  are heading when their health bars fall under ``miner_heal_at``, Flying
-  Fortresses once one falls under ``fortress_heal_at``;
+* the troops are dropped in one clump;
+* Super Miners (and other ground troops) are healed on a schedule: the
+  first heal 25 s after the drop (sooner if one falls under
+  ``miner_heal_at``), the next 17 s later, each just ahead of them over the
+  buildings they'll dig through (they stay there longest). A heal waits a
+  little while they read healthy. They're mostly underground, so their bars
+  show only now and then: when they near the screen's edge, or are lost
+  near it, the view is dragged after them;
+* Flying Fortresses are healed once one falls under ``fortress_heal_at``;
 * skeleton spells go in the middle of the base at the start;
-* lightning strikes at the start where the most buildings stand close
-  together (overlapping ones, often packed in a corner), so its splash hits
-  them all; so does any spell it has no picture of.
+* lightning goes where the most buildings stand close together, so its
+  splash hits them all: with Super Miners, on those nearest the miners once
+  they're seen (cast at the drop, it hit buildings they never reached);
+  otherwise at the start. So does any spell it has no picture of.
 
 Capital Gold is never spent.
 """
@@ -85,9 +92,24 @@ BAR_LOST = 100  # brightest a bar's lost part gets (clear ~50, under smoke up to
 PALE_BLUE = 62  # % of green a smoky bar's blue stays under (seen 49-59; the rings' glow 67-83)
 HEAL_LEAD = 1.0  # s: a heal lands where the units will be this much later
 HEAL_GAP = 5.0  # s between two heals
-HEAL_FALLBACK = 40.0  # s after the drop: a heal still unused goes where the units were last seen
-HEALTHY_MARGIN = 0.2  # over heal_at: units read this healthy hold the fallback heal back
-HEALTHY_FOR = 8.0  # s since they last read healthy before the fallback heal may go
+# Super Miners (raids of 2026-11-08): heals ahead over the buildings, on a
+# schedule, took Barbarian Camp from 68% to 3 stars and Wizard Valley from
+# 49% to 98%; healing only on low readings left them unhealed (rarely seen).
+FIRST_HEAL_BY = 25.0  # s after the drop
+HEAL_EVERY = 17.0  # s between heals (10 s apart, the second landed on a fresh clump)
+SEEN_LATELY = 6.0  # s: a sighting older than this is too stale to heal on (raid 4's guess was wasted)
+STILL_FINE = 0.9  # an on-time heal waits while every recent reading is this healthy...
+FINE_FOR = 3.0  # ...over this many s...
+FINE_WAIT = 8.0  # ...for at most this long past its time
+HEAL_REACH = 70  # px: a heal's circle at the raid's zoom
+MINER_REACH = 150  # px from the miners: how far ahead a heal or the lightning may go
+LIGHTNING_BY = 45.0  # s: miners never seen, the lightning goes on the most packed buildings anywhere
+PAN_EDGE = 110  # px: miners seen this near the screen's edge are followed
+PAN_LOST = 8.0  # s unseen, last seen off-centre: followed too
+PAN_GAP = 6.0  # s between two drags of the view
+MAX_PANS = 3  # drags a battle
+PAN_MOST = 260  # px: the longest drag
+PAN_MS = 700  # slow, so the view doesn't fling on
 BATTLE_LENGTH = 200.0  # s: a raid battle is 3 minutes
 DROP_MARGINS = (31, 15)  # px across kept off the deploy ground's edge (the second for a narrow strip)
 DROP_TRIES = 4  # spots tried before giving up on dropping a card
@@ -454,24 +476,43 @@ def _base_grass(hsv: np.ndarray) -> np.ndarray:
     return cv2.morphologyEx(base, cv2.MORPH_OPEN, np.ones((7, 7), np.uint8))
 
 
-def lightning_spots(screen: np.ndarray, n: int) -> list[tuple[int, int]]:
-    """Where n lightning spells hit the most buildings: the base's colourful
-    roofs and towers (not its grass, walls or water), counted within the
-    splash's reach; each next spot away from the ones before."""
+def buildings(screen: np.ndarray) -> np.ndarray:
+    """The base's colourful roofs and towers (not its grass, walls or
+    water), as a 0/1 float mask."""
     hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
     h, s, v = (hsv[..., i].astype(np.int16) for i in range(3))
     area = cv2.morphologyEx(_base_grass(hsv), cv2.MORPH_CLOSE, np.ones((61, 61), np.uint8))  # over the buildings
     warm = ((h <= 25) | (h >= 160)) & (s >= 130) & (v >= 120)  # gold, orange and red roofs and towers
     purple = (h >= 125) & (h < 160) & (s >= 80) & (v >= 80)
-    buildings = ((warm | purple) & (area > 0)).astype(np.float32)
+    return ((warm | purple) & (area > 0)).astype(np.float32)
+
+
+def _disk(r: int) -> np.ndarray:
+    disk = np.zeros((2 * r + 1, 2 * r + 1), np.float32)
+    cv2.circle(disk, (r, r), r, 1, -1)
+    return disk
+
+
+def _distance(shape, point: tuple[float, float]) -> np.ndarray:
+    ys, xs = np.mgrid[0:shape[0], 0:shape[1]]
+    return np.hypot(xs - point[0], ys - point[1])
+
+
+def lightning_spots(screen: np.ndarray, n: int, near: tuple[float, float] | None = None,
+                    reach: float = MINER_REACH) -> list[tuple[int, int]]:
+    """Where n lightning spells hit the most buildings, counted within the
+    splash's reach; each next spot away from the ones before. With ``near``,
+    only within ``reach`` of it (the miners: buildings they'll get to)."""
+    disk = _disk(LIGHTNING_REACH)
+    hit = cv2.filter2D(buildings(screen), -1, disk)
+    if near is not None:
+        hit[_distance(hit.shape, near) > reach] = 0
     r = LIGHTNING_REACH
-    reach = np.zeros((2 * r + 1, 2 * r + 1), np.float32)
-    cv2.circle(reach, (r, r), r, 1, -1)
-    hit = cv2.filter2D(buildings, -1, reach)
+    reach_sum = disk.sum()
     spots = []
     for _ in range(n):
         _, most, _, (x, y) = cv2.minMaxLoc(hit)
-        if most < reach.sum() * 0.05:  # nothing much left to hit
+        if most < reach_sum * 0.05:  # nothing much left to hit
             break
         spots.append((int(x), int(y)))
         cv2.circle(hit, (x, y), 2 * r, 0, -1)
@@ -561,9 +602,10 @@ def battle(game: Game, cfg) -> float:
     for name, n in army.troops:
         _drop_somewhere(game, army.x(name), points, n, name)
     dropped = game.clock()
+    miners = army.main == "super_miner"
     for name, _ in army.spells:
-        if name == "heal" or (name == "skeleton" and middle is None):
-            continue
+        if name == "heal" or (name == "skeleton" and middle is None) or (name == "lightning" and miners):
+            continue  # with miners, the lightning waits for them to be seen (in _heal)
         if name == "skeleton":
             spots = [(middle[0] + random.randint(-40, 40), middle[1] + random.randint(-40, 40))
                      for _ in range(MAX_STRIKES)]
@@ -657,16 +699,21 @@ def _heal(game: Game, army: Army, heal_at: float, dropped: float) -> None:
     if seen is not None:  # its card, found in the bar
         card = seen.x
     groups = 2 if army.main == "flying_fortress" else 1
-    last_seen, last_heal, healthy = None, -HEAL_GAP, -HEAL_FALLBACK
+    if groups == 1:
+        lightning = army.x("lightning") if army.main == "super_miner" and army.count("lightning") else None
+        _heal_miners(game, card if left else None, lightning, heal_at, dropped)
+        return
+    # Fortresses: their bar shows mostly while they're hit, so one out of
+    # sight is mostly unhurt (seen 2026-11-07): healed only on a low reading,
+    # never on a guess.
+    last_seen, last_heal = None, -HEAL_GAP
     while left and game.clock() - dropped < BATTLE_LENGTH:
         screen = game.refresh()
         if game.find(T.CAPITAL_RESULT_MAP) is not None:
             return
         now = game.clock()
         bars = health_bars(screen)
-        spot, guess = None, False
-        if bars and min(b[2] for b in bars) >= heal_at + HEALTHY_MARGIN:
-            healthy = now
+        spot = None
         if bars:
             where = (float(np.mean([b[0] for b in bars])), float(np.mean([b[1] for b in bars])), now)
             spot = heal_spot(bars, heal_at, groups)
@@ -676,22 +723,152 @@ def _heal(game: Game, army: Army, heal_at: float, dropped: float) -> None:
                 spot = (int(spot[0] + (where[0] - last_seen[0]) / dt * HEAL_LEAD),
                         int(spot[1] + (where[1] - last_seen[1]) / dt * HEAL_LEAD))
             last_seen = where
-        # Not for fortresses: their bar shows mostly while they're hit, so one
-        # out of sight is mostly unhurt (seen 2026-11-07), and a heal on a
-        # guess went to a healthy one each time.
-        if (groups == 1 and spot is None and last_seen is not None and now - dropped > HEAL_FALLBACK
-                and now - last_heal > 15
-                and last_seen[2] > last_heal  # seen again since the last heal: not the same stale spot twice
-                and now - healthy > HEALTHY_FOR):  # not while they're plainly fine
-            spot, guess = (int(last_seen[0]), int(last_seen[1]) + 20), True
         if spot is not None and now - last_heal >= HEAL_GAP:
             if not slot_ready(screen, card):
                 return  # the heals are used up
-            if guess:
-                log.info("Clan Capital: no unit seen hurt enough in a while; healing where they were last")
-            log.info("Clan Capital: heal at %s (health %s)", spot, ", ".join(f"{b[2]:.0%}" for b in bars) or "?")
+            log.info("Clan Capital: heal at %s (health %s)", spot, ", ".join(f"{b[2]:.0%}" for b in bars))
             if not _drop(game, card, spot, 1):
                 return  # no heals left after all
             left -= 1
             last_heal = game.clock()
+        game.wait(0.3)
+
+
+# --- Super Miners ------------------------------------------------------------
+
+def heal_ahead(screen: np.ndarray, where: tuple[float, float],
+               heading: tuple[float, float] | None = None) -> tuple[int, int]:
+    """Where a heal helps the miners at ``where`` most: over the buildings
+    nearest them, ahead of them when they're heading somewhere (they dig
+    under a building until it falls, so they stay in a heal there longest),
+    yet close enough that they're in its circle now."""
+    x0, y0 = where
+    disk = _disk(HEAL_REACH)
+    density = cv2.filter2D(buildings(screen), -1, disk / disk.sum())
+    ys, xs = np.mgrid[0:density.shape[0], 0:density.shape[1]]
+    dx, dy = xs - x0, ys - y0
+    dist = np.hypot(dx, dy)
+    score = density * (1 - 0.5 * dist / MINER_REACH)  # nearer is surer: they must get there
+    score[dist > MINER_REACH] = 0
+    top, bottom = BAR_AREA
+    score[:top], score[bottom:] = 0, 0
+    if heading is not None:
+        n = float(np.hypot(*heading))
+        if n > 0:
+            score *= 1 + 0.6 * (dx * heading[0] + dy * heading[1]) / (n * np.maximum(dist, 1))
+    if score.max() <= 0:
+        return int(x0), int(y0)  # no buildings near: on them
+    y, x = np.unravel_index(int(np.argmax(score)), score.shape)
+    d = float(np.hypot(x - x0, y - y0))
+    most = HEAL_REACH * 0.8  # the miners still inside the circle
+    if d > most:
+        x, y = x0 + (x - x0) * most / d, y0 + (y - y0) * most / d
+    return int(x), int(y)
+
+
+def _heading(track: list[tuple[float, float, float]]) -> tuple[float, float] | None:
+    """Which way the miners moved over the last second or more, or None."""
+    if not track:
+        return None
+    t, x, y = track[-1]
+    older = [p for p in track if 1.0 <= t - p[0] < SEEN_LATELY]
+    if not older:
+        return None
+    vx, vy = x - older[-1][1], y - older[-1][2]
+    return (vx, vy) if np.hypot(vx, vy) > 5 else None
+
+
+def _pan(game: Game, towards: tuple[float, float], screen: np.ndarray, cards: list[int]) -> None:
+    """Drags the view so ``towards`` moves toward the screen's middle (at
+    most PAN_MOST), slowly, inside the battlefield. Warns if a card's count
+    changed meanwhile: a drag that cast the selected spell (not seen yet)."""
+    top, bottom = BAR_AREA
+    cx, cy = screen.shape[1] / 2, (top + bottom) / 2
+    vx, vy = cx - towards[0], cy - towards[1]
+    n = float(np.hypot(vx, vy))
+    if n < 1:
+        return
+    k = min(1.0, PAN_MOST / n)
+    vx, vy = vx * k, vy * k
+    before = {x: _corner(screen, x) for x in cards if slot_ready(screen, x)}
+    log.info("Clan Capital: dragging the view after the miners (last seen at %d, %d)", *towards)
+    game.swipe(int(cx - vx / 2), int(cy - vy / 2), int(cx + vx / 2), int(cy + vy / 2), PAN_MS)
+    game.wait(0.5)
+    after = game.refresh()
+    for x, was in before.items():
+        if not slot_ready(after, x) or float(np.abs(_corner(after, x) - was).mean()) >= DEPLOYED:
+            log.warning("Clan Capital: the card at x %d changed while dragging the view: the drag may have cast it", x)
+
+
+def _heal_miners(game: Game, card: int | None, lightning: int | None, heal_at: float, dropped: float) -> None:
+    """Heals (and the lightning) for Super Miners, and the view kept on them."""
+    track: list[tuple[float, float, float]] = []  # (t, x, y): where they were seen (under their bars)
+    readings: list[tuple[float, float]] = []  # (t, the lowest health read)
+    last_heal: float | None = None
+    used, pans, last_pan = 0, 0, -PAN_GAP
+    while game.clock() - dropped < BATTLE_LENGTH:
+        screen = game.refresh()
+        if game.find(T.CAPITAL_RESULT_MAP) is not None:
+            return
+        heals = card is not None and slot_ready(screen, card)
+        if not heals and lightning is None:
+            return
+        now = game.clock()
+        bars = health_bars(screen)
+        if bars:
+            track.append((now, float(np.mean([b[0] for b in bars])), float(np.mean([b[1] for b in bars])) + 20))
+            readings.append((now, min(b[2] for b in bars)))
+        recent = [p for p in track if now - p[0] < SEEN_LATELY]
+        where = (recent[-1][1], recent[-1][2]) if recent else None
+
+        if lightning is not None:
+            spots = lightning_spots(screen, MAX_STRIKES, near=where) if where is not None else []
+            if not spots and now - dropped >= LIGHTNING_BY:
+                spots = lightning_spots(screen, MAX_STRIKES)  # never seen near any: the most packed anywhere
+                log.info("Clan Capital: miners not seen near buildings; lightning on the most packed ones")
+                if not spots:
+                    lightning = None
+            if spots:
+                for spot in spots:
+                    if not slot_ready(game.refresh(), lightning):
+                        break
+                    log.info("Clan Capital: lightning at %s (miners at %s)", spot,
+                             f"{where[0]:.0f}, {where[1]:.0f}" if where else "?")
+                    _drop(game, lightning, spot, 1)
+                lightning = None
+                continue
+
+        if heals and where is not None:
+            since = now - (last_heal if last_heal is not None else dropped)
+            due = FIRST_HEAL_BY if last_heal is None else HEAL_EVERY
+            low = bool(bars) and readings[-1][1] < heal_at
+            lately = [h for t, h in readings if now - t < FINE_FOR]
+            fine = bool(lately) and min(lately) >= STILL_FINE
+            why = None
+            if low and (last_heal is None or since >= HEAL_EVERY):
+                why = "hurt"
+            elif since >= due and not (fine and since < due + FINE_WAIT):
+                why = "on time"
+            if why:
+                spot = heal_ahead(screen, where, _heading(recent))
+                log.info("Clan Capital: heal %d (%s) at %s, miners at %.0f, %.0f, health %s", used + 1, why, spot,
+                         where[0], where[1], ", ".join(f"{b[2]:.0%}" for b in bars) or "not seen just now")
+                if _drop(game, card, spot, 1):
+                    used += 1
+                    last_heal = game.clock()
+                else:
+                    card = None  # none left after all
+                continue
+
+        if track and pans < MAX_PANS and now - last_pan >= PAN_GAP:
+            t, x, y = track[-1]
+            top, bottom = BAR_AREA
+            w = screen.shape[1]
+            edge = x < PAN_EDGE or x > w - PAN_EDGE or y < top + PAN_EDGE or y > bottom - PAN_EDGE
+            off = abs(x - w / 2) > w / 4 or abs(y - (top + bottom) / 2) > (bottom - top) / 4
+            if (edge and now - t < SEEN_LATELY) or (off and now - t > PAN_LOST):
+                _pan(game, (x, y), screen, [c for c in (card, lightning) if c is not None])
+                pans, last_pan = pans + 1, game.clock()
+                track.clear()  # the view moved (how far, the map's edges decide): old sightings are off
+                continue
         game.wait(0.3)

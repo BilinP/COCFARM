@@ -251,14 +251,15 @@ def read_display(install: Install, instance: Instance) -> tuple[int, int, int] |
         return None
 
 
-def wanted_settings(cfg: DeviceConfig | None = None) -> dict[str, int]:
+def wanted_settings(cfg: DeviceConfig | None = None) -> dict[str, int | str]:
     """farmbot.standard as bluestacks.conf keys: display (Settings > Display),
     CPU cores / memory (Settings > Performance) and frame rate (60, no high
-    frame rate, no vertical sync). The phone model is left as it is:
-    BlueStacks keeps it as a device profile code, not a model name."""
+    frame rate, no vertical sync) and the phone (Settings > Device: a device
+    profile code, not a model name)."""
     return dict(fb_width=standard.WIDTH, fb_height=standard.HEIGHT, dpi=standard.DPI,
                 cpus=standard.CPUS, ram=standard.MEMORY,
-                max_fps=standard.FPS, enable_high_fps=0, enable_vsync=0)
+                max_fps=standard.FPS, enable_high_fps=0, enable_vsync=0,
+                device_profile_code=standard.BLUESTACKS_PROFILE)
 
 
 def settings_to_change(install: Install, instance: Instance, cfg: DeviceConfig) -> dict[str, int]:
@@ -427,8 +428,11 @@ EMULATOR_TRIES = 3  # times the emulator is started before the bot gives up on i
 # The sound the game makes (music) and the emulator's own (system, notifications).
 MUTED_STREAMS = (3, 1, 5)
 # Android 9 and newer have "cmd media_session volume"; older ones the "media" tool.
+# MuMu's Android 15 ignores media_session's 0 (left at 100, or put at 1 of 100):
+# "cmd audio set-volume" (Android 14 and newer) sets 0 there, so it goes last.
 _MUTE = ("cmd media_session volume --stream {s} --set 0 >/dev/null 2>&1; "
-         "media volume --stream {s} --set 0 >/dev/null 2>&1")
+         "media volume --stream {s} --set 0 >/dev/null 2>&1; "
+         "cmd audio set-volume {s} 0 >/dev/null 2>&1")
 
 
 def mute(device: Device) -> None:

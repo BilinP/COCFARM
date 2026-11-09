@@ -25,21 +25,23 @@ looks after your village, in **both the home village and the builder base**.
 **Farming**
 - ⚔️ **Farms the home village.** It finds bases with the loot you want, sends out every troop, hero and spell in your army, fires the heroes' abilities, and comes home. It can activate your **super troops** before a battle, paying with dark elixir.
 - 🎯 **Deploys right at the red line.** Troops land just outside the red line, or just outside the buildings where it can't be seen, not out at the map's edge.
-- 🏰 **Fits your Town Hall.** Loot to look for starts at amounts for your Town Hall, and what it hasn't unlocked yet is greyed out. Your village (from the game's Data Export) is a click away.
+- 🏰 **Fits your Town Hall.** The loot a base must have follows suggested amounts for your Town Hall, rising as it goes up (see them all in a table, or type your own). What you haven't unlocked yet is greyed out, and your village (from the game's Data Export) is a click away.
+- 📦 **Knows when to stop.** A battle ends early once your storages are full, and the loot cart is left alone while they are.
 - 🛠️ **Farms the builder base.** It plays both stages of builder battles with your hero and troops (an all **Night Witch** army works best), fires the hero's ability when it's charged, and uses the **Clock Tower**'s free boost.
 - 🔄 **Switches between villages for you.** With **Auto switch** on, it farms one village until its storages are full, then moves to the other.
-- 🏰 **Raids the Clan Capital (beta).** On Raid Weekends it uses every raid attack with the capital army you set in the game.
+- 🏰 **Raids the Clan Capital (beta).** On Raid Weekends it uses every raid attack with the capital army you set in the game. Super Miners get Healing spells just ahead of where they're digging, and Lightning goes on the defences in their way.
 
 **Looking after your village**
 - 💰 **Collects everything.** Resources, the loot cart, and in the builder base the gem mine and the elixir cart.
-- 🧱 **Spends your spare loot (if you turn it on).** It upgrades as many walls as the spare covers, all at once. When a storage is full it starts the dearest upgrades it can pay for: buildings and heroes in the order you pick, research and pets. This works in both villages and never uses gems.
+- 🧱 **Spends your spare loot (if you turn it on).** It upgrades as many walls as the spare covers, all at once. When a storage is full it starts the dearest upgrades it can pay for: buildings and heroes in the order you pick, research and pets. It also **upgrades the Town Hall**, **builds new buildings** as they unlock, and clears gravestones. This works in both villages and never uses gems.
 - 🤝 **Helps your clan.** It fills donation requests with troops and spells suited to each requester's Clan Castle level, and requests troops for you.
 
 **Running it**
-- 👥 **Farms several accounts at once (beta).** Switch on a farm for each emulator instance (LDPlayer, MuMu or BlueStacks, mixed as you like), all from one page. Each account keeps its own settings, picked by the player name in the game.
+- 👥 **Farms several accounts at once (beta).** Switch on a farm for each emulator instance (LDPlayer, MuMu or BlueStacks, mixed as you like), all from one page. Each account keeps its own settings, picked by the player name in the game, and one account is never farmed twice. Farms sharing a port are moved off it by themselves.
 - ⏰ **Plays when you want.** You pick the hours, a daily attack range and random breaks, so it plays more like a person.
-- 🛟 **Recovers by itself.** If the game gets stuck it restarts it, and if the emulator stops answering it restarts that too. It stops with the reason during a Clash of Clans maintenance break.
-- 🧑 **Plays like a person.** Switch on habits one by one (taps around a button, varied pauses and swipes, a battle rhythm of its own) and see how much time each adds.
+- 🛟 **Recovers by itself.** If the game gets stuck it restarts it, and if the emulator stops answering it restarts that too. A farm that stops anyway **starts again by itself** after a wait, maintenance breaks are waited out, and an extra (builder base, Clan Capital, upgrades) that keeps failing is paused instead of stopping the farm. A game that isn't in English is named rather than reported as stuck.
+- 📱 **Sets up the emulator the same way every time.** Screen size, CPU, memory, frame rate and phone model are set by itself, ads over the game are switched off, and the emulator is muted (with a switch to turn it off).
+- 🧑 **Plays like a person.** Switch on habits one by one (taps around a button, varied pauses and swipes, a battle rhythm of its own) and see in a table how much time each adds.
 - 📊 **Tracks your loot.** The History page shows every attack and what you gained.
 - 🔔 **Sends Discord alerts.** You'll hear when storage is full, when it stops (with a summary of the run), and get a daily summary.
 - ⬆️ **Updates itself** from GitHub releases, in one click, and shows what's new afterwards. It also adds itself to the Start menu, and to Installed apps so you can uninstall it.
@@ -74,8 +76,9 @@ Home village and builder base attacks were tested live on each of these (COCFARM
 
 Other versions will likely work too. If yours doesn't, please
 [report it](https://github.com/BilinP/COCFARM/issues/new/choose) with the emulator and its version.
-Run one emulator at a time: BlueStacks and LDPlayer use the same connection port.
-COCFARM sets the emulator's screen (860 × 672), CPU cores and memory by itself; you can turn that off under **Advanced**.
+BlueStacks, LDPlayer and MuMu Player can all run side by side.
+COCFARM sets the emulator's screen (860 × 672), CPU cores, memory, frame rate and phone model (a OnePlus 10 Pro) by itself,
+and mutes it; you can turn that off under **Advanced**.
 
 ### Several accounts at once (beta)
 
@@ -87,7 +90,8 @@ opens from the account at the bottom left of the side bar:
    instance, press **New instance** and pick an emulator. On LDPlayer and MuMu, it copies the last farm's
    instance, game included. On BlueStacks, COCFARM opens the **Multi-Instance Manager**: clone an instance
    there, and COCFARM adds the farm once it appears. The bin on an instance's row deletes it from the
-   emulator, after asking (an emulator's first instance is never deleted).
+   emulator, after asking (an emulator's first instance is never deleted). Instances of other emulators show
+   under **Other emulator instances**, ready to switch on.
 2. The copy is signed in to the same account. Open it once and switch to another account with Supercell ID.
    It stays on that account from then on.
 3. Pick the farms to run with their switches, then press **Start**. **Stop** switches them all off, each after
@@ -100,15 +104,30 @@ needs about 2 CPU cores and 4 GB of memory.
 
 ## A quick look
 
-| Home village | Builder base |
+| Farms | Home village: loot to look for |
 |---|---|
-| ![Home village settings](readme/home_village.png) | ![Builder base settings](readme/builder_base.png) |
-| Pick the loot a base must have, how to attack, and village chores. | Pick how builder battles are played. |
+| ![Farms page](readme/farms.png) | ![Home village settings](readme/home_village.png) |
+| Every emulator instance on this PC, one switch each. | Loot minimums for your Town Hall, with a table of every Town Hall's suggested amounts. |
+
+| Home village: attacking | Home village: upgrades |
+|---|---|
+| ![Attack settings](readme/attacking.png) | ![Upgrade settings](readme/upgrades.png) |
+| Troops, spells, heroes and super troops. | Walls, buildings, heroes, research and the Town Hall. |
+
+| Raid Weekend | Builder base |
+|---|---|
+| ![Raid Weekend settings](readme/raid_weekend.png) | ![Builder base settings](readme/builder_base.png) |
+| Clan Capital raids, with heals and Lightning for Super Miners. | How builder battles are played. |
 
 | History | When to play |
 |---|---|
 | ![History page](readme/history.png) | ![When to play page](readme/when_to_play.png) |
 | Every attack, daily totals, and a chart you can hover for exact numbers. | Playing hours, breaks, and when to stop. |
+
+| Like a person | Alerts |
+|---|---|
+| ![Like a person page](readme/like_a_person.png) | ![Discord alerts](readme/alerts.png) |
+| Human habits, and the time each one adds. | Discord alerts for full storages, stops and a daily summary. |
 
 ![Setup page](readme/setup.png)
 
@@ -124,14 +143,15 @@ needs about 2 CPU cores and 4 GB of memory.
   **Home village → Attacking**.
 - **Check what the bot sees:** scout a base in the game, then press
   **What the bot sees** under **Advanced**.
-- **Keyboard shortcuts:** F5 starts, Esc pauses, and Ctrl+1 to Ctrl+7 switch pages.
+- **Keyboard shortcuts:** F5 starts, Esc pauses, and Ctrl+1 to Ctrl+8 switch pages.
 
 ## Something went wrong?
 
 The Dashboard tells you what happened in plain words, with a button to fix it.
 If the game gets stuck, COCFARM restarts it by itself, and restarts the emulator if needed
-(up to three times). After three failed rounds in a row, it stops and says why.
-For more detail, check `logs/farmbot.log` and the screenshots in `screens/errors/`
+(up to three times). After three failed rounds in a row, it stops, says why, and starts
+again by itself after a wait (unless you pressed Stop or it isn't signed in).
+For more detail, check `logs/farmbot.log` and the screenshots in `screens/errors/` (`instances/<farm>/screens/errors/` for farms after the first)
 in the COCFARM folder.
 
 ## Community

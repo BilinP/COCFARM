@@ -569,7 +569,7 @@ def emulator_defaults() -> dict[str, dict[str, str]]:
             "High / adaptive FPS": off(b["enable_high_fps"]),
             "CPU cores": str(b["cpus"]),
             "Memory": f"{b['ram'] / 1024:g} GB",
-            "Phone": "left as BlueStacks has it",
+            "Phone": f"{standard.BRAND} {standard.MODEL_NAME} ({standard.MODEL})",
         },
     }
 
@@ -1232,6 +1232,43 @@ class VillageDialog(BelowTitleBar, MessageBoxBase):
         self.widget.setMaximumWidth(620)
 
 
+class SuggestedDialog(BelowTitleBar, MessageBoxBase):
+    """The suggested search amounts for every Town Hall, yours marked."""
+
+    def __init__(self, town_hall: int | None, parent: QWidget):
+        from farmbot.config import MAX_TOWN_HALL, town_hall_minimums
+
+        super().__init__(parent)
+        self.viewLayout.addWidget(SubtitleLabel("Suggested amounts"))
+        self.viewLayout.addWidget(_wrapping(tint(CaptionLabel(
+            "What a base must offer to be attacked, by your Town Hall: about 1 base in 4 does, from the bases "
+            "COCFARM's farms searched. Dark elixir stays 0: with \"Any one is enough\" off, a base would need "
+            "it as well."), MUTED)))
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(28)
+        grid.setVerticalSpacing(4)
+        for col, title in enumerate(("Town Hall", "Gold", "Elixir", "Dark elixir")):
+            grid.addWidget(tint(CaptionLabel(title.upper()), MUTED), 0, col, Qt.AlignRight if col else Qt.AlignLeft)
+        self.rows: dict[int, list[QLabel]] = {}
+        for th in range(1, MAX_TOWN_HALL + 1):
+            amounts = town_hall_minimums(th)
+            yours = th == town_hall
+            kind = StrongBodyLabel if yours else BodyLabel
+            cells = [kind(f"{th}  (yours)" if yours else str(th)),
+                     *(kind(f"{amounts[k]:,}") for k in ("gold", "elixir", "dark"))]
+            for col, cell in enumerate(cells):
+                if yours:
+                    tint(cell, ACCENT)
+                grid.addWidget(cell, th, col, Qt.AlignRight if col else Qt.AlignLeft)
+            self.rows[th] = cells
+        self.viewLayout.addLayout(grid)
+        self.yesButton.setText("Close")
+        self.cancelButton.hide()
+        self.setClosableOnMaskClicked(True)
+        self.widget.setMinimumWidth(460)
+        self.widget.setMaximumWidth(560)
+
+
 class WhatsNewDialog(BelowTitleBar, MessageBoxBase):
     """What changed in the versions since the player last looked."""
 
@@ -1283,12 +1320,14 @@ class WhatsNewDialog(BelowTitleBar, MessageBoxBase):
 class AccountsPanel(QWidget):
     """The Farms page's list, by account: a group for each account's profile
     with the farms that play it (a copy of a farm's instance starts in its
-    account's group), and "Not assigned" for farms whose account isn't known
-    yet and the instances that aren't farms. Each group folds away. Its
+    account's group), "Not assigned" for farms whose account isn't known
+    yet, and "Other emulator instances" for the instances that aren't farms.
+    Each group folds away. Its
     header stars the profile (new accounts start from its settings), copies
     its settings to another, renames or deletes it."""
 
     UNASSIGNED = ""  # the "Not assigned" group's key (no profile is named "")
+    SPARE = "\0spare"  # the "Other emulator instances" group's key (no profile has a \0 in its name)
 
     def __init__(self, hub: FarmbotWindow, page: FarmsPage | None = None):
         super().__init__()
@@ -1348,10 +1387,18 @@ class AccountsPanel(QWidget):
             farms = [page_rows[n] for n in users[name] if n in page_rows]
             self._add_group(name, self._row(name, names, users[name], running), farms,
                             "No farm plays this account now.")
-        loose = [page_rows[n] for n in unassigned if n in page_rows] + list(self.page.spares if self.page else [])
+        loose = [page_rows[n] for n in unassigned if n in page_rows]
+        spare_rows = list(self.page.spares if self.page else [])
         if loose or not names:
-            self._add_group(self.UNASSIGNED, self._unassigned_header(len(unassigned), len(loose) - len(unassigned)),
-                            loose, "Every emulator instance here plays a known account.")
+            self._add_group(self.UNASSIGNED, self._header("?", "Not assigned", len(loose), "farm",
+                                                          "Farms whose account isn't known yet (found the first "
+                                                          "time they play)"),
+                            loose, "Every farm plays a known account.")
+        if spare_rows:
+            self._add_group(self.SPARE, self._header("+", "Other emulator instances", len(spare_rows), "instance",
+                                                     "Instances COCFARM found that aren't farms: switch one on to "
+                                                     "farm with it", tone=MUTED),
+                            spare_rows, "")
         self.footer.setText(f"{STAR_ON} Star a profile and new accounts start from its settings. A running "
                             "farm's profile can't be renamed or deleted. A farm moves to its account's group once "
                             "it sees the player's name in the game.")
@@ -1396,29 +1443,29 @@ class AccountsPanel(QWidget):
         fold.setToolTip("Fold its farms away")
         return fold
 
-    def _unassigned_header(self, farms: int, spares: int) -> QWidget:
+    def _header(self, letter: str, name: str, count: int, noun: str, about_text: str, tone=None) -> QWidget:
+        """A group's header that isn't an account's: Not assigned, Other emulator instances."""
         card = SimpleCardWidget()
         row = QHBoxLayout(card)
         row.setContentsMargins(4, 10, 8, 10)
         card.setMinimumHeight(66)
         row.setSpacing(12)
         row.addWidget(self._fold_button())
-        row.addWidget(avatar("?"))
+        row.addWidget(avatar(letter))
         about = QVBoxLayout()
         about.setSpacing(4)
         top = QHBoxLayout()
         top.setSpacing(8)
-        title = StrongBodyLabel("Not assigned")
+        title = StrongBodyLabel(name)
         title.setStyleSheet("font-size: 15px;")
         top.addWidget(title)
-        if farms:
-            top.addWidget(pill(f"{farms} farm{'s' * (farms != 1)}", GOOD, "rgba(16,124,16,0.16)"))
-        if spares:
-            top.addWidget(pill(f"{spares} not a farm", MUTED, "rgba(128,128,128,0.16)"))
+        if count:
+            label = f"{count} {noun}{'s' * (count != 1)}"
+            top.addWidget(pill(label, MUTED, "rgba(128,128,128,0.16)") if tone is MUTED
+                          else pill(label, GOOD, "rgba(16,124,16,0.16)"))
         top.addStretch(1)
         about.addLayout(top)
-        about.addWidget(tint(CaptionLabel("Farms whose account isn't known yet (found the first time they play), "
-                                          "and the instances that aren't farms"), MUTED))
+        about.addWidget(tint(CaptionLabel(about_text), MUTED))
         row.addLayout(about, 1)
         return card
 
@@ -1903,7 +1950,7 @@ class FarmsPage(Page):
                 clash = portmap.clash(choice.device(), devices, self.hub.found)
                 if clash is not None and portmap.movable(choice.device(), devices[clash]):
                     clash = None
-                self.spares.append(SpareRow(self, choice, clash))  # under "Not assigned"
+                self.spares.append(SpareRow(self, choice, clash))  # under "Other emulator instances"
         self.add_menu.clear()
         for emulator in self.hub.found_emulators:
             if emulator.mode == "bluestacks":
@@ -3691,9 +3738,14 @@ class FarmbotWindow(FluentWindow):
                         "Bases offering less are skipped. 0 ignores it.")
         for kind in ("gold", "elixir", "dark"):  # typed by you: kept from now on
             self.bindings[f"search.min_{kind}"].widgets[0].textEdited.connect(self._minimums_typed)
-        button = PushButton(FIF.ACCEPT, "Use these")
-        button.clicked.connect(self._suggested_minimums)
-        self.suggested_card = self._card(loot, None, FIF.CERTIFICATE, "Suggested amounts", " ", button)
+        self.suggested_switch = SwitchButton()
+        bind_switch(self.suggested_switch)  # On/Off labels
+        self.suggested_switch.setChecked(not self.config.search.minimums_by_hand)
+        self.suggested_switch.checkedChanged.connect(self._suggested_switched)
+        table = TransparentPushButton(FIF.VIEW, "See all")
+        table.clicked.connect(self.show_suggested_table)
+        self.suggested_card = self._card(loot, None, FIF.CERTIFICATE, "Suggested amounts", " ",
+                                         self.suggested_switch, table)
         self.switch(loot, "search.match_any", FIF.FILTER, "Any one is enough",
                     "On: one amount above is enough. Off: a base must have them all.")
         more = page.add(SettingCardGroup("While searching"))
@@ -3979,7 +4031,8 @@ class FarmbotWindow(FluentWindow):
                     "Friday to Monday (07:00 UTC): every raid attack, with the full capital army set in the game. "
                     "Never spends Capital Gold.")
         self.number(raids, "capital.miner_heal_at", FIF.HEART, "Heal Super Miners at",
-                    "A heal goes where the miners are heading once their health falls under this.", "%")
+                    "Heals go just ahead of the miners every 17 s from 25 s in; the first sooner once one "
+                    "falls under this.", "%")
         self.number(raids, "capital.fortress_heal_at", FIF.HEART, "Heal Flying Fortresses at",
                     "A heal goes on the fortresses once one falls under this.", "%")
         self.depends("capital.raid", "capital.miner_heal_at", "capital.fortress_heal_at")
@@ -4584,6 +4637,22 @@ class FarmbotWindow(FluentWindow):
 
     def _minimums_typed(self, *_) -> None:
         self.config.search.minimums_by_hand = True
+        self._show_suggested()
+
+    def _suggested_switched(self, on: bool) -> None:
+        if on == (not self.config.search.minimums_by_hand):
+            return  # (shown again, not switched)
+        if on:
+            self._suggested_minimums()
+        else:  # the amounts stay as they are, now yours
+            self.config.search.minimums_by_hand = True
+            self._show_suggested()
+            self._changed()
+
+    def show_suggested_table(self) -> None:
+        village = self.current_village()
+        self._dialog = SuggestedDialog(village.town_hall if village else None, self)
+        self._dialog.show()
 
     def _suggested_minimums(self) -> None:
         """Back to the Town Hall's amounts (or the starting ones), which then
@@ -4595,6 +4664,7 @@ class FarmbotWindow(FluentWindow):
         amounts = town_hall_minimums(village.town_hall) if village else SEARCH_DEFAULTS
         for kind, amount in amounts.items():
             self.bindings[f"search.min_{kind}"].set(f"{amount:,}")
+        self._show_suggested()
         self._changed()
 
     def _show_suggested(self) -> None:
@@ -4603,16 +4673,20 @@ class FarmbotWindow(FluentWindow):
         card = getattr(self, "suggested_card", None)
         if card is None:
             return
+        by_hand = self.config.search.minimums_by_hand
+        switch = self.suggested_switch
+        if switch.isChecked() == by_hand:
+            switch.blockSignals(True)
+            switch.setChecked(not by_hand)
+            switch.blockSignals(False)
         village = self.current_village()
         if village is None:
-            card.help_text = ("Your Town Hall isn't known yet (the bot reads it from the game): this sets "
-                              "300,000 gold and elixir.")
+            amounts = "Your Town Hall isn't known yet (the bot reads it from the game): 300,000 gold and elixir. "
         else:
             amount = town_hall_minimums(village.town_hall)["gold"]
-            card.help_text = (f"For Town Hall {village.town_hall}: {amount:,} gold and {amount:,} elixir, no dark "
-                              "elixir. " + ("You've set your own, so they stay as you typed them."
-                                            if self.config.search.minimums_by_hand else
-                                            "In use: they follow your Town Hall as it goes up."))
+            amounts = f"Town Hall {village.town_hall}: {amount:,} gold and {amount:,} elixir. "
+        card.help_text = amounts + ("Off: the amounts above are yours and stay as you set them." if by_hand else
+                                    "They follow your Town Hall as it goes up. Typing your own turns this off.")
         card.show_error(None)
 
     def _fit_search_minimums(self, storage: dict[str, int] | None = None) -> None:
@@ -4831,8 +4905,7 @@ class FarmbotWindow(FluentWindow):
 
     def _update_bar(self, title: str, button: QAbstractButton) -> None:
         """A bar in the corner with one button, replacing the last one."""
-        if self.update_bar:
-            self.update_bar.close()
+        self._close_update_bar()
         # Built hidden and shown once the button is in: it's placed by its full width.
         self.update_bar = InfoBar(InfoBarIcon.SUCCESS, title, "", duration=-1, position=InfoBarPosition.BOTTOM_RIGHT,
                                   parent=self)
@@ -4840,17 +4913,30 @@ class FarmbotWindow(FluentWindow):
         self.update_bar.addWidget(button)
         self.update_bar.show()
 
+    def _close_update_bar(self) -> None:
+        """Close the corner bar, if it's still there: its own X deletes it."""
+        bar, self.update_bar = self.update_bar, None
+        if bar is not None:
+            try:
+                bar.close()
+            except RuntimeError:  # already closed with its X, and deleted
+                pass
+
     def _update_clicked(self) -> None:
-        if self.update_bar:
-            self.update_bar.close()
-            self.update_bar = None
+        self._close_update_bar()
+        self._show_update_card()
         if self.update_staged:
             self._restart_to_update()
         elif self.update_release:
-            self.show_page("Advanced", "settings")
             self._download_update()
         else:
             self._check_for_update(force=True)
+
+    def _show_update_card(self) -> None:
+        """Open the tab with the update's progress, scrolled down to it (it's at the bottom)."""
+        self.show_page("Advanced", "settings")
+        body = self.pages["Advanced"].tab_pages["settings"]
+        QTimer.singleShot(50, lambda: body.ensureWidgetVisible(self.update_card, 0, 80))
 
     def _download_update(self) -> None:
         import webbrowser

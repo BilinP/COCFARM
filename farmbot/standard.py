@@ -6,7 +6,8 @@ emulator, or left different on another emulator, never changes what the bot
 sees. They aren't settings: the pictures, the starting profile and the
 deploy lines were all made on this screen.
 
-It is the MuMu Player instance the 1.5 releases were tested on. Only the
+It is the MuMu Player instance the 1.5 releases were tested on, as the
+phone BlueStacks starts with (its "OnePlus 10 Pro" device profile). Only the
 phone's maker and model are copied, never its identifiers (IMEI, Android ID,
 MAC and so on): each instance keeps its own, so farms don't look like one
 phone.
@@ -20,10 +21,11 @@ DPI = 240
 CPUS = 2
 MEMORY = 4096  # MB
 FPS = 60  # frames a second; vertical sync and "high frame rate" modes off
-MANUFACTURER = "samsung"  # ro.product.manufacturer, as a real Galaxy reports it
-BRAND = "Samsung"  # how MuMu Player lists the maker
-MODEL = "SM-A156E"  # ro.product.model of a Galaxy A15 5G
-MODEL_NAME = "Galaxy A15 5G"  # how MuMu Player lists the model
+MANUFACTURER = "OnePlus"  # ro.product.manufacturer, as a real OnePlus 10 Pro reports it
+BRAND = "OnePlus"  # how MuMu Player lists the maker
+MODEL = "NE2211"  # ro.product.model of a OnePlus 10 Pro
+MODEL_NAME = "OnePlus 10 Pro"  # how MuMu Player lists the model
+BLUESTACKS_PROFILE = "optp"  # BlueStacks' device profile code for it (reports OnePlus NE2211)
 
 
 def describe() -> str:

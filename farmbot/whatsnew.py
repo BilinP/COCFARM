@@ -18,6 +18,24 @@ from farmbot.update import STATE, _load, _save, parse_version
 KINDS = ["New", "Improved", "Fixed"]
 
 NOTES: dict[str, list[tuple[str, str, str]]] = {
+    "1.5.3": [
+        ("Improved", "Super Miners are healed where they dig",
+         "In Raid Weekend, Healing spells go just ahead of the Super Miners, by where they're heading, every 17 "
+         "seconds from 25 seconds in (sooner if one gets low). The view follows them when they dig off screen, "
+         "and Lightning waits for them, then hits the buildings in their way."),
+        ("New", "Suggested loot amounts for every Town Hall",
+         "The loot a base must have now follows new amounts for your Town Hall and rises with it. Switch "
+         "'Suggested amounts' off to keep your own, and press 'See all' for a table of every Town Hall."),
+        ("Improved", "Every emulator is the same phone",
+         "BlueStacks, MuMu Player and LDPlayer are all set up as a OnePlus 10 Pro."),
+        ("Fixed", "MuMu Player is muted",
+         "MuMu Player's Android 15 kept its sound on; it's now muted like the other emulators."),
+        ("New", "Other emulator instances on the Farms page",
+         "Instances that aren't farms yet are listed in their own group, ready to switch on."),
+        ("Fixed", "Update now shows the download",
+         "Pressing Update now opens the Updates box, scrolled down to it, and the update bar no longer shows "
+         "an error once it's closed."),
+    ],
     "1.5.2": [
         ("New", "A stopped farm starts again by itself",
          "When a farm stops on a problem, it waits 10 minutes (then 20, then 40), restarts the emulator and "

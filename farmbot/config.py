@@ -80,15 +80,22 @@ SEARCH_SHARES = {"gold": 0.025, "elixir": 0.025, "dark": 0.01}
 SEARCH_STEPS = {"gold": 50_000, "elixir": 50_000, "dark": 1_000}  # rounded to these
 
 
-# Gold and elixir a base should offer, by your Town Hall: about what bases
-# near it give (a Town Hall 2 base has a few thousand, a Town Hall 15 one
-# half a million). Dark elixir stays 0: with "Any one is enough" off, a base
-# would need it as well.
-SEARCH_BY_TOWN_HALL = {1: 1_000, 2: 3_000, 3: 10_000, 4: 25_000, 5: 50_000, 6: 80_000, 7: 120_000,
-                       8: 160_000, 9: 200_000, 10: 250_000, 11: 300_000, 12: 350_000, 13: 400_000,
-                       14: 450_000}
-SEARCH_TOP = 500_000  # Town Hall 15 and up
+# Gold and elixir a base should offer, by your Town Hall: about 1 base in 4
+# searched offering both (each Next costs gold). From the farms' own searches
+# (2026-10/11): of the bases seen, 24% offered 5,000 at Town Hall 2, 21%
+# 10,000 at TH3, ~35% 30,000 at TH4, 43% 1M and 57% 800k at TH14, 15% 900k
+# at TH18; the Town Halls between follow the curve. Dark elixir stays 0:
+# with "Any one is enough" off, a base would need it as well.
+SEARCH_BY_TOWN_HALL = {1: 1_000, 2: 5_000, 3: 10_000, 4: 30_000, 5: 60_000, 6: 100_000, 7: 150_000,
+                       8: 200_000, 9: 300_000, 10: 400_000, 11: 500_000, 12: 600_000, 13: 750_000,
+                       14: 900_000}
+SEARCH_TOP = 900_000  # Town Hall 15 and up
 MAX_TOWN_HALL = 18
+# The amounts before 1.5.3: minimums still at one of these were never typed
+# in, so they move to the new ones.
+_OLD_BY_TOWN_HALL = {1: 1_000, 2: 3_000, 3: 10_000, 4: 25_000, 5: 50_000, 6: 80_000, 7: 120_000,
+                     8: 160_000, 9: 200_000, 10: 250_000, 11: 300_000, 12: 350_000, 13: 400_000,
+                     14: 450_000, 15: 500_000}
 
 
 def town_hall_minimums(town_hall: int) -> dict[str, int]:
@@ -99,9 +106,9 @@ def town_hall_minimums(town_hall: int) -> dict[str, int]:
 
 # Small storages (a low Town Hall): a share of them is under a step, so the
 # minimum is the Town Hall amount that's at most this share of the storage
-# (a 16,000 gold storage asks 3,000, a Town Hall 2's) rather than a whole
+# (a 16,000 gold storage asks 5,000, a Town Hall 2's) rather than a whole
 # step, which no base near that Town Hall offers.
-SMALL_STORAGE_SHARE = 0.2
+SMALL_STORAGE_SHARE = 0.35
 
 
 def _storage_minimum(kind: str, held: int) -> int:
@@ -128,7 +135,8 @@ def search_minimums_for(storage: dict[str, int], current: dict[str, int],
     if by_hand:
         return {}
     fitted = _from_storage(storage)
-    untouched = [SEARCH_DEFAULTS, *(town_hall_minimums(t) for t in range(1, MAX_TOWN_HALL + 1))]
+    untouched = [SEARCH_DEFAULTS, *(town_hall_minimums(t) for t in range(1, MAX_TOWN_HALL + 1)),
+                 *({**SEARCH_DEFAULTS, "gold": v, "elixir": v} for v in _OLD_BY_TOWN_HALL.values())]
     # (the lowest older versions set from small storages: a whole step)
     untouched.append({**SEARCH_DEFAULTS, "gold": SEARCH_STEPS["gold"], "elixir": SEARCH_STEPS["elixir"]})
     if fitted:
