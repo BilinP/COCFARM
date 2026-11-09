@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -45,7 +46,10 @@ def _run(cmd: list[str]) -> str:
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise DeviceError(f"ldconsole failed: {exc}") from exc
     # ldconsole prints in the system code page (Chinese builds use GBK).
-    return result.stdout.decode("utf-8", errors="replace") or result.stdout.decode("mbcs", errors="replace")
+    try:
+        return result.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return result.stdout.decode("mbcs" if os.name == "nt" else "utf-8", errors="replace")
 
 
 @dataclass
@@ -331,6 +335,10 @@ def clear_port(install: Install, inst: Instance, installs: list[Install], run: R
             return cfg.ldplayer_index == inst.index and mine is not None and mine.path == other.path
 
         farm = farms.farm_playing(kind, holds)
+        if farm is None and kind != "ldplayer":  # nor another COCFARM program's (it shuts all of them)
+            from farmbot import claims
+
+            farm = claims.played_elsewhere(kind)
         if farm is not None:  # never close another farm's emulator
             holder = other.name if other else farms.EMULATOR_NAMES[kind]
             message = (f"farm {farm}'s {holder} is using port {inst.port}, which {install.name} instance "
@@ -418,7 +426,11 @@ def move_off_shared_port(cfg: DeviceConfig, install: Install, inst: Instance, in
     log.warning("%s has the same port (%d) as %s instance %d: copying this instance to one with a port of its "
                 "own (takes a few minutes)", holder or f"Farm {other}'s LDPlayer instance {inst.index + 1}",
                 inst.port, install.name, inst.index + 1)
+    from farmbot import portmap
+
     avoid = _used_elsewhere(install, installs, run)
+    me = farms.current() or 1  # nor a number whose port a farm playing now wants (MuMu's first: 5555)
+    avoid |= portmap.ldplayer_avoid(install.name, [d for n, d in list(farms.active.items()) if n != me])
     if owner_of is not None:  # ports held by other programs (MuMu: 5555): never copied to
         listed = {i.index for i in instances(install, run)}
         avoid |= {k for k in range(len(listed) + len(avoid) + 2) if k not in listed and owner_of(5555 + 2 * k)}

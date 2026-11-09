@@ -556,10 +556,18 @@ def taken_share(target: Loot, left: Loot, cfg: Config) -> float:
     return 1.0 - loot_value(left, cfg.search) / total if total > 0 else 0.0
 
 
-def finish_battle(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
+def storages_filled(target: Loot, left: Loot, room: dict[str, int]) -> bool:
+    """Whether the loot taken (``target``, what scouting reported, less
+    what's ``left``) fills the ``room`` left in every storage that counts."""
+    return bool(room) and all(getattr(target, k) - getattr(left, k) >= space for k, space in room.items())
+
+
+def finish_battle(game: Game, cfg: Config, target: Loot | None = None,
+                  room: dict[str, int] | None = None) -> float | None:
     """Wait for the battle to end. End it early once the available loot has
     stopped dropping, or once ``end_at_loot_share`` of the ``target`` loot
-    (what scouting reported) is taken, or at the time limit; then go home.
+    (what scouting reported) is taken, or once what's taken fills the
+    ``room`` left in the storages, or at the time limit; then go home.
     Returns the share of ``target`` taken, if it could be read."""
     acfg = cfg.attack
     started = last_change = game.clock()
@@ -570,6 +578,8 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None) -> float 
     spread = cfg.human.uses("end_spread")
     no_loot = human.end_wait(game.rng, acfg.no_loot_seconds, spread)
     enough_share = human.end_share(game.rng, acfg.end_at_loot_share, spread)
+    room = room if target and acfg.end_when_full else None
+    filled_once = False  # full on two readings in a row: one misread doesn't end it
     while True:
         # Nothing is tapped while the battle plays out, so the check made before
         # taps is made here: a game that crashed or closed shows no loot, and
@@ -584,15 +594,19 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None) -> float 
             log.info("Battle speed: 4x")
             game.refresh()
         now = game.clock()
-        loot = loot_left(game, cfg) if acfg.end_when_no_loot or (target and acfg.end_at_loot_share) else None
+        loot = (loot_left(game, cfg) if acfg.end_when_no_loot or (target and acfg.end_at_loot_share) or room
+                else None)
         # Loot only goes down in a battle: a higher reading is a misread.
         if loot is not None and loot != last_loot and (last_loot is None or _not_more(loot, last_loot)):
             last_loot, last_change = loot, now
         stalled = acfg.end_when_no_loot and last_loot is not None and now - last_change >= no_loot
         share = taken_share(target, last_loot, cfg) if target and last_loot else 0.0
         enough = bool(acfg.end_at_loot_share) and share >= enough_share
-        if stalled or enough or now - started >= acfg.battle_timeout:
-            reason = ("%d%% of the loot taken" % (share * 100) if enough else
+        filled_now = bool(room) and loot is not None and storages_filled(target, last_loot, room)
+        full, filled_once = filled_once and filled_now, filled_now
+        if stalled or enough or full or now - started >= acfg.battle_timeout:
+            reason = ("the storages are full" if full else
+                      "%d%% of the loot taken" % (share * 100) if enough else
                       "no loot gained for %ds" % no_loot if stalled else "time limit")
             log.info("Ending battle: %s", reason)
             if stalled:
@@ -796,8 +810,9 @@ def _bar_cards(game: Game, cfg: Config) -> list[Card]:
     return cards
 
 
-def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
-    """Attack the base on screen; ``target`` is its loot as scouted.
+def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, int] | None = None) -> float | None:
+    """Attack the base on screen; ``target`` is its loot as scouted, and
+    ``room`` what the storages still hold (the battle ends once that's taken).
     Returns the share of it taken, when the loot could be read.
 
     The bar goes troops, siege machines, heroes, spells. When it holds more
@@ -909,7 +924,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None) -> float | None:
         else:
             fire_abilities_on_time(game, placed, cfg)
         log.info("Activated %d hero/siege card(s)", len(placed))
-    return finish_battle(game, cfg, target)
+    return finish_battle(game, cfg, target, room)
 
 
 ABILITY_CHECK = 0.5  # seconds between looks at the heroes' health

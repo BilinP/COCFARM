@@ -18,7 +18,9 @@ Buildings not built yet come before the upgrades (the "New" filter): the
 game puts each down at a free spot, and it's built there. New walls cost
 nothing and take no builder: they (and any other free new building) are
 put down first, one list trip each.
-The Town Hall is upgraded like any building; while it can't be (the game
+The Town Hall comes first among the buildings (after the new ones, which
+it may need built): it's under none of the list's Defense, Resource or Army
+types, so it's looked for on its own. While it can't be upgraded (the game
 wants the buildings it lists built first), the next upgrade is started.
 Everything is picked in the Build list (see build_list.py), sorted Cost
 Max and filtered to the resource. Gems are never spent: an upgrade window
@@ -40,9 +42,10 @@ import numpy as np
 from farmbot.config import BuilderConfig, Config
 from farmbot.game import Game, T
 from farmbot.tasks.build_list import (BUILDER, FAILED, HOME, HUD_SHIFT_PX, LOCKED, PLACED, BuildList, Row, busy,
-                                      first_affordable, free_builders, free_rows, goblins, leaving_town_hall,
-                                      list_shown, open_tab, place_free, rows, set_filter, started, tab_free,
-                                      top_row_affordable, upgrade_row)
+                                      first_affordable, forget_filters, free_builders, free_rows, goblins,
+                                      leaving_town_hall, list_shown, open_tab, place_free, rows, set_filter, started,
+                                      tab_free,
+                                      top_row_affordable, town_hall_row, upgrade_row)
 from farmbot.tasks.builder import restore_view
 from farmbot.tasks.search import Loot
 from farmbot.tasks.village import _close_windows, deselect
@@ -58,7 +61,9 @@ KIND_FILTER = {"hero": T.FILTER_HERO, "defense": T.FILTER_DEFENSE, "resource": T
 BUILDING_KINDS = ("defense", "resource", "army")  # the filter's types, heroes aside
 MAX_FAILED_ROWS = 2  # rows a list may have that won't upgrade, before moving on (locked ones aside)
 PASS_OVER_FOR = 3600.0  # seconds a row that wouldn't upgrade is passed over (not tapped again every round)
-MAX_FREE_BUILDINGS = 25  # free new buildings (walls, mostly) put down in a round, a list trip each
+TOWN_HALL_MONEY = ("gold",)  # what the Town Hall's upgrade costs
+MAX_FREE_BUILDINGS = 5  # free new buildings (walls, mostly) put down in a round, a list trip each:
+# the rest wait for later rounds, so the farm keeps attacking
 # What each kind of upgrade may spend, in the order it's tried.
 HOME_SPEND = {"pets": ("dark",), "hero": ("dark", "elixir"), "research": ("elixir", "dark"),
               "building": ("gold", "elixir", "dark")}
@@ -105,7 +110,8 @@ def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], las
     loot = read_resources()
     if loot is None:
         return 0
-    budget = {k: getattr(loot, k) for k in full}
+    # No dark elixir before Town Hall 7: nothing is looked for in it (the research filter's dark button).
+    budget = {k: getattr(loot, k) for k in full if not (k == "dark" and "dark" in (locked or {}))}
     kinds = plan(ucfg.order, {"pets": ucfg.pets, "hero": ucfg.heroes, "research": ucfg.lab,
                               "building": ucfg.buildings})
     for kind, feature in (("pets", "pets"), ("hero", "heroes"), ("research", "research")):
@@ -126,6 +132,7 @@ def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], las
     done, handed = 0, False
     lst = HOME if ucfg.town_hall else leaving_town_hall(HOME)
     try:
+        forget_filters(game)  # a new round: its filters as the game has them, not known
         if not _open_list(game):
             return 0
         left = {"builders": builders}
@@ -161,6 +168,7 @@ def upgrade_builder_base(game: Game, bcfg: BuilderConfig, read_resources: Reader
     view = game.refresh().copy()  # put back afterwards (there's no middle to centre on)
     done = 0
     try:
+        forget_filters(game)  # a new round: its filters as the game has them, not known
         if not _open_list(game):
             return 0
         kinds = plan(bcfg.upgrade_order, {"hero": bcfg.upgrade_heroes, "research": bcfg.upgrade_lab,
@@ -200,6 +208,9 @@ def _in_order(game: Game, kinds: list[str], spend: dict[str, tuple[str, ...]], f
             done += _research(game, money, budget, read_resources, lst)
         elif builders > 0:
             types = ["hero"] if kind == "hero" else building_kinds(first, heroes)
+            if kind == "building" and _upgrades_town_hall(lst):
+                # Not under Defense, Resource or Army: looked for on its own, before those take the builders.
+                types = ["town hall", *types]
             if new and kind == "building":
                 types = ["new", *types]
             started = _buildings(game, types, money, budget, builders, read_resources, lst)
@@ -219,7 +230,10 @@ def _open(game: Game, read_resources: Reader, full: set[str]) -> dict[str, int] 
 
 def builder_limit(total: int, chosen: int) -> int:
     """How many of ``total`` builders upgrades may keep busy: ``chosen``
-    (``upgrade.builders``), or all but one when it's 0."""
+    (``upgrade.builders``), or all but one when it's 0; none when it's
+    negative (the slider at 0)."""
+    if chosen < 0:
+        return 0
     return min(chosen, total) if chosen > 0 else max(total - 1, 1)
 
 
@@ -296,14 +310,15 @@ def _spend(game: Game, row: Row, budget: dict[str, int], read_resources: Reader,
 
 def _list_open(game: Game, lst: BuildList) -> bool:
     """Open the list again if building something closed it (opening it
-    also drops what was just built, which stays selected). False if it
-    won't open."""
+    also drops what was just built, which stays selected). It opens on
+    the tab and filter it had, so the tab is tapped only if it isn't lit.
+    False if it won't open."""
     game.refresh()
     if list_shown(game):
         return True
     if not _open_list(game):
         return False
-    open_tab(game, "buildings", lst)  # (its filter stays as it was)
+    open_tab(game, "buildings", lst)
     return True
 
 
@@ -333,6 +348,36 @@ def _free_buildings(game: Game, lst: BuildList) -> int:
     return placed
 
 
+def _upgrades_town_hall(lst: BuildList) -> bool:
+    return lst is not None and not lst.builder_base and T.TOWN_HALL_ROW not in lst.left_out
+
+
+def _town_hall(game: Game, money: list[str], budget: dict[str, int], read_resources: Reader,
+               lst: BuildList) -> int:
+    """The Town Hall's upgrade, when ``budget`` covers it: 1 if started."""
+    paid = [r for r in TOWN_HALL_MONEY if r in money]
+    if not paid or not game.has(T.TOWN_HALL_ROW):
+        return 0
+    if not set_filter(game, lst.resource_filter[paid[0]], None, T.SORT_COST_MAX, lst):
+        return 0
+    row, seen = town_hall_row(game, tuple(paid), lst)
+    if row is None:
+        log.info("Upgrades: %s", "the Town Hall costs more than the gold there is" if seen else
+                 "no Town Hall upgrade in the list (under way already, or the top level)")
+        return 0
+    if (row.kind, row.price) in _passed_over(game):
+        return 0  # locked a moment ago: the game wants other buildings first
+    if row.price > budget[row.kind]:
+        log.info("Upgrades: the Town Hall costs %s %s, more than the %s there is", f"{row.price:,}", row.kind,
+                 f"{budget[row.kind]:,}")
+        return 0
+    outcome = _spend(game, row, budget, read_resources, "Town Hall", lst)
+    if started(outcome):
+        return 1
+    _pass_over(game, row)
+    return 0
+
+
 def _buildings(game: Game, kinds: list[str | None], money: list[str], budget: dict[str, int], builders: int,
                read_resources: Reader, lst: BuildList) -> int:
     """Up to ``builders`` upgrades of the ``kinds`` of building (``None``:
@@ -340,6 +385,14 @@ def _buildings(game: Game, kinds: list[str | None], money: list[str], budget: di
     open_tab(game, "buildings", lst)
     done = 0
     for kind in kinds:
+        if kind == "town hall":
+            if builders > 0:
+                started_ = _town_hall(game, money, budget, read_resources, lst)
+                builders -= started_
+                done += started_
+                if not _list_open(game, lst):
+                    return done
+            continue
         # New buildings are few: one list of them in every resource (one
         # trip to the filter menu, not one per resource). Upgrades: a list
         # per resource, each sorted by its own price.

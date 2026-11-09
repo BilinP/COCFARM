@@ -118,7 +118,7 @@ def _shortcut(exe: Path, link: Path) -> bool:
     command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                "-WindowStyle", "Hidden", "-Command", SHORTCUT]
     try:
-        done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30,
+        done = subprocess.run(command, env=env, capture_output=True, text=True, errors="replace", timeout=30,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError) as exc:
         log.debug("Couldn't make the Start menu shortcut: %s", exc)

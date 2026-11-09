@@ -24,6 +24,7 @@ class Screen(enum.Enum):
     CHEST = "event chest room"
     REWARD = "reward picker"
     POPUP = "popup"
+    CAPITAL = "clan capital"  # the capital or its raid map (left open, or the game reopened there)
     LOGIN = "login screen"  # no account logged in: the bot can't play
     MAINTENANCE = "maintenance break"  # Supercell's: nothing can be played until it's over
     UNKNOWN = "unknown screen"  # loading, an animation, or something new
@@ -35,6 +36,10 @@ VILLAGES = (Screen.HOME, Screen.BUILDER)
 # when clearing them). Continue sits under a chest's reward.
 POPUP_BUTTONS = (T.TRY_AGAIN, T.RELOAD, T.BB_OKAY, T.CONTINUE, T.OKAY, T.CLOSE, T.REMOVE_ADS)
 
+
+# The Clan Capital's ways home: its Return Home, the raid map's airship Map,
+# and Map under a raid's result.
+CAPITAL_EXITS = (T.CAPITAL_RETURN_HOME, T.CAPITAL_LEAVE_RAID, T.CAPITAL_RESULT_MAP)
 
 # What covers a village, looked for first: anything over the village wins.
 COVERS = (T.MAINTENANCE, T.RATE_TITLE, T.PICK_REWARD, T.EVENT_CHEST, T.RETURN_HOME, T.BB_RETURN_HOME,
@@ -67,7 +72,7 @@ def identify(game: Game, refresh: bool = True) -> Screen:
         return Screen.RESULTS
     if any(_seen(game, name) for name in (T.END_BATTLE, T.BB_BATTLE_STARTS, T.BB_BATTLE_ENDS)):
         return Screen.BATTLE
-    game.prefetch([(name, None) for name in (*POPUP_BUTTONS, T.BATTLE, T.LOGIN)]
+    game.prefetch([(name, None) for name in (*POPUP_BUTTONS, T.BATTLE, T.LOGIN, *CAPITAL_EXITS)]
                   + [(T.BB_BATTLE, game.region(builder.BATTLE_AREA))])
     if any(_seen(game, name) for name in POPUP_BUTTONS):
         return Screen.POPUP
@@ -77,6 +82,8 @@ def identify(game: Game, refresh: bool = True) -> Screen:
         return Screen.HOME
     if _seen(game, T.LOGIN):
         return Screen.LOGIN
+    if any(_seen(game, name) for name in CAPITAL_EXITS):
+        return Screen.CAPITAL
     return Screen.UNKNOWN
 
 
@@ -137,6 +144,11 @@ def settle(game: Game, steps: int | None = None) -> Screen:
                 game.wait(UNKNOWN_WAIT)  # a builder battle without End Battle: let it play out
         elif screen is Screen.POPUP:
             village.clear_popups(game, rounds=1)
+        elif screen is Screen.CAPITAL:
+            from farmbot.tasks import capital
+
+            log.info("In the Clan Capital: going home")
+            capital._go_home(game)
         elif _seen(game, T.FIND_MATCH) and getattr(game.device, "back", None):
             # The battle menu, left open by a round that failed: Back closes it.
             log.info("Closing the battle menu")
@@ -145,4 +157,9 @@ def settle(game: Game, steps: int | None = None) -> Screen:
             game.wait(1.5)
         else:
             game.wait(UNKNOWN_WAIT)
-    raise StuckError(f"couldn't get back to a village (saw: {', '.join(s.value for s in seen[-4:])})")
+    hint = ""
+    if all(s is Screen.UNKNOWN for s in seen):  # nothing recognised at all: maybe not the game's English
+        from farmbot import language
+
+        hint = language.stuck_hint(game.device)
+    raise StuckError(f"couldn't get back to a village (saw: {', '.join(s.value for s in seen[-4:])}){hint}")

@@ -12,7 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from farmbot import __version__, bluestacks, catalog, text
+from farmbot import __version__, bluestacks, catalog, imagefile, text
 from farmbot.accounts import load_active
 from farmbot.bot import Bot
 from farmbot.config import EMULATORS, Config, ensure_config
@@ -40,7 +40,7 @@ def _device(args: argparse.Namespace, cfg: Config, retry: bool = False) -> AdbDe
 
 def _screen(args: argparse.Namespace, cfg: Config) -> np.ndarray:
     if getattr(args, "image", None):
-        image = cv2.imread(args.image, cv2.IMREAD_COLOR)
+        image = imagefile.read(args.image, cv2.IMREAD_COLOR)
         if image is None:
             raise FileNotFoundError(f"cannot read {args.image}")
     else:
@@ -67,7 +67,7 @@ def cmd_screenshot(args: argparse.Namespace) -> int:
     image = _screen(args, cfg)
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out), image)
+    imagefile.write(str(out), image)
     print(f"saved {out} ({image.shape[1]}x{image.shape[0]}, scaled to the bot's coordinates)")
     return 0
 
@@ -82,7 +82,7 @@ def cmd_crop(args: argparse.Namespace) -> int:
         return 1
     out = Path(cfg.bot.templates) / f"{args.name}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out), crop)
+    imagefile.write(str(out), crop)
     print(f"saved template {out}")
     return 0
 
@@ -114,7 +114,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     print("\n".join(lines))
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out), overlay)
+    imagefile.write(str(out), overlay)
     print(f"overlay: {out}")
     return 0
 

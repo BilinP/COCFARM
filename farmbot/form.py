@@ -98,7 +98,7 @@ FIELDS = [
     Field("builder.upgrade_lab", "bool"),
     Field("builder.upgrade_buildings", "bool"),
     Field("builder.upgrade_first", "text"),
-    Field("builder.upgrade_builders", "int", 0, 10),
+    Field("builder.upgrade_builders", "int", -1, 10),
     Field("walls.enabled", "bool"),
     Field("walls.use", "text"),
     Field("walls.keep_gold", "percent", 0, 100),
@@ -113,7 +113,7 @@ FIELDS = [
     Field("upgrade.first", "text"),
     Field("upgrade.new_buildings", "bool"),
     Field("upgrade.town_hall", "bool"),
-    Field("upgrade.builders", "int", 0, 10),
+    Field("upgrade.builders", "int", -1, 10),
     # What the storages hold
     Field("storage.gold", "amount"),
     Field("storage.elixir", "amount"),
@@ -133,7 +133,6 @@ FIELDS = [
     Field("capital.raid", "bool"),
     Field("capital.miner_heal_at", "percent", 10, 95),
     Field("capital.fortress_heal_at", "percent", 10, 95),
-    Field("capital.record", "bool"),
     Field("clan.request_every_minutes", "int", 1, 600),
     # Schedule
     Field("schedule.enabled", "bool"),

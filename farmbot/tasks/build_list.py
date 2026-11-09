@@ -111,6 +111,11 @@ SEPARATOR_SCORE = 0.65  # the "/" reads as a poor digit
 # A tab's own counter ("1/2": free of all) under its picture: x either side
 # of the tab's middle, y from the bottom (top, height).
 TAB_COUNTER = (45, 55, 30)
+# The open tab is lighter than the others (V ~155 to ~114, ~100 if locked;
+# a window over the list dims them all alike), in a strip beside its picture:
+TAB_STRIP = (52, 42, 100, 20)  # x left of the tab's middle (from, to), y above the bottom (from, to)
+TAB_LIGHTER = 15  # brighter than every other tab by at least this (seen: 21 dimmed, 41 or more)
+TABS_ALIKE = 25  # ...which differ by less than this (seen: 14, a locked tab beside an open one)
 
 # The builder base's upgrade windows have no Confirm: the price itself is a
 # big green button, with the resource's icon in it (a gem button never has
@@ -186,27 +191,124 @@ def _grey(screen: np.ndarray, match) -> bool:
     return hsv is not None and hsv[1] < GREY_SATURATION
 
 
+# The filter menu is waited on by what shows, not for set times (it opens
+# in ~0.25 s, a button lights in ~0.25-0.6 s, it closes in ~0.25-0.5 s and
+# the list is still ~0.4-0.7 s later); these are only the most it's given.
+MENU_OPENS = 3.0
+BUTTON_LIGHTS = 1.5
+MENU_CLOSES = 2.0
+LIST_SETTLES = 1.5
+POLL = 0.15
+EMPTY_FOR = 3600.0  # s a filter found empty (its button grey) is taken as still empty
+
+
+def _until(game: Game, done, timeout: float) -> bool:
+    """Look (a fresh screenshot each time) until ``done()``, at most ``timeout`` s."""
+    deadline = game.clock() + timeout
+    while True:
+        game.refresh()
+        if done():
+            return True
+        if game.clock() >= deadline:
+            return False
+        game.wait(POLL, exact=True)
+
+
+def _still(game: Game, area: Rect, timeout: float) -> None:
+    """Until ``area`` stops moving (two looks alike), at most ``timeout`` s."""
+    def part(screen):
+        return screen[area.y:area.y + area.h, area.x:area.x + area.w].astype(np.int16)
+    before = part(game._current())
+    deadline = game.clock() + timeout
+    while game.clock() < deadline:
+        game.wait(POLL, exact=True)
+        game.refresh()
+        now = part(game.screen)
+        if float(np.abs(now - before).mean()) < LIST_STILL:
+            return
+        before = now
+
+
+def _settled(game: Game, timeout: float) -> None:
+    """Until the list stops moving (two looks alike), at most ``timeout`` s."""
+    before = game._current().copy()
+    deadline = game.clock() + timeout
+    while game.clock() < deadline:
+        game.wait(POLL, exact=True)
+        game.refresh()
+        if list_still(before, game.screen):
+            return
+        before = game.screen.copy()
+
+
+def forget_filters(game: Game) -> None:
+    """Start a round of the list: what each tab's filter was set to isn't
+    known (the game may have changed it since), nor which tab is open."""
+    game.list_filters = {}
+    game.list_tab = None
+
+
+def _tab_key(game: Game, lst: BuildList):
+    tab = getattr(game, "list_tab", None)
+    return None if tab is None or tab[0] != lst.builder_base else tab
+
+
 def set_filter(game: Game, resource: str | None = None, kind: str | None = None, sort: str | None = None,
                lst: BuildList = HOME) -> bool:
+    """Set the open tab's filter, remembering (within a round, see
+    ``forget_filters``) what each tab's is, so the same one isn't set twice,
+    and (for an hour) a filter that's empty, so it isn't opened for again."""
+    tab = _tab_key(game, lst)
+    wanted = (resource, kind, sort)
+    filters = getattr(game, "list_filters", None)
+    empty = getattr(game, "empty_filters", None)
+    if empty is None:
+        empty = game.empty_filters = {}
+    now = game.clock()
+    for key in [k for k, until in empty.items() if until <= now]:
+        del empty[key]
+    if tab is not None and (tab, resource, kind) in empty:
+        log.debug("Filter %s: empty a moment ago, not opened", wanted)
+        return False
+    if tab is not None and filters is not None and filters.get(tab) == wanted:
+        return True  # already so
+    ok, grey = _set_filter(game, resource, kind, sort, lst)
+    if filters is not None and tab is not None:
+        filters[tab] = wanted if ok else None  # (part set: not known)
+    if grey and tab is not None:
+        empty[(tab, resource, kind)] = now + EMPTY_FOR
+    return ok
+
+
+def _set_filter(game: Game, resource: str | None, kind: str | None, sort: str | None,
+                lst: BuildList) -> tuple[bool, bool]:
     """Set the open tab's filter menu to exactly this: ``resource`` a
     T.FILTER_GOLD/ELIXIR/DARK, ``kind`` a type button (T.FILTER_HERO, ...),
     ``sort`` T.SORT_COST_MAX or T.SORT_COST_MIN; ``None`` turns that group
     off. Every other button is turned off. False if the tab has no filter,
     or a wanted button isn't on it or can't be picked (grey: nothing of
-    that type to upgrade)."""
+    that type to upgrade; also says whether one was grey)."""
     if not game.has(T.LIST_FILTER):
-        return False
+        return False, False
     game.refresh()
     button = game.find(T.LIST_FILTER)
     if button is None:
-        return False
-    game.tap_match(button)
-    game.wait(1.0)
+        return False, False
     # The menu opens below the button, left of the list (and below the
     # resource bar, whose icons look like the menu's).
     top = button.y + button.h
     menu = Rect(0, top, button.x + button.w, game.size[1] - top)
-    ok = True
+    sorts = [n for n in SORT_BUTTONS if game.has(n)]
+
+    def shown() -> bool:
+        return any(game.find(n, region=menu) for n in sorts)
+
+    game.tap_match(button)
+    if not sorts or not _until(game, shown, MENU_OPENS):
+        game.wait(1.0)  # (no sort pictures to see it by: as long as it takes)
+    else:
+        _still(game, menu, MENU_OPENS)  # it slides open: its buttons found where they stop
+    ok, grey = True, False
     for group, wanted in ((tuple(lst.resource_filter.values()), resource), (TYPE_BUTTONS, kind),
                           (SORT_BUTTONS, sort)):
         game.refresh()
@@ -214,29 +316,54 @@ def set_filter(game: Game, resource: str | None = None, kind: str | None = None,
             m = game.has(name) and name != wanted and game.find(name, region=menu)
             if m and _lit(game.screen, m):
                 game.tap_match(m)  # a second tap turns it off
-                game.wait(0.5)
-                game.refresh()
+                _until(game, lambda: not _lit(game.screen, m), BUTTON_LIGHTS)
         if wanted is None:
             continue
         m = game.has(wanted) and game.find(wanted, region=menu)
         if not m or _grey(game.screen, m):
             ok = False
+            grey = grey or bool(m)
             continue
         if not _lit(game.screen, m):
             game.tap_match(m)
-            game.wait(0.5)
-            game.refresh()
+            lit = m
+            _until(game, lambda: _lit(game.screen, lit), BUTTON_LIGHTS)
             m = game.find(wanted, region=menu)
             ok &= bool(m) and _lit(game.screen, m)
     game.tap_match(button)  # closes the menu
-    game.wait(1.0)
-    return ok
+    if not sorts or not _until(game, lambda: not shown(), MENU_CLOSES):
+        game.wait(1.0)
+    _settled(game, LIST_SETTLES)  # the rows re-sort
+    return ok, grey
+
+
+def tab_open(game: Game, tab: str, lst: BuildList = HOME) -> bool | None:
+    """Whether ``tab`` is the list's open tab, lighter than the others,
+    which all look alike; None if that isn't what's seen (no list, say)."""
+    w, h = game.size
+    x0, x1, y0, y1 = TAB_STRIP
+    light = {}
+    for name, x in lst.tabs.items():
+        hsv = _median_hsv(game._current(), w - x - x0, h - y0, w - x - x1, h - y1)
+        if hsv is None:
+            return None
+        light[name] = hsv[2]
+    brightest = max(light, key=light.get)
+    rest = [v for n, v in light.items() if n != brightest]
+    if light[brightest] - max(rest) < TAB_LIGHTER or max(rest) - min(rest) >= TABS_ALIKE:
+        return None  # none lighter, or the others unalike: not the tabs
+    return brightest == tab
 
 
 def open_tab(game: Game, tab: str, lst: BuildList = HOME) -> None:
-    """Open ``tab``. A tap on a tab is sometimes missed, so it's tapped once
-    more if the list's title didn't change (which costs a tap when the tab
-    was open already)."""
+    """Open ``tab``, unless it's open already. A tap on a tab is sometimes
+    missed, so it's tapped once more if the tab still isn't lit (or, when
+    the tabs can't be told apart, if the list's title didn't change)."""
+    game.list_tab = None  # (known again once it's open)
+    game.refresh()
+    if tab_open(game, tab, lst):
+        game.list_tab = (lst.builder_base, tab)
+        return
     w, h = game.size
     title = (slice(20, 50), slice(w - 377, w - 77))
     for _ in range(2):
@@ -244,7 +371,9 @@ def open_tab(game: Game, tab: str, lst: BuildList = HOME) -> None:
         game.tap(w - lst.tabs[tab], h - lst.tab_from_bottom)
         game.wait(1.2)
         game.refresh()
-        if float(np.abs(game.screen[title].astype(np.int16) - before).mean()) > 5:
+        lit = tab_open(game, tab, lst)
+        if lit or (lit is None and float(np.abs(game.screen[title].astype(np.int16) - before).mean()) > 5):
+            game.list_tab = (lst.builder_base, tab)
             return
 
 
@@ -285,6 +414,65 @@ def rows(game: Game, kinds: tuple[str, ...] = ("gold", "elixir", "dark"), lst: B
     return sorted(found, key=lambda r: r.y)
 
 
+# Under the list's last row is its plain dark brown background: when the
+# band just above the tabs is that, the whole list is on show and a swipe
+# can't bring more (rows: V p90 ~180, saturation ~109; the background: ~88,
+# ~130; a list dimmed by a window over it: 104, 109, so it's still swiped).
+END_BAND = (95, 5)  # y above the list's bottom (from, to)
+END_BAND_X = (340, 20)  # x from the right edge (from, to)
+END_BRIGHTEST = 120  # V's 90th percentile under this...
+END_SATURATION = 120  # ...and saturation's median at least this
+TOWN_HALL_SCROLLS = 3  # pages of a Cost Max list looked through for the Town Hall (it's among the dearest)
+
+
+def town_hall_row(game: Game, kinds: tuple[str, ...] = ("gold",),
+                  lst: BuildList = HOME) -> tuple[Row | None, bool]:
+    """In a tab sorted Cost Max, the Town Hall's priced row (its upgrade),
+    looking down the first few pages, and whether its name was seen. A row
+    seen with no price read is one it can't pay for yet (the game draws
+    that price red, which the digits reader can't read); not seen at all:
+    upgrading already, or the top level."""
+    if not game.has(T.TOWN_HALL_ROW):
+        return None, False
+    w, h = game.size
+    x, y = w - LIST_SWIPE_X, h - LIST_SWIPE_FROM_BOTTOM
+    everything = replace(lst, left_out=tuple(n for n in lst.left_out if n != T.TOWN_HALL_ROW))
+    game.refresh()
+    seen = False
+    for _ in range(TOWN_HALL_SCROLLS):
+        names = [m.y for m in game.find_all(T.TOWN_HALL_ROW)]
+        seen = seen or bool(names)
+        found = [r for r in rows(game, kinds, everything)
+                 if any(WALL_ROW_BAND[0] <= n - r.y <= WALL_ROW_BAND[1] for n in names)]
+        if found:
+            return found[0], True
+        if names:
+            return None, True  # there, but its price isn't readable: red
+        if list_ends_here(game):
+            return None, seen  # all of it on show: nothing to scroll to
+        before = game.screen
+        game.swipe(x, y, x, y - LIST_PAGE, duration_ms=SLOW_SWIPE_MS)
+        game.wait(0.8)
+        game.refresh()
+        if list_still(before, game.screen):
+            return None, seen
+    return None, seen
+
+
+def list_ends_here(game: Game) -> bool:
+    """Whether the list's last row is on show: below it, down to the tabs,
+    the list's empty background. Then there's nothing to scroll to."""
+    screen = game._current()
+    h, w = screen.shape[:2]
+    bottom = h - LIST_BOTTOM_FROM_BOTTOM
+    band = screen[bottom - END_BAND[0]:bottom - END_BAND[1], w - END_BAND_X[0]:w - END_BAND_X[1]]
+    if band.size == 0:
+        return False
+    hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+    return (float(np.percentile(hsv[..., 2], 90)) < END_BRIGHTEST
+            and float(np.median(hsv[..., 1])) >= END_SATURATION)
+
+
 def list_still(before: np.ndarray | None, after: np.ndarray | None) -> bool:
     """Whether the list's panel looks the same in both screenshots: a swipe
     didn't move it (its end). Only the panel is compared: the village
@@ -310,6 +498,8 @@ def first_affordable(game: Game, budget: dict[str, int], lst: BuildList = HOME,
                  if r.price <= budget[r.kind] and (r.kind, r.price) not in (skip or ())]
         if found:
             return found[0]
+        if list_ends_here(game):
+            return None  # all of it on show: nothing to scroll to
         before = game.screen
         game.swipe(x, y, x, y - LIST_PAGE, duration_ms=SLOW_SWIPE_MS)
         game.wait(0.8)

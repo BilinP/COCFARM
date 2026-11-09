@@ -11,6 +11,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from farmbot import imagefile
 from farmbot.config import WallsConfig
 from farmbot.game import Game, T
 from farmbot.geometry import Rect
@@ -111,7 +112,7 @@ def _keep_screen(folder: Path, screen: np.ndarray | None) -> None:
         old = sorted(folder.glob("*.png"))
         for path in old[:max(0, len(old) - SCREENS_KEPT + 1)]:
             path.unlink()
-        cv2.imwrite(str(folder / f"{datetime.now():%Y%m%d-%H%M%S}.png"), screen)
+        imagefile.write(str(folder / f"{datetime.now():%Y%m%d-%H%M%S}.png"), screen)
     except OSError:
         pass
 

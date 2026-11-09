@@ -199,6 +199,9 @@ class AttackConfig:
     no_loot_seconds: float = 15.0
     # End once this share of the base's reported loot is taken (0 = off).
     end_at_loot_share: float = 0.9
+    # End once what's taken fills the storages (bot.stop_when_full's, or all of
+    # them): the rest of the battle couldn't bring any more in.
+    end_when_full: bool = True
     taps_per_batch: int = 6  # deploy taps between checks of the troop card
     max_batches_per_card: int = 12
     battle_timeout: float = 180.0
@@ -361,8 +364,6 @@ class CapitalConfig:
     # A heal goes on the units once their health bars fall under this share.
     miner_heal_at: float = 0.7  # Super Miners: kept going together
     fortress_heal_at: float = 0.5  # Flying Fortresses
-    # Save every raid's screens, taps and log (screens/raids/<time>/), to replay them offline.
-    record: bool = False
 
 
 @dataclass
@@ -492,7 +493,7 @@ class UpgradeConfig:
     new_buildings: bool = True
     town_hall: bool = True
     # How many of the village's builders upgrades may keep busy (walls aside),
-    # once the village data says how many there are. 0: all but one.
+    # once the village data says how many there are. 0: all but one; -1: none.
     builders: int = 0
 
 
@@ -560,7 +561,7 @@ class BuilderConfig:
     upgrade_buildings: bool = True
     upgrade_first: str = "none"  # the kind of building that gets builders first
     # How many of the builder base's builders upgrades may keep busy, once the
-    # village data says how many there are (the Master Builder, O.T.T.O). 0: all but one.
+    # village data says how many there are (the Master Builder, O.T.T.O). 0: all but one; -1: none.
     upgrade_builders: int = 0
     battle_timeout: float = 400.0  # both stages together
     return_home_after: bool = False  # sail back to the home village when the bot stops
@@ -730,7 +731,9 @@ REMOVED_SETTINGS = {"redline.reveal_tap",  # never used: inside a base, grass by
                     # Profiles are always on (picked by the account in the game).
                     "profiles.auto",
                     # Walls are always the cheapest (taking the first one shown saved little).
-                    "walls.pick"}
+                    "walls.pick",
+                    # Recording raids was a tool for working on the raids, not a setting.
+                    "capital.record"}
 
 
 # One unit each to donate became lists: older files' choices carry over.

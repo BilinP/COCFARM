@@ -24,6 +24,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from farmbot import imagefile
 from farmbot.config import Config, load_config, save_config
 
 log = logging.getLogger(__name__)
@@ -141,7 +142,7 @@ def read_name(mask: np.ndarray) -> str:
         picture = cv2.copyMakeBorder(picture, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)  # dark letters on white
     with tempfile.TemporaryDirectory() as folder:
         path = Path(folder) / "name.png"
-        cv2.imwrite(str(path), picture)
+        imagefile.write(str(path), picture)
         try:
             out = subprocess.run(
                 ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",

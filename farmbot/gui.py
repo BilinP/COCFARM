@@ -574,6 +574,9 @@ def emulator_defaults() -> dict[str, dict[str, str]]:
     }
 
 
+NO_BUILDERS = -1  # "Builders to use" at 0: upgrades keep none busy (0 itself means all but one)
+
+
 def _relayout_group(group: "SettingCardGroup") -> None:
     """Re-place a group's cards after one changed height, and resize the group."""
     group._relayout_due = False
@@ -650,6 +653,32 @@ def _folded_in(card: QWidget) -> MoreCard | None:
     while parent is not None and not isinstance(parent, MoreCard):
         parent = parent.parentWidget()
     return parent if parent is not None and not parent.isExpand else None
+
+
+def _fold_of(card: QWidget) -> MoreCard | None:
+    """The :class:`MoreCard` ``card`` is folded under (open or closed), if any."""
+    parent = card.parentWidget()
+    while parent is not None and not isinstance(parent, MoreCard):
+        parent = parent.parentWidget()
+    return parent
+
+
+def _hide_locked_folds(folds: dict[MoreCard | None, list[bool]]) -> None:
+    """A fold whose settings are all locked (``folds``: fold -> each of its
+    settings locked?) is hidden: there's nothing in it to set yet."""
+    for fold, offs in folds.items():
+        if fold is None:
+            continue
+        hide = all(offs) and len(offs) >= fold.viewLayout.count()
+        if fold.isVisibleTo(fold.parentWidget()) == hide:
+            if hide and fold.isExpand:
+                fold.setExpand(False)
+            fold.setVisible(not hide)
+            group = fold.parentWidget()
+            while group is not None and not isinstance(group, SettingCardGroup):
+                group = group.parentWidget()
+            if group is not None:
+                QTimer.singleShot(0, lambda g=group: _relayout_group(g))
 
 
 HELP_WIDTH = 560  # px: a card's explanation wraps here rather than running across a wide window
@@ -954,6 +983,7 @@ class PriorityList(QWidget):
         self.rows: dict[str, QWidget] = {}
         self.ranks: dict[str, QLabel] = {}
         self.switches: dict[str, SwitchButton] = {}
+        self.tags: dict[str, dict[str, QLabel]] = {}  # key -> resource -> its tag
         self.buttons: list[QWidget] = []
         self.callbacks: list[Callable] = []
         for key, (icon, title, resources) in rows.items():
@@ -972,9 +1002,11 @@ class PriorityList(QWidget):
             line.addWidget(rank)
             line.addWidget(picture)
             line.addWidget(name)
+            self.tags[key] = {}
             for resource in resources:
                 text, tone, background = RESOURCE_TAGS[resource]
-                line.addWidget(pill(text, tone, background))
+                tag = self.tags[key][resource] = pill(text, tone, background)
+                line.addWidget(tag)
             line.addStretch(1)
             up, down = TransparentToolButton(FIF.UP), TransparentToolButton(FIF.DOWN)
             up.setToolTip("Earlier")
@@ -988,7 +1020,25 @@ class PriorityList(QWidget):
             line.addWidget(switch)
             self.rows[key], self.ranks[key], self.switches[key] = row, rank, switch
             self.buttons += [up, down]
+            row.installEventFilter(self)  # a row switched off (locked) fades whole: not just its switch
         self.set_order(self.order)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.EnabledChange and obj in self.rows.values():
+            _fade(obj, not obj.isEnabled())
+        return False
+
+    def lock(self, key: str, off: bool, why: str = "") -> None:
+        """Row ``key`` greyed out (``off``), saying ``why`` when pointed at."""
+        self.rows[key].setEnabled(not off)
+        self.rows[key].setToolTip(why if off else "")
+
+    def lock_resource(self, resource: str, off: bool, why: str = "") -> None:
+        """Every row's ``resource`` tag faded (``off``): it isn't spent yet."""
+        for tags in self.tags.values():
+            if resource in tags:
+                _fade(tags[resource], off)
+                tags[resource].setToolTip(why if off else "")
 
     def move(self, key: str, step: int) -> None:
         i = self.order.index(key)
@@ -1690,11 +1740,36 @@ class FarmRow(SimpleCardWidget):
             self.hub.remove_farm(self.n)
 
 
+RESTART_WAITS = (10 * 60, 20 * 60, 40 * 60)  # seconds before a stopped farm starts again: 1st, 2nd, 3rd time
+RESTARTS_MOST = len(RESTART_WAITS)  # restarts in RESTART_WINDOW; more, and it stays stopped
+RESTART_WINDOW = 2 * 3600
+NEEDS_YOU = ("another COCFARM window", "was not found", "has no instance", "is not running. Start it")
+
+
+def restart_wait(exc: Exception, restarts: list[float], now: float) -> float | None:
+    """How long before a farm stopped by ``exc`` starts again by itself, or
+    None to leave it stopped: what restarting can't fix (no login, another
+    farm on the account, a maintenance break that never ended), or too many
+    restarts lately (``restarts``: when the earlier ones were)."""
+    from farmbot import bot, screens
+
+    if isinstance(exc, (screens.NotLoggedIn, screens.MaintenanceBreak, bot.SameAccount)):
+        return None
+    # What needs you: another COCFARM on it, an emulator or instance missing,
+    # or one COCFARM may not start (Open the emulator automatically is off).
+    if any(words in str(exc) for words in NEEDS_YOU):
+        return None
+    recent = [t for t in restarts if now - t < RESTART_WINDOW]
+    if len(recent) >= RESTARTS_MOST:
+        return None
+    return RESTART_WAITS[len(recent)]
+
+
 class SpareRow(SimpleCardWidget):
     """An emulator instance on this PC that no farm plays yet. Switching it
     on makes it a farm (with the last farm's settings), picked."""
 
-    def __init__(self, page: FarmsPage, choice: instances.Choice):
+    def __init__(self, page: FarmsPage, choice: instances.Choice, clash: int | None = None):
         super().__init__()
         self.page, self.hub, self.choice = page, page.hub, choice
         row = QHBoxLayout(self)
@@ -1707,13 +1782,17 @@ class SpareRow(SimpleCardWidget):
         self.title = StrongBodyLabel(_instance_name(choice))
         self.title.setStyleSheet("font-size: 15px;")
         about.addWidget(self.title)
-        about.addWidget(tint(CaptionLabel(f"{choice.emulator} · not a farm yet: switch it on to farm with it"),
-                             MUTED))
+        what = (f"its connection port is farm {clash}'s instance's: the two can't farm at the same time"
+                if clash is not None else "not a farm yet: switch it on to farm with it")
+        about.addWidget(tint(CaptionLabel(f"{choice.emulator} · {what}"), MUTED))
         row.addLayout(about, 1)
         self.switch = SwitchButton()
         self.switch.setOnText("")
         self.switch.setOffText("")
         self.switch.setToolTip("Make it a farm, picked for Start")
+        if clash is not None:  # (a new instance, from New instance, gets a port of its own)
+            self.switch.setEnabled(False)
+            self.switch.setToolTip(f"Its port is farm {clash}'s: make a new instance instead (New instance)")
         self.switch.checkedChanged.connect(self._switched)
         row.addWidget(self.switch)
         self.delete_button = TransparentToolButton(FIF.DELETE)
@@ -1811,11 +1890,20 @@ class FarmsPage(Page):
         """The instances no farm plays yet (a row each, after the farms), and
         New instance's menu: one per emulator."""
         devices = self.hub.farm_devices()
-        self._choices = [c for c in self.hub.found
-                         if not any(instances.same_instance(d, c.device(d)) for d in devices.values())]
+        # (an empty placeholder LDPlayer keeps, never started, isn't listed: it
+        # has no game, and a new instance is a copy of a farm's anyway)
+        self._choices = [c for c in self.hub.found if not c.empty
+                         and not any(instances.same_instance(d, c.device(d)) for d in devices.values())]
         if len(numbers) < instances.MOST:
+            from farmbot import portmap
+
             for choice in self._choices:
-                self.spares.append(SpareRow(self, choice))  # under "Not assigned"
+                # One whose port a farm's instance wants (MuMu's first and LDPlayer's
+                # first are both on 5555) can't farm next to it: BlueStacks moves.
+                clash = portmap.clash(choice.device(), devices, self.hub.found)
+                if clash is not None and portmap.movable(choice.device(), devices[clash]):
+                    clash = None
+                self.spares.append(SpareRow(self, choice, clash))  # under "Not assigned"
         self.add_menu.clear()
         for emulator in self.hub.found_emulators:
             if emulator.mode == "bluestacks":
@@ -2218,6 +2306,11 @@ class FarmbotWindow(FluentWindow):
     def _build_pages_idle(self) -> None:
         """Build the pages not opened yet one at a time, while nobody uses COCFARM."""
         if not self._lazy or self._closing:
+            return
+        if self.hub is not None and not self.isVisible():
+            # Another farm's window, hidden: its pages are built when it's
+            # shown (each farm's pages take some 75 MB).
+            QTimer.singleShot(5000, self._build_pages_idle)
             return
         hub = self.hub or self
         idle = time.monotonic() - hub.last_input
@@ -2733,6 +2826,12 @@ class FarmbotWindow(FluentWindow):
 
     def _scanned(self, found_emulators: list[instances.Emulator], found: list[instances.Choice]) -> None:
         self.found_emulators, self.found = found_emulators, found
+        from farmbot import bluestacks
+
+        # BlueStacks is moved off the other emulators' ports (it keeps the one
+        # it's given), while another emulator is installed.
+        others = any(e.mode != "bluestacks" for e in found_emulators)
+        bluestacks.other_ports = (lambda cfg, listed=found: instances.other_ports(cfg, listed)) if others else None
         self.rebuild_farm_pages()
 
     def rebuild_farm_pages(self) -> None:
@@ -2820,11 +2919,17 @@ class FarmbotWindow(FluentWindow):
             return None
         hub.rebuild_farm_pages()
         clash = instances.port_clash(device, others, hub.found)
-        if clash is not None and device.mode == others[clash].mode == "ldplayer":
-            notice(InfoBarIcon.INFORMATION, f"Added farm {n}", f"Its LDPlayer instance has the same connection port "
-                   f"as farm {clash}'s. When both farm, COCFARM copies one of them (with the game and its login) to "
-                   "an instance with a port of its own: that takes a few minutes and several GB of disk.",
-                   duration=12000, parent=self._shown())
+        from farmbot import portmap
+
+        if clash is not None and portmap.movable(device, others[clash]):
+            notice(InfoBarIcon.INFORMATION, f"Added farm {n}", f"Its instance has the same connection port as farm "
+                   f"{clash}'s. BlueStacks keeps whatever port it's given, so COCFARM gives it another one when it "
+                   "starts: both can farm at the same time.", duration=10000, parent=self._shown())
+        elif clash is not None and "ldplayer" in (device.mode, others[clash].mode):
+            notice(InfoBarIcon.INFORMATION, f"Added farm {n}", f"Its instance has the same connection port "
+                   f"as farm {clash}'s. When both farm, COCFARM copies the LDPlayer one (with the game and its login) "
+                   "to an instance with a port of its own: that takes a few minutes and several GB of disk, and the "
+                   "old instance can be deleted after.", duration=12000, parent=self._shown())
         elif clash is not None:
             notice(InfoBarIcon.WARNING, f"Added farm {n}, but…", f"Its emulator instance has the same connection "
                    f"port as farm {clash}'s, so the two can't play at the same time. Give one of them another "
@@ -2864,9 +2969,18 @@ class FarmbotWindow(FluentWindow):
         hub.rebuild_farm_pages()
         events = hub.events
 
+        # A new LDPlayer instance never gets a number whose port another farm's
+        # instance wants, nor one another LDPlayer has (one numbering for both).
+        from farmbot import ldplayer, portmap
+
+        avoid: set[int] = set()
+        if device.mode == "ldplayer":
+            picked = ldplayer.pick_install(device, ldplayer.find_installs())  # ("": the newest found)
+            avoid = portmap.ldplayer_avoid(picked.name if picked else device.ldplayer, devices.values(), hub.found)
+
         def work() -> None:
             try:
-                key = instances.create_instance(device, close=close)
+                key = instances.create_instance(device, close=close, avoid=avoid)
             except instances.StillOpen as exc:
                 events.put(("call", lambda name=str(exc): hub._created(emulator, None, still_open=name)))
             except Exception as exc:
@@ -3660,6 +3774,9 @@ class FarmbotWindow(FluentWindow):
                     "Presses the 1x button when it shows, with a minute of the battle left.")
         self.switch(end, "attack.end_when_no_loot", FIF.RETURN, "Leave when the loot stops",
                     "Ends the battle early once no more loot is coming in.")
+        self.switch(end, "attack.end_when_full", FIF.HOME, "Leave when the storages are full",
+                    "Ends the battle once the loot taken fills your storages (the ones picked under "
+                    "When these storages are full, or all of them): the rest couldn't be kept.")
         leaving = MoreCard("When exactly to leave", "How long without loot, or how much loot is enough")
         self.number(leaving, "attack.no_loot_seconds", FIF.STOP_WATCH, "No loot for",
                     "Seconds without any loot before leaving.", "s")
@@ -3712,8 +3829,8 @@ class FarmbotWindow(FluentWindow):
                     "take seconds), put down where the game places them; you can move them later. New walls, "
                     "which are free, are put down too.")
         self.switch(ups, "upgrade.town_hall", FIF.HOME_FILL, "Upgrade the Town Hall",
-                    "Like any building. While it can't be (the game wants other buildings built first), the next "
-                    "upgrade is started instead.")
+                    "First among the buildings, once gold is full. While it can't be (the game wants other "
+                    "buildings built first), the next upgrade is started instead.")
         self.builders_card = self._builders(
             ups, "upgrade.builders", "How many of your builders upgrades may keep busy; the rest stay free for "
             "walls (a wall needs a free builder) or for you. Default: all but one. From your village data.")
@@ -3755,7 +3872,7 @@ class FarmbotWindow(FluentWindow):
             if not total:
                 return
             slider.blockSignals(True)  # (a new range isn't a change of the setting)
-            slider.setRange(1, total)
+            slider.setRange(0, total)  # (from 0: "1 of 2" sits midway, not at the very start)
             slider.setValue(builder_limit(total, state["value"]))
             slider.blockSignals(False)
             shown.setText(f"{slider.value()} of {total}")
@@ -3763,7 +3880,7 @@ class FarmbotWindow(FluentWindow):
         def moved(v: int) -> None:
             total = state["total"]
             if total:
-                state["value"] = 0 if v == builder_limit(total, 0) else v
+                state["value"] = 0 if v == builder_limit(total, 0) else v or NO_BUILDERS
                 shown.setText(f"{v} of {total}")
 
         def set_value(v) -> None:
@@ -3865,10 +3982,7 @@ class FarmbotWindow(FluentWindow):
                     "A heal goes where the miners are heading once their health falls under this.", "%")
         self.number(raids, "capital.fortress_heal_at", FIF.HEART, "Heal Flying Fortresses at",
                     "A heal goes on the fortresses once one falls under this.", "%")
-        self.switch(raids, "capital.record", FIF.CAMERA, "Record raids",
-                    "Saves each raid's screens, taps and log under screens/raids, to look into a raid that went "
-                    "wrong. About 100 MB a raid.")
-        self.depends("capital.raid", "capital.miner_heal_at", "capital.fortress_heal_at", "capital.record")
+        self.depends("capital.raid", "capital.miner_heal_at", "capital.fortress_heal_at")
         self._note(page, self._template_note(catalog.CAPITAL))
 
     def _has_unit_picture(self, name: str) -> bool:
@@ -4148,6 +4262,8 @@ class FarmbotWindow(FluentWindow):
                           "next day. 0 to 0 = no limit.", "attacks")
         return page
 
+    PREVIEW_WIDTH = 360  # px: the Pictures tab's preview of the picture in use
+
     def _pictures(self, page: Page) -> None:
         body = QHBoxLayout()
         body.setSpacing(16)
@@ -4165,11 +4281,15 @@ class FarmbotWindow(FluentWindow):
         self.picture_where.setWordWrap(True)
         self.picture_status = CaptionLabel("")
         self.picture_status.setWordWrap(True)
-        current = QHBoxLayout()
+        # The picture, and what's known of it under it: a wide one (a window's
+        # title) beside the words would squeeze them into a column.
+        current = QVBoxLayout()
+        current.setSpacing(4)
         self.picture_preview = QLabel()
         self.picture_preview.setFixedHeight(56)
+        self.picture_preview.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         current.addWidget(self.picture_preview)
-        current.addWidget(self.picture_status, 1)
+        current.addWidget(self.picture_status)
         for w in (self.picture_title, self.picture_where):
             right.addWidget(w)
         right.addLayout(current)
@@ -4243,7 +4363,10 @@ class FarmbotWindow(FluentWindow):
         paths = library.paths(picture.name)
         if paths:
             pixmap = QPixmap(str(paths[0]))
-            self.picture_preview.setPixmap(pixmap.scaledToHeight(min(56, pixmap.height()), Qt.SmoothTransformation))
+            # At most 56 tall and PREVIEW_WIDTH wide, never stretched: a wide one never widens the page.
+            scale = min(56 / max(pixmap.height(), 1), self.PREVIEW_WIDTH / max(pixmap.width(), 1), 1.0)
+            self.picture_preview.setPixmap(pixmap.scaled(round(pixmap.width() * scale), round(pixmap.height() * scale),
+                                                         Qt.KeepAspectRatio, Qt.SmoothTransformation))
             extra = f" (+{len(paths) - 1} more)" if len(paths) > 1 else ""
             self.picture_status.setText(f"✓ Added{extra}. Saving a new one replaces it." if not picture.folder else
                                         f"✓ {len(paths)} picture(s) added. Saving adds another.")
@@ -5068,7 +5191,7 @@ class FarmbotWindow(FluentWindow):
                       "super_troops": ("attack.super_troops",),
                       "siege": ("attack.use_siege",)},
         "village": {"dark": ("bot.collect_dark", "storage.dark")},
-        "upgrades": {"research": (), "heroes": (), "pets": (), "wall_elixir": ()},  # (rows; walls' Pay with)
+        "upgrades": {"research": (), "heroes": (), "pets": (), "dark": (), "wall_elixir": ()},  # (rows; dark tags; walls' Pay with)
     }
     # The same, per tab of the builder base (once it's open).
     BUILDER_LOCKED_PARTS = {
@@ -5124,6 +5247,9 @@ class FarmbotWindow(FluentWindow):
                            f"•  {townhall.NAMES['dark']}: {locked['dark']} (the Dark storage below)"
                            if "dark" in locked else "")
         listing = getattr(self, "upgrade_list", None)
+        folds: dict[MoreCard | None, list[bool]] = {}
+        if listing is not None:  # (no dark elixir yet: its tags are faded, it isn't spent)
+            listing.lock_resource("dark", "dark" in locked, f"Town Hall {th}: {locked.get('dark', '')}")
         self._grey_parts(self.pages.get("Builder base"), self.BUILDER_LOCKED_PARTS, locked, th)
         for tab, parts in self.LOCKED_PARTS.items():
             lines = []
@@ -5139,18 +5265,21 @@ class FarmbotWindow(FluentWindow):
                     for card in [self.cards.get(path), *self.mirror_cards.get(path, [])]:
                         if card is not None:
                             card.setEnabled(not off)
+                            folds.setdefault(_fold_of(card), []).append(off)
                 row = self.LOCKED_ROWS.get(feature) if tab == "upgrades" else None
                 if row and listing is not None and row in listing.rows:
-                    listing.rows[row].setEnabled(not off)
+                    listing.lock(row, off, f"Town Hall {th}: {locked[feature]}" if off else "")
             if tab in home.tab_pages:
                 home.tab_pages[tab].show_lock(
                     f"Town Hall {th} hasn't unlocked these yet, so they're greyed out and skipped:\n"
                     + "\n".join(lines) if lines else "")
+        _hide_locked_folds(folds)
 
     def _grey_parts(self, page, parts_by_tab: dict, locked: dict[str, str], th: int) -> None:
         """Settings of ``parts_by_tab`` greyed out while locked, with a notice atop their tab."""
         if page is None:
             return
+        folds: dict[MoreCard | None, list[bool]] = {}
         for tab, parts in parts_by_tab.items():
             lines = []
             for feature, paths in parts.items():
@@ -5161,10 +5290,12 @@ class FarmbotWindow(FluentWindow):
                     for card in [self.cards.get(path), *self.mirror_cards.get(path, [])]:
                         if card is not None:
                             card.setEnabled(not off)
+                            folds.setdefault(_fold_of(card), []).append(off)
             if tab in page.tab_pages:
                 page.tab_pages[tab].show_lock(
                     f"Town Hall {th} hasn't unlocked these yet, so they're greyed out and skipped:\n"
                     + "\n".join(lines) if lines else "")
+        _hide_locked_folds(folds)
 
     def _place_of(self, card: QWidget) -> tuple[str, str | None] | None:
         """The page (and tab) a card is on."""
@@ -5416,11 +5547,15 @@ class FarmbotWindow(FluentWindow):
 
         from farmbot.game import Stopped
 
+        from farmbot import claims
+        from farmbot.device import DeviceError
+
         instances.active[self.farm] = self.config.device  # other farms leave its emulator alone
+        instance = claims.instance_name(self.config.device)
         instances.hooks[self.farm] = {"status": lambda s: self.events.put(("status", s)),
                                       "moved": lambda was, now: self.events.put(("moved", (was, now))),
                                       "stopped": stop_event.is_set}
-        try:
+        def attempt() -> None:
             self.events.put(("status", "Connecting to the device…"))
             device = open_device_retrying(self.config.device)
             instances.connected.add(self.farm)
@@ -5443,6 +5578,37 @@ class FarmbotWindow(FluentWindow):
                       reopen_device=(lambda: restart_emulator(self.config.device))
                       if self.config.device.mode in EMULATORS else None)
             bot.run()
+
+        restarts: list[float] = []  # when this farm was started again by itself
+        try:
+            elsewhere = claims.claim(instance, self.farm)
+            if elsewhere is not None:  # another COCFARM program's farm plays it (two would fight over it)
+                raise DeviceError(f"{instances.describe(self.config.device)} is played by farm {elsewhere} in another "
+                                  "COCFARM window: stop it there first, or give this farm another instance")
+            while True:
+                try:
+                    attempt()
+                    break
+                except Stopped:
+                    raise
+                except Exception as exc:  # shown in the window instead of a silent thread death
+                    log.error("Bot stopped: %s", exc)
+                    wait = restart_wait(exc, restarts, time.monotonic())
+                    if wait is None:
+                        self.events.put(("error", str(exc)))
+                        break
+                    if not self._wait_to_restart(stop_event, wait, exc):
+                        break
+                    restarts.append(time.monotonic())
+                    log.warning("Starting the farm again (%d of %d)", len(restarts), RESTARTS_MOST)
+                    from farmbot.bluestacks import close_emulator
+
+                    device_cfg = self.config.device
+                    if device_cfg.mode in EMULATORS and device_cfg.launch_emulator:  # (else it's yours)
+                        try:
+                            close_emulator(device_cfg)  # (a fresh start: it may be what went wrong)
+                        except Exception as close:  # noqa: BLE001 - opening it again tries anyway
+                            log.info("Couldn't close the emulator: %s", close)
         except Stopped:  # Stop pressed while it waited for another farm
             pass
         except Exception as exc:  # shown in the window instead of a silent thread death
@@ -5452,8 +5618,36 @@ class FarmbotWindow(FluentWindow):
             instances.active.pop(self.farm, None)
             instances.connected.discard(self.farm)
             instances.hooks.pop(self.farm, None)
-            instances.accounts_playing.pop(self.farm, None)
+            account = instances.accounts_playing.pop(self.farm, None)
+            if account:
+                claims.release(claims.account_name(account))
+            claims.release(instance)
             self.events.put(("finished", None))
+
+    def _wait_to_restart(self, stop_event: threading.Event, seconds: float, exc: Exception) -> bool:
+        """Wait before starting the stopped farm again, saying how long on its
+        card (and on Discord). False if Pause or Stop was pressed meanwhile
+        (either ends the farm: there's no game to pause)."""
+        from farmbot.notify import Notifier
+
+        minutes = max(1, round(seconds / 60))
+        log.warning("Starting the farm again in %d minutes", minutes)
+        notifier = Notifier(self.config.notify)
+        notifier.who = notifier.who or self.config.profiles.active
+        notifier.send(f"Farm {self.farm}: starting again in {minutes} min",
+                      f"It stopped ({str(exc)[:300]}); COCFARM restarts the emulator and carries on.",
+                      "on_stopped", "info")
+        end, said = time.monotonic() + seconds, None
+        while (left := end - time.monotonic()) > 0:
+            minutes = max(1, round(left / 60))
+            if minutes != said:
+                said = minutes
+                self.events.put(("status", f"Starting again in {minutes} min after a problem: "
+                                           f"{explain(str(exc), self._emulator_name()).title}"))
+            if stop_event.wait(min(1.0, left)) or self.pause_event.is_set():
+                log.info("Not starting again: stopped")
+                return False
+        return True
 
     def _moved_instance(self, was: int, now: int) -> None:
         """The farm was copied to another LDPlayer instance (its old one shared
@@ -5463,11 +5657,16 @@ class FarmbotWindow(FluentWindow):
         self.config.device.ldplayer_index = now
         self._autosave()
         self.scan_emulators()  # the new instance (and the spare) listed on the Farms page
+        old = instances.Choice(str(was), f"{was + 1}", "ldplayer", self.config.device.ldplayer)
+        delete = None
+        if instances.can_delete(old):  # (the emulator's first instance can't be)
+            delete = PushButton(f"Delete instance {was + 1}")
+            delete.clicked.connect(lambda: (self.hub or self).delete_instance(old))
         notice(InfoBarIcon.INFORMATION, f"Farm {self.farm} moved to instance {now + 1}",
                f"Its instance {was + 1} had the same connection port as another farm's, so COCFARM copied it "
                f"(with the game and its login) to instance {now + 1}, which has a port of its own. Instance "
-               f"{was + 1} is kept: delete it on the Farms page if you don't need it.",
-               duration=15000, parent=self._shown())
+               f"{was + 1} isn't needed any more: deleting it frees its disk space.",
+               duration=30000, parent=self._shown(), button=delete)
 
     def _test_connection(self) -> None:
         if not self._autosave():

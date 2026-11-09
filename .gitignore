@@ -27,3 +27,6 @@ farmbot.log
 
 # Which farms are picked on the Farms page: kept locally
 /instances/
+
+# A tool for working on the raids (recording them to replay): kept locally
+farmbot/recorder.py

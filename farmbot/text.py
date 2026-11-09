@@ -15,6 +15,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from farmbot import imagefile
 from farmbot.geometry import Rect
 
 GLYPH_BOX = (12, 18)  # width, height every glyph is compared at
@@ -190,7 +191,7 @@ class Font:
         glyphs = []
         for path in sorted(Path(directory).glob("*.png")):
             char = path.stem.split("_")[0]
-            mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+            mask = imagefile.read(str(path), cv2.IMREAD_GRAYSCALE)
             if mask is None or not char:
                 continue
             glyphs.append(Glyph.from_mask(char, mask))
@@ -252,6 +253,6 @@ def learn(screen: np.ndarray, region: Rect, text: str, directory: str | Path,
         path = out / f"{char}.png"
         if path.exists() and not replace:
             continue
-        cv2.imwrite(str(path), mask)
+        imagefile.write(str(path), mask)
         saved.append(path)
     return saved

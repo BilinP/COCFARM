@@ -17,6 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from farmbot import imagefile
 from farmbot.geometry import Rect
 from farmbot.text import Font, TextStyle
 
@@ -46,7 +47,7 @@ class TemplateLibrary:
         stamp = path.stat().st_mtime
         cached = self._cache.get(path)
         if cached is None or cached[0] != stamp:
-            image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            image = imagefile.read(str(path), cv2.IMREAD_COLOR)
             if image is None:
                 raise FileNotFoundError(f"cannot read template {path}")
             self._cache[path] = cached = (stamp, image)

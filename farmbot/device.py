@@ -56,6 +56,11 @@ class Device(Protocol):
 # runs without one (farmbot.exe, pythonw).
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+# Windows' own commands (netstat, tasklist, taskkill, PowerShell) print in the
+# console's code page (cp850 on a French Windows), not in the cp1252 Python
+# reads them with: "tat" ("État") stopped COCFARM there.
+CONSOLE_TEXT = {"encoding": "oem" if os.name == "nt" else "utf-8", "errors": "replace"}
+
 
 def _run(cmd: list[str]) -> bytes:
     try:

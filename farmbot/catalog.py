@@ -13,6 +13,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from farmbot import imagefile
 from farmbot.game import T
 from farmbot.vision import TemplateLibrary
 
@@ -273,6 +274,6 @@ def lookalike_score(screen: np.ndarray, crop: np.ndarray) -> float:
 def save_crop(root: Path, picture: Picture, crop: np.ndarray, variant: str = "") -> Path:
     path = picture.file_for(root, variant)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not cv2.imwrite(str(path), crop):
+    if not imagefile.write(str(path), crop):
         raise OSError(f"could not write {path}")
     return path

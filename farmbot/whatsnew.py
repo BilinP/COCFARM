@@ -18,6 +18,86 @@ from farmbot.update import STATE, _load, _save, parse_version
 KINDS = ["New", "Improved", "Fixed"]
 
 NOTES: dict[str, list[tuple[str, str, str]]] = {
+    "1.5.2": [
+        ("New", "A stopped farm starts again by itself",
+         "When a farm stops on a problem, it waits 10 minutes (then 20, then 40), restarts the emulator and "
+         "carries on, with the time shown on its card and sent to Discord. Press Pause or Stop to cancel. A "
+         "farm that isn't logged in, shares its account with another farm, or needs you (a missing emulator, "
+         "or one COCFARM mustn't open) stays stopped."),
+        ("Improved", "Maintenance breaks are waited out",
+         "Instead of stopping, the farm closes the game and looks again every 5 minutes until Supercell's break "
+         "is over, then carries on."),
+        ("Improved", "Extras never stop a farm",
+         "If collecting, the clan, Clan Capital raids, upgrades or (in Auto) the builder base keep failing, "
+         "that one is left alone for 2 hours and the farm goes on attacking."),
+        ("Fixed", "The Town Hall is upgraded",
+         "With 'Upgrade the Town Hall' on, it's now upgraded first among the buildings, right after new "
+         "ones. It's under none of the list's Defense, Resource or Army types, so it was only looked at "
+         "last, or never with heroes off, after everything else had taken the builders and the gold."),
+        ("Fixed", "Fewer taps on Build for free walls",
+         "Each free wall closes the list, so it's opened again for the next one. It no longer taps the tab "
+         "twice each time: the bot now sees which tab is open (it's lighter) and taps one only when it isn't. "
+         "Only 5 walls are put down a round, so a village with many "
+         "waiting no longer spends minutes on them between attacks. The rest come in later rounds."),
+        ("New", "Leave when the storages are full",
+         "A battle ends once the loot taken fills your storages (the ones picked under When these storages are "
+         "full, or all of them): the rest of it couldn't be kept. Switch it off under Home village → Attacking → "
+         "Ending the battle."),
+        ("Improved", "Quicker upgrade rounds",
+         "The build list's filter menu is waited on by what shows (open, a button lit, closed) instead of set "
+         "pauses. A filter already set isn't set again in the same round, and one that's empty (no hero "
+         "upgrades yet, say) isn't opened again for an hour. A round at Town Hall 4 went from 61 s to 35-47 s."),
+        ("Improved", "A short build list isn't scrolled",
+         "When the whole list is on show (the empty background under its last row), the bot no longer swipes "
+         "it looking for more."),
+        ("Improved", "No loot cart while the storages are full",
+         "The loot cart keeps its loot until it's collected, so it's left for later while every storage is "
+         "full, and collectors of a full storage are left too."),
+        ("Fixed", "No dark elixir before Town Hall 7",
+         "A dark elixir storage size copied over from another farm's settings no longer counts on an account "
+         "that can't have dark elixir yet, and research never looks for dark elixir upgrades there."),
+        ("Fixed", "No boat search at Town Hall 4",
+         "The builder base's boat can only be repaired from Town Hall 5, so a Town Hall 4 no longer drags the "
+         "view around looking for it."),
+        ("Fixed", "Storages measured again before they're spent",
+         "A storage size read before new storages were built made gold look full early, so it was spent every "
+         "round before it could reach a big upgrade like the Town Hall. A storage that looks full is now "
+         "measured again first (at most once an hour)."),
+        ("Fixed", "Windows in French and other languages",
+         "Connecting to LDPlayer no longer fails with a 'charmap' codec error on a Windows that isn't in "
+         "English: Windows' own commands are read in its console's language, and an emulator's port is "
+         "found whatever language Windows is in."),
+        ("New", "A game that isn't in English is named",
+         "COCFARM reads the game's English buttons. When it recognises nothing and the emulator is in another "
+         "language, it now says the game should be set to English, instead of only 'stuck'."),
+        ("Fixed", "A Windows user name with accents",
+         "COCFARM in a folder like C:\\Users\\Jérôme couldn't load its pictures of the game's buttons, save "
+         "screenshots or read the player's name. Pictures now load and save at any path."),
+        ("Fixed", "Stuck in the Clan Capital",
+         "A game left on the Capital's raid map is taken home instead of being restarted over and over."),
+        ("Fixed", "MuMu Player's slow first start",
+         "When Android is up but the emulator never answers, the start is given up on after 75 seconds, not 2 "
+         "minutes, and tried again. A slow first boot still gets its full time."),
+        ("Improved", "Every emulator side by side, no copies",
+         "LDPlayer 9, LDPlayer 14, MuMu Player and BlueStacks can farm at the same time. An instance whose "
+         "connection port is another farm's isn't offered as a farm, new instances get a port of their own, and "
+         "BlueStacks is given a free port before it starts, so no instance has to be copied to get out of the way."),
+        ("New", "Delete the old instance after a move",
+         "When a farm was copied to a new instance, the notice has a button to delete the old one and free its "
+         "disk space."),
+        ("New", "Two COCFARM windows don't fight",
+         "A farm's emulator instance and its account are kept for it across every COCFARM open on the PC: a "
+         "second COCFARM won't start a farm on them, or close an emulator the other is farming with."),
+        ("Fixed", "MuMu Player starts after LDPlayer",
+         "LDPlayer's background service could stay behind and hang MuMu Player's start. If no LDPlayer instance "
+         "is running, COCFARM ends it and starts MuMu Player again."),
+        ("Improved", "Disk space checked before a MuMu copy",
+         "A new MuMu Player instance isn't started on a drive without room for it, and a failed LDPlayer copy "
+         "leaves no empty instances behind."),
+        ("Improved", "Builders from 0 and simpler Upgrades",
+         "The builders slider starts at 0, and upgrades your Town Hall can't do yet are greyed out, with "
+         "settings that can't apply hidden."),
+    ],
     "1.5.1": [
         ("New", "Farms move off a shared port by themselves",
          "LDPlayer gives instance N the port 5555 + 2N in every version, so LDPlayer 9 and 14 (and MuMu Player's "

@@ -66,6 +66,10 @@ def describe_status(text: str, now: datetime | None = None) -> Status:
                       "Hero first, then the troops.")
     if text.startswith("Attacking"):
         return Status("attacking", "Attacking a base", "Deploying the army; it leaves once the loot stops coming.")
+    if m := re.match(r"Starting again in (\d+) min after a problem: (.*)", text, re.S):
+        back = now + timedelta(minutes=int(m.group(1)))
+        return Status("waiting", f"Starting again at {back:%H:%M}",
+                      f"It stopped: {m.group(2)}. The emulator is restarted then; press Stop to cancel.")
     if text.startswith("Paused by you"):
         return Status("paused", "Paused by you", "Press Resume to carry on, or Stop now to end.")
     if text.startswith("Pausing"):
@@ -145,6 +149,10 @@ RULES = [
      "COCFARM can't find {emulator}",
      "The game runs inside the emulator, so nothing can be played. Install it, or pick the other one.",
      "setup", "Open Setup"),
+    (r"isn't in English",
+     "Clash of Clans isn't in English",
+     "COCFARM finds the game's buttons by their English words, so it doesn't recognise anything. Open the "
+     "game, tap the gear (Settings), pick Language -> English, then press Start.", "retry", "Try again"),
     (r"rounds in a row failed",
      "The bot kept getting stuck",
      "Three rounds in a row failed, though COCFARM closed the game and opened it again after each, so the bot "

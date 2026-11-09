@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from farmbot.device import NO_WINDOW
+from farmbot.device import CONSOLE_TEXT, NO_WINDOW
 
 
 def listening_pid(port: int, netstat: str | None = None) -> int | None:
@@ -22,15 +22,18 @@ def listening_pid(port: int, netstat: str | None = None) -> int | None:
         if sys.platform != "win32":
             return None
         try:
-            netstat = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True,
+            netstat = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, **CONSOLE_TEXT,
                                      timeout=15, check=False, creationflags=NO_WINDOW).stdout
         except (OSError, subprocess.SubprocessError):
             return None
     for line in netstat.splitlines():
         parts = line.split()
         # TCP  0.0.0.0:5555  0.0.0.0:0  LISTENING  38652
-        if len(parts) >= 5 and parts[3].upper() == "LISTENING" and re.search(rf":{port}$", parts[1]):
-            return int(parts[4]) if parts[4].isdigit() else None
+        # The state is in Windows' language ("ABHÖREN", "IN ASCOLTO"), so a
+        # listening port is told by its remote end: port 0, which a connection never has.
+        if (len(parts) >= 5 and parts[0].upper() == "TCP" and re.search(rf":{port}$", parts[1])
+                and parts[2].endswith(":0")):
+            return int(parts[-1]) if parts[-1].isdigit() else None
     return None
 
 

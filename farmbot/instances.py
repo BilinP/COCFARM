@@ -126,6 +126,7 @@ class Choice:
     mode: str = ""  # its emulator: "ldplayer", "mumu", "bluestacks"
     install: str = ""  # which LDPlayer ("LDPlayer 9")
     port: int | None = None  # its ADB port, when known
+    empty: bool = False  # never started: no disks yet (LDPlayer keeps an empty first instance)
 
     @property
     def emulator(self) -> str:
@@ -243,6 +244,19 @@ def emulator_badge(mode: str, install: str = "") -> tuple[Path | None, str]:
     return (program if program is not None and program.is_file() else None), version
 
 
+DISK_FILES = {".vbox", ".vmdk", ".vdi", ".vhd", ".vhdx"}
+
+
+def _no_disks(folder: Path) -> bool:
+    """True if an LDPlayer instance's folder has no disks: it was never
+    started (LDPlayer remakes its first instance like this when it's deleted)."""
+    try:
+        # (LDPlayer 9's disks are .vmdk, LDPlayer 14's .vdi; every started one has its .vbox)
+        return folder.is_dir() and not any(f.suffix.lower() in DISK_FILES for f in folder.iterdir())
+    except OSError:
+        return False
+
+
 def choices(cfg: DeviceConfig | None = None) -> list[Choice]:
     """The instances made in the emulators' multi-instance managers: of
     ``cfg``'s emulator, or (without) of every emulator installed."""
@@ -257,7 +271,8 @@ def choices(cfg: DeviceConfig | None = None) -> list[Choice]:
             installs = [picked] if picked else []
         for install in installs:
             try:
-                found += [Choice(str(i.index), f"{i.index + 1}: {i.title}", "ldplayer", install.name, i.port)
+                found += [Choice(str(i.index), f"{i.index + 1}: {i.title}", "ldplayer", install.name, i.port,
+                                 empty=_no_disks(install.path / "vms" / f"leidian{i.index}"))
                           for i in ldplayer.instances(install)]
             except DeviceError as exc:
                 log.warning("Couldn't list %s's instances: %s", install.name, exc)
@@ -276,17 +291,28 @@ def choices(cfg: DeviceConfig | None = None) -> list[Choice]:
     return found
 
 
-def port_clash(device: DeviceConfig, others: dict[int, DeviceConfig], found: list[Choice]) -> int | None:
-    """The farm whose emulator instance has the same ADB port as ``device``'s
-    (LDPlayer's first instance and BlueStacks' are both on 5555, say): only
-    one of the two can be connected at a time."""
-    def port(cfg: DeviceConfig) -> int | None:
-        return next((c.port for c in found if same_instance(c.device(cfg), cfg)), None)
+def other_ports(cfg: DeviceConfig, found: list[Choice], root: Path | None = None) -> set[int]:
+    """The ADB ports the other farms' emulator instances want (see farmbot.portmap)."""
+    from farmbot import portmap
 
-    mine = port(device)
-    if mine is None:
-        return None
-    return next((n for n, other in others.items() if not same_instance(other, device) and port(other) == mine), None)
+    ports: set[int] = set()
+    for n in numbers(root):
+        try:
+            other = device_of(n, root)
+        except (OSError, ValueError):
+            continue
+        if other.mode != cfg.mode and not same_instance(other, cfg):
+            ports |= portmap.ports_of(other, found)
+    return ports
+
+
+def port_clash(device: DeviceConfig, others: dict[int, DeviceConfig], found: list[Choice]) -> int | None:
+    """The farm whose emulator instance wants an ADB port ``device``'s does
+    (LDPlayer's first instance, BlueStacks' and MuMu's are all on 5555, say):
+    only one of the two can be connected at a time (see farmbot.portmap)."""
+    from farmbot import portmap
+
+    return portmap.clash(device, others, found)
 
 
 # The farms playing now, each with its emulator instance: COCFARM never
@@ -302,10 +328,17 @@ _accounts_lock = threading.Lock()
 def claim_account(name: str) -> int | None:
     """This thread's farm plays account ``name``: kept, unless another farm
     already plays it. Returns that farm (and claims nothing), or None."""
+    from farmbot import claims
+
     me = current() or 1
     with _accounts_lock:
         other = next((n for n, playing in accounts_playing.items() if n != me and playing == name), None)
+        if other is None:  # (and not another COCFARM program's farm: see farmbot.claims)
+            other = claims.claim(claims.account_name(name), me)
         if other is None:
+            previous = accounts_playing.get(me)
+            if previous and previous != name:
+                claims.release(claims.account_name(previous))
             accounts_playing[me] = name
         return other
 
@@ -599,21 +632,23 @@ def create_instance(cfg: DeviceConfig, run=None, close: bool = False, sleep=time
             _wait_closed(lambda: any(i.running for i in ldplayer.instances(install, run) if i.index == source.index),
                          sleep)
         before = _spares(install, before, avoid, run)
-        titles = {i.title for i in before}
-        k = 1
-        while f"LDPlayer-{k}" in titles:
-            k += 1
-        name = f"LDPlayer-{k}"
-        log.info("Copying %s to a new instance, %s", source.title, name)
-        (copying if copying else run)([str(install.console), "copy", "--name", name, "--from", str(source.index)])
-        made = [i for i in ldplayer.instances(install, run) if i.index not in {b.index for b in before}]
-        if not made:
-            raise DeviceError(f"{install.name} didn't make the copy")
-        if made[0].index in avoid:
-            raise DeviceError(f"{install.name} made the copy as instance {made[0].index + 1}, whose port another "
-                              "LDPlayer's instance uses")
-        _remove_spares(install, before, run)
-        return str(made[0].index)
+        try:
+            titles = {i.title for i in before}
+            k = 1
+            while f"LDPlayer-{k}" in titles:
+                k += 1
+            name = f"LDPlayer-{k}"
+            log.info("Copying %s to a new instance, %s", source.title, name)
+            (copying if copying else run)([str(install.console), "copy", "--name", name, "--from", str(source.index)])
+            made = [i for i in ldplayer.instances(install, run) if i.index not in {b.index for b in before}]
+            if not made:
+                raise DeviceError(f"{install.name} didn't make the copy")
+            if made[0].index in avoid:
+                raise DeviceError(f"{install.name} made the copy as instance {made[0].index + 1}, whose port another "
+                                  "LDPlayer's instance uses")
+            return str(made[0].index)
+        finally:  # (a failed copy leaves no spare behind either)
+            _remove_spares(install, before, run)
     if cfg.mode == "mumu":
         run = run or mumu._run
         install = mumu.find_install()
@@ -623,6 +658,10 @@ def create_instance(cfg: DeviceConfig, run=None, close: bool = False, sleep=time
         source = next((i for i in before if i.index == cfg.mumu_index), None)
         if source is None:
             raise DeviceError(f"MuMu Player has no instance {cfg.mumu_index + 1}")
+        vms = install.tools.parent / "vms"
+        folder = next(iter(sorted(vms.glob(f"*-{source.index}"))), None) if vms.is_dir() else None
+        if folder is not None:
+            _room_for(folder, vms)
         if source.started:
             if not close:
                 raise StillOpen(source.name or f"MuMu instance {source.index + 1}")

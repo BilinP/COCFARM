@@ -25,7 +25,7 @@ from typing import Callable
 
 from farmbot import standard
 from farmbot.config import DeviceConfig
-from farmbot.device import NO_WINDOW, AdbDevice, DeviceError, NoAnswer, switch_off_ad_apps
+from farmbot.device import CONSOLE_TEXT, NO_WINDOW, AdbDevice, DeviceError, NoAnswer, switch_off_ad_apps
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +41,11 @@ STOP_WAIT = 30  # seconds for an instance to close; then its process is ended
 # for good (MuMu's own hang, the PC idle): given up on after this long and
 # started afresh, not waited for until the launch timeout.
 VM_STUCK = 90
+# Android up (MuMu says so) but ADB never confirming it booted with an app
+# in front, the same this long: given up on and started afresh (a second
+# start then takes ~20 s, where waiting out the whole launch timeout took
+# two minutes for nothing). A slow boot still starting isn't cut short.
+NO_PROGRESS = 75
 # Other emulators' virtual machine services, left running after the emulator
 # is closed, that stop MuMu's starting (seen with LDPlayer 9's).
 RIVAL_SERVICES = {"Ld9BoxSVC.exe": "LDPlayer"}
@@ -50,7 +55,7 @@ def _rival_hint(running: Callable[[], str] | None = None) -> str:
     """Why MuMu's virtual machine may hang: another emulator's service, or ''."""
     try:
         listing = running() if running else subprocess.run(
-            ["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=10,
+            ["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=10, **CONSOLE_TEXT,
             creationflags=NO_WINDOW).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -59,6 +64,41 @@ def _rival_hint(running: Callable[[], str] | None = None) -> str:
         return ""
     return (f". {', '.join(found)} is still running in the background and can stop it starting: "
             "end it in Task Manager (or restart the PC)")
+
+
+def _taskkill(exe: str) -> bool:
+    try:
+        out = subprocess.run(["taskkill", "/IM", exe, "/F"], capture_output=True, text=True, timeout=15, **CONSOLE_TEXT,
+                             creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0
+
+
+def _end_rivals(running=None, kill=_taskkill) -> bool:
+    """End the other emulators' leftover services (RIVAL_SERVICES) when none
+    of their instances runs or starts (LDPlayer's serves its instances: then
+    it's left alone). ``running``: whether an LDPlayer instance runs, starts,
+    or is a farm's (here or in another COCFARM). True if one was ended."""
+    if running is None:
+        def running() -> bool:
+            from farmbot import claims, instances, ldplayer
+
+            if instances.farm_playing("ldplayer") is not None or claims.played_elsewhere("ldplayer") is not None:
+                return True  # (a farm starting it: not listed as running until Android is up)
+            return any(i.running or i.pid > 0 or i.vm_pid > 0
+                       for install in ldplayer.find_installs() for i in ldplayer.instances(install))
+    try:
+        if running():
+            return False
+    except DeviceError:
+        return False
+    ended = False
+    for exe, app in RIVAL_SERVICES.items():
+        if kill(exe):
+            log.warning("Ended %s's leftover background service (%s): it stops MuMu starting", app, exe)
+            ended = True
+    return ended
 
 Runner = Callable[[list[str]], str]
 
@@ -280,29 +320,45 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
     deadline = clock() + cfg.launch_timeout
     last_error: Exception | None = None
     vm_since: float | None = None  # when it was first seen starting its virtual machine
+    seen, seen_since = "", clock()  # what the start looked like last, and since when
     while True:
+        now_seen, android_up = "not listed", False
         try:
             current = next((i for i in instances(install, run) if i.index == inst.index), inst)
+            now_seen = f"MuMu says {current.state or 'nothing'}" + ("" if current.running else ", Android not up")
             if current.state != "starting_vm":
                 vm_since = None
             elif vm_since is None:
                 vm_since = clock()
             if vm_since is not None and clock() - vm_since >= VM_STUCK:
+                hint = _rival_hint()
+                if hint and _end_rivals():  # (it's started again: see open_device_retrying)
+                    hint = ". LDPlayer's leftover background service was in the way: it's ended, so MuMu can start"
                 raise NoAnswer(f"{install.name}'s virtual machine hung while starting "
-                               f"(still starting after {VM_STUCK}s){_rival_hint()}")
+                               f"(still starting after {VM_STUCK}s){hint}")
             if current.running:
+                android_up = True
                 device = make(current.serial, str(install.adb))
                 device.connect()
-                if device.shell("getprop", "sys.boot_completed").strip() == "1" and device.foreground_package():
+                booted = device.shell("getprop", "sys.boot_completed").strip() == "1"
+                front = device.foreground_package() if booted else ""
+                if booted and front:
                     switch_off_ad_apps(device, AD_PACKAGES, install.name)
                     log.info("Connected to %s at %s", install.name, current.serial)
                     return device
+                now_seen += ", Android still starting" if not booted else ", no app in front yet"
         except NoAnswer:
             raise
         except DeviceError as exc:
             last_error = exc
+            now_seen += f", ADB: {str(exc)[:80]}"
+        if now_seen != seen:
+            log.info("%s starting: %s", install.name, now_seen, extra={"file_only": True})
+            seen, seen_since = now_seen, clock()
+        elif android_up and clock() - seen_since >= NO_PROGRESS and deadline - clock() > 3:
+            raise NoAnswer(f"{install.name} made no progress starting for {NO_PROGRESS}s ({seen})")
         if clock() >= deadline:
-            raise NoAnswer(f"{install.name} did not answer over ADB within {cfg.launch_timeout:.0f}s"
+            raise NoAnswer(f"{install.name} did not answer over ADB within {cfg.launch_timeout:.0f}s ({seen})"
                               + (f": {last_error}" if last_error else ""))
         sleep(3)
 

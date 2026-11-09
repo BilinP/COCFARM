@@ -34,7 +34,7 @@ OTTO_OUTPOST = 1000078  # the builder base's second builder (O.T.T.O)
 # feature is left out only when it can't be there yet).
 DARK_ELIXIR_AT = 7
 HEROES_AT = 7
-BUILDER_BASE_AT = 4
+BUILDER_BASE_AT = 5  # the boat is repaired from Town Hall 5
 SPELLS_AT = 5  # the Spell Factory
 WALL_ELIXIR_AT = 5  # walls take elixir from level 5, which Town Hall 5 opens
 SUPER_TROOPS_AT = 11

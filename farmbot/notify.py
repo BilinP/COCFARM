@@ -19,7 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
-from farmbot import __version__
+from farmbot import __version__, imagefile
 from farmbot.config import NotifyConfig
 
 log = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ def _logo() -> bytes | None:
     try:
         import cv2
 
-        image = cv2.imread(str(LOGO), cv2.IMREAD_UNCHANGED)
+        image = imagefile.read(str(LOGO), cv2.IMREAD_UNCHANGED)
         image = cv2.resize(image, (LOGO_SIZE, LOGO_SIZE), interpolation=cv2.INTER_AREA)
         ok, png = cv2.imencode(".png", image)
         return png.tobytes() if ok else None

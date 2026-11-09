@@ -24,7 +24,7 @@ from typing import Callable
 
 from farmbot import standard
 from farmbot.config import EMULATORS, DeviceConfig
-from farmbot.device import NO_WINDOW, AdbDevice, Device, DeviceError, GaveUp, NoAnswer
+from farmbot.device import CONSOLE_TEXT, NO_WINDOW, AdbDevice, Device, DeviceError, GaveUp, NoAnswer
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,11 @@ DEFAULT_DIRS = (  # used when the registry has nothing
 PLAYER_EXE = "HD-Player.exe"
 ADB_EXE = "HD-Adb.exe"
 _LINE = re.compile(r'^\s*([\w.\-]+)\s*=\s*"(.*)"\s*$')
+# The ADB ports the other farms' instances want (another emulator's), given
+# this farm's device: set by COCFARM's window once it knows the emulators.
+# BlueStacks keeps the port written in its settings, so it's the one moved
+# off theirs (farmbot.portmap). None: nothing's checked.
+other_ports: Callable[[DeviceConfig], set[int]] | None = None
 
 
 @dataclass
@@ -150,7 +155,7 @@ def players(listing: str | None = None) -> list[tuple[int, str]]:
                    "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }")
         try:
             listing = subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True,
-                                     text=True, timeout=30, check=False, creationflags=NO_WINDOW).stdout
+                                     text=True, **CONSOLE_TEXT, timeout=30, check=False, creationflags=NO_WINDOW).stdout
         except (OSError, subprocess.SubprocessError):
             return []
     found = []
@@ -177,7 +182,7 @@ def is_running(instance: str = "", main: str = "") -> bool:
         if found:
             return any(_shows(shown, instance, main) for _, shown in found)
     out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {PLAYER_EXE}", "/NH"],
-                         capture_output=True, text=True, check=False, creationflags=NO_WINDOW).stdout
+                         capture_output=True, text=True, **CONSOLE_TEXT, check=False, creationflags=NO_WINDOW).stdout
     return PLAYER_EXE.lower() in out.lower() and not instance  # the listing failed: an instance's can't be told
 
 
@@ -351,6 +356,15 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
         running = lambda: is_running(instance.name, main)  # noqa: E731
 
     changes = settings_to_change(install, instance, cfg)
+    if other_ports is not None:
+        from farmbot import portmap
+
+        port = portmap.bluestacks_port(instance.adb_port, other_ports(cfg),
+                                       [i.adb_port for i in install.instances if i is not instance and i.adb_port])
+        if port is not None:
+            log.info("BlueStacks' port %s is another emulator's: giving %s port %d", instance.adb_port,
+                     instance.display_name, port)
+            changes.update({"adb_port": port, "status.adb_port": port})
     if changes:
         apply(install, instance, changes)
 

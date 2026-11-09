@@ -48,7 +48,8 @@ looks after your village, in **both the home village and the builder base**.
 
 1. **Install an emulator** ([BlueStacks 5](https://www.bluestacks.com/),
    [LDPlayer 9 or 14](https://www.ldplayer.net/), or [MuMu Player](https://www.mumuplayer.com/))
-   and sign in to Clash of Clans in it.
+   and sign in to Clash of Clans in it. **Set the game to English** (Settings → Language): COCFARM
+   finds its buttons by their English words. Windows itself can be in any language.
 2. **Download COCFARM.** Get `COCFARM-windows.zip` from the
    [latest release](https://github.com/BilinP/COCFARM/releases/latest) and unzip it anywhere.
 3. **Open `COCFARM.exe`.** If Windows warns you, click **More info → Run anyway**.
