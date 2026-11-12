@@ -9,6 +9,10 @@ At low Town Halls the line runs right along bare ground of its own colour
 (the base's dirt): there only the rims of such patches count, a second try
 when the first finds the line on fewer than all four sides.
 
+On blue ground (the ice scenery) the line is drawn over the ice so faintly
+that it keeps the ice's hue: only its red stands a little above the ground
+around it. A third try looks for that tint (see :func:`tint_mask`).
+
 Sides follow the isometric view of a fully zoomed-out base:
 
     nw = upper-left edge    ne = upper-right edge
@@ -55,18 +59,51 @@ def red_mask(screen: np.ndarray, cfg: RedLineConfig, rims: bool = False, hsv: np
         # No faint line: look for the bright red one older versions flash.
         for lo, hi in cfg.hue_ranges:
             mask |= cv2.inRange(hsv, (lo, cfg.min_saturation, cfg.min_value), (hi, 255, 255))
-    field = Rect.from_list(cfg.battlefield).resolve(screen.shape[1], screen.shape[0])
+    return _on_field(mask, screen.shape, cfg)
+
+
+def _on_field(mask: np.ndarray, shape: tuple, cfg: RedLineConfig) -> np.ndarray:
+    """``mask`` kept to the battlefield, less the red UI, its dots joined up."""
+    field = Rect.from_list(cfg.battlefield).resolve(shape[1], shape[0])
     keep = np.zeros_like(mask)
     keep[max(field.y, 0):field.y + field.h, max(field.x, 0):field.x + field.w] = 255
     mask &= keep
     for values in cfg.ignore:
-        r = Rect.from_list(values).resolve(screen.shape[1], screen.shape[0])
+        r = Rect.from_list(values).resolve(shape[1], shape[0])
         mask[max(r.y, 0):r.y + r.h, max(r.x, 0):r.x + r.w] = 0
     if cfg.join_px > 1:
         # Merge the dotted line into continuous strokes.
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (cfg.join_px, cfg.join_px))
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     return mask
+
+
+# The line over blue ground: red less blue (128: equal) at least TINT_LIFT
+# above the median of the TINT_AREA px square around it, where that ground
+# is bluer than TINT_GROUND (ice: about 30; grass and dirt: 120 or more).
+# Only where that blue ground fills TINT_SCENERY of the battlefield (ice
+# scenery seen at 0.40-0.58, other bases at 0.11 at most): elsewhere blue
+# buildings (a Town Hall's roof) give rings of their own.
+TINT_LIFT = 12
+TINT_AREA = 9
+TINT_GROUND = 90
+TINT_SCENERY = 0.3
+
+
+def tint_mask(screen: np.ndarray, cfg: RedLineConfig) -> np.ndarray:
+    """The line as a red tint over blue ground: thin strokes along the
+    tile grid whose red (against their blue) stands above the ground
+    around them. Seen on the ice scenery, where the line keeps the ice's
+    hue and neither colour range finds it."""
+    pixels = screen.astype(np.int16)
+    warmth = np.clip(pixels[..., 2] - pixels[..., 0] + 128, 0, 255).astype(np.uint8)
+    ground = cv2.medianBlur(warmth, TINT_AREA)
+    blue = ground <= TINT_GROUND
+    field = Rect.from_list(cfg.battlefield).resolve(screen.shape[1], screen.shape[0])
+    if float(blue[max(field.y, 0):field.y + field.h, max(field.x, 0):field.x + field.w].mean()) < TINT_SCENERY:
+        return np.zeros(screen.shape[:2], np.uint8)  # not blue scenery
+    lifted = (warmth.astype(np.int16) - ground.astype(np.int16) >= TINT_LIFT) & blue
+    return _on_field(_strokes(lifted.astype(np.uint8) * 255, cfg), screen.shape, cfg)
 
 
 RIM_PX = 2  # px of a thick patch's edge kept as its rim
@@ -85,6 +122,11 @@ def thin_line_mask(hsv: np.ndarray, cfg: RedLineConfig, rims: bool = False) -> n
     else:
         thick = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((4, 4), np.uint8))
         mask &= ~cv2.dilate(thick, np.ones((5, 5), np.uint8))
+    return _strokes(mask, cfg)
+
+
+def _strokes(mask: np.ndarray, cfg: RedLineConfig) -> np.ndarray:
+    """What of ``mask`` runs along the isometric tile grid for a while."""
     strokes = np.zeros_like(mask)
     for slope in (cfg.iso_ratio, -cfg.iso_ratio):
         strokes |= cv2.morphologyEx(mask, cv2.MORPH_OPEN, _line_kernel(cfg.line_length, slope))
@@ -134,17 +176,23 @@ def _outermost(angles: np.ndarray, radii: np.ndarray, bins: int, band: tuple[flo
 def detect(screen: np.ndarray, cfg: RedLineConfig) -> RedLine | None:
     """Locate the red line; ``None`` if too little of it is visible. Found
     on fewer than all four sides, it is looked for again along the rims of
-    patches of its colour, and the try that shows more sides wins."""
+    patches of its colour, then as a tint over blue ground, and the try
+    that shows the most sides wins (the earlier one, when as many)."""
     hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
-    first = _detect(screen, cfg, red_mask(screen, cfg, hsv=hsv))
-    if _sides(first, cfg) == len(SIDE_ANGLES) or not cfg.line_hue:
-        return first
+    best = _detect(screen, cfg, red_mask(screen, cfg, hsv=hsv))
+    if _sides(best, cfg) == len(SIDE_ANGLES) or not cfg.line_hue:
+        return best
     second = _detect(screen, cfg, red_mask(screen, cfg, rims=True, hsv=hsv))
-    if _sides(second, cfg) > _sides(first, cfg):
-        second = RedLine(second.center, second.sides, rims=True)
+    if _sides(second, cfg) > _sides(best, cfg):
+        best = RedLine(second.center, second.sides, rims=True)
         log.debug("Red line: found along the rims of ground of its colour")
-        return second
-    return first
+    if _sides(best, cfg) == len(SIDE_ANGLES):
+        return best
+    third = _detect(screen, cfg, tint_mask(screen, cfg))
+    if _sides(third, cfg) > _sides(best, cfg):
+        log.debug("Red line: found as a tint over blue ground")
+        return third
+    return best
 
 
 def _sides(line: RedLine | None, cfg: RedLineConfig) -> int:

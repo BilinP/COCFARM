@@ -41,6 +41,16 @@ class GaveUp(DeviceError):
     """The emulator was restarted and still didn't answer: the bot stops."""
 
 
+class GameNotInstalled(RuntimeError):
+    """The emulator instance has no Clash of Clans: restarting won't help,
+    so the farm stops and says so (not a DeviceError: the emulator is fine)."""
+
+    def __init__(self, package: str, serial: str = ""):
+        where = f" ({serial})" if serial else ""
+        super().__init__(f"Clash of Clans ({package}) isn't installed on this emulator instance{where}. "
+                         "Install it there and sign in, or switch this farm off")
+
+
 class Device(Protocol):
     def screenshot(self) -> np.ndarray: ...
     def tap(self, x: int, y: int) -> None: ...
@@ -484,6 +494,9 @@ class AdbDevice:
         self._run = runner
         self._raw_screencap = True  # until the device sends something we can't decode
         self._touch: TouchScreen | None | bool = None  # None: not looked for yet; False: none usable
+        # Tap bursts are written to the touchscreen. Switched off when they don't reach the game; pinches
+        # and curved swipes still are (a battle left zoomed in refuses every tap, and needs its pinch).
+        self._fast_taps = True
         self._dd = True  # dd works in the shell (Android 14's toybox has none: tail and head stand in)
         self._size: tuple[int, int] | None = None  # screen size, from the last screenshot
         # Shell commands and screenshots go straight to the adb server over
@@ -621,12 +634,12 @@ class AdbDevice:
     def stop_fast_taps(self) -> bool:
         """Tap with ``input tap`` from now on, for when taps written to the
         touchscreen don't reach the game. False if it already did."""
-        if not self._touch:
-            self._touch = False
+        if not self._fast_taps or not self._touch:
+            self._fast_taps = False
             return False
         log.warning("Taps written to the touchscreen (%s) are not reaching the game; using input tap",
                     self._touch.path)
-        self._touch = False
+        self._fast_taps = False
         return True
 
     def tap_many(self, points: list[tuple[int, int]], pause: float | list[float] = 0.0) -> None:
@@ -642,14 +655,14 @@ class AdbDevice:
         points = [(int(x), int(y)) for x, y in points]
         if not points:
             return
-        touch = self._touchscreen()
+        touch = self._touchscreen() if self._fast_taps else None
         if touch and self._size:
             try:
                 self._write_taps(points, touch, pause)
                 return
             except DeviceError as exc:
                 log.info("Writing taps to the touchscreen failed (%s); using input tap", exc)
-                self._touch = False
+                self._fast_taps = False
         gaps = _gaps(pause, len(points))
         for i in range(0, len(points), INPUT_TAPS_PER_SHELL):
             chunk = range(i, min(i + INPUT_TAPS_PER_SHELL, len(points)))
@@ -751,8 +764,15 @@ class AdbDevice:
                          if line.strip().startswith(package + "/")), None)
         if activity:
             self.shell("am", "start", "-n", activity)
-        else:
-            self.shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
+            return
+        try:  # no launcher found: is the game there at all? (monkey only fails with a stack trace)
+            # (pm list, as Setup's check: pm path exits 1 for a missing app on Android 10 and newer)
+            installed = f"package:{package}" in self.shell("pm", "list", "packages", package).split()
+        except DeviceError:
+            installed = True  # can't tell: let monkey try
+        if not installed:
+            raise GameNotInstalled(package, self.serial)
+        self.shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
 
     def stop_app(self, package: str) -> None:
         self.shell("am", "force-stop", package)

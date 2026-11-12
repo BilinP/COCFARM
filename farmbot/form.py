@@ -52,6 +52,10 @@ FIELDS = [
     Field("attack.end_when_no_loot", "bool"),
     Field("attack.no_loot_seconds", "float", 3, 180),
     Field("attack.end_at_loot_share", "percent", 0, 100),
+    Field("ranked.enabled", "bool"),
+    Field("war.enabled", "bool"),
+    Field("war.target", "text"),
+    Field("war.max_stars", "int", 0, 3),
     Field("redline.enabled", "bool"),
     Field("zone.enabled", "bool"),
     # Army & village
@@ -113,6 +117,7 @@ FIELDS = [
     Field("upgrade.first", "text"),
     Field("upgrade.new_buildings", "bool"),
     Field("upgrade.town_hall", "bool"),
+    Field("upgrade.wait_for_town_hall", "bool"),
     Field("upgrade.builders", "int", -1, 10),
     # What the storages hold
     Field("storage.gold", "amount"),
@@ -144,6 +149,7 @@ FIELDS = [
     Field("schedule.break_every_max", "int", 1, 500),
     Field("schedule.break_minutes_min", "int", 1, 600),
     Field("schedule.break_minutes_max", "int", 1, 600),
+    Field("schedule.day_off_every", "int", 0, 60),
     # Like a person
     Field("human.enabled", "bool"),
     *(Field(f"human.{h.key}", "bool") for h in HABITS),
@@ -152,6 +158,10 @@ FIELDS = [
     Field("notify.on_stopped", "bool"),
     Field("notify.on_emulator_restart", "bool"),
     Field("notify.daily_summary", "bool"),
+    Field("notify.progress_every", "int", 0, 1000),
+    Field("notify.on_critical_error", "bool"),
+    Field("notify.on_deploy_failed", "bool"),
+    Field("notify.alert_cooldown_minutes", "int", 0, 1440),
     # Device
     Field("device.mode", "text"),
     Field("device.bluestacks_instance", "text"),

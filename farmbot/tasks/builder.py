@@ -33,6 +33,7 @@ from farmbot.config import BuilderConfig
 from farmbot.tasks.search import Loot
 from farmbot.game import VIEW_AREA, VIEW_NEAR, VIEW_STILL, Game, T, view_change, view_shift
 from farmbot.tasks.build_list import asks_for_gems
+from farmbot.tasks import village
 
 log = logging.getLogger(__name__)
 
@@ -84,21 +85,38 @@ BATTLE_BUTTON = (3.0, 12.0, 1.5)  # around the Battle label, in its heights (eit
 FIRST_BASE_DRAGS = 8
 
 
-def _find_scaled(game: Game, name: str) -> tuple[int, int] | None:
-    """Centre of ``name`` on screen at whatever size it shows, or ``None``."""
+def _find_scaled(game: Game, name: str, threshold: float = BOAT_THRESHOLD,
+                 below: float = 0.0) -> tuple[int, int] | None:
+    """Centre of ``name`` on screen at whatever size it shows, or ``None``.
+    ``below``: the point this many of its heights under its centre instead."""
     from farmbot.vision import best_scale, match_template, _resized
 
     game.refresh()
-    match = game.find(name)
+    match = game.find(name) if not below else None
     if match is not None:
         return match.x, match.y
     for _, image in game.vision.library.get(name):
         scale, score = best_scale(game.screen, image, list(BOAT_SIZES))
-        if score >= BOAT_THRESHOLD:
-            found = match_template(game.screen, _resized(image, scale), BOAT_THRESHOLD)
+        if score >= threshold:
+            found = match_template(game.screen, _resized(image, scale), threshold)
             if found:
-                return found[0].x, found[0].y
+                return found[0].x, found[0].y + round(below * found[0].h)
     return None
+
+
+# A scenery can draw its own boat (a ghost ship, say), somewhere else on the
+# shore; the game then pins a small picture of the usual boat above it. The
+# pin is small and drawn over the scenery, so it matches less exactly than
+# the boat does (0.81 live, the next best spot 0.62).
+MARKER_THRESHOLD = 0.72
+MARKER_TO_BOAT = 1.7  # the boat's middle, in marker heights under the marker's
+
+
+def _marked_boat(game: Game) -> tuple[int, int] | None:
+    """The boat under the scenery's boat marker, or ``None``."""
+    if not game.has(T.BB_BOAT_MARKER):
+        return None
+    return _find_scaled(game, T.BB_BOAT_MARKER, MARKER_THRESHOLD, MARKER_TO_BOAT)
 
 
 def go_to_builder_base(game: Game) -> bool:
@@ -122,7 +140,7 @@ def _home_boat(game: Game) -> tuple[int, int] | None:
     battle menu) or off the screen. Then the view is dragged up and right
     and looked at again."""
     for look in range(HOME_BOAT_DRAGS + 1):
-        boat = _find_scaled(game, T.BB_HOME_BOAT)
+        boat = _find_scaled(game, T.BB_HOME_BOAT) or _marked_boat(game)
         if boat is not None and not _behind_battle(game, boat):
             return boat
         if look == HOME_BOAT_DRAGS:
@@ -438,7 +456,7 @@ def boost_clock_tower(game: Game) -> bool:
                 log.info("Clock Tower: free boost on")
     if not boosted:
         log.info("Clock Tower: the free boost didn't go through")
-    _close_windows(game)
+    village.close_all_windows(game)
     game.deselect(always=True)
     return boosted
 
@@ -475,7 +493,7 @@ def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], L
     ``last``: a battle comes next, which zooms out by itself, so the walls
     are left as they are (selected, zoomed in on); otherwise they're
     dropped and the camera put back. Returns how many walls were upgraded."""
-    from farmbot.tasks.village import _payable, _wall_budget, _walls_done
+    from farmbot.tasks.village import payable, wall_budget, walls_done
 
     needed = (T.BUILD, T.WALL_SUGGESTION, T.BB_UPGRADE, T.BB_UPGRADE_TITLE, T.CLOSE)
     if not cfg.walls or not all(game.has(n) for n in needed):
@@ -483,25 +501,25 @@ def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], L
     game.deselect()  # a pinch finger on a wall left selected would move it
     game.zoom_out()
     loot = read_resources()
-    budget = _wall_budget(cfg.walls_use, loot, keep) if loot else []
+    budget = wall_budget(cfg.walls_use, loot, keep) if loot else []
     if not budget:
         log.info("Builder walls: %s", "nothing to spare above what's kept" if keep else
                  "how much the storages hold isn't known yet")
         return 0
     known = {} if known is None else known
-    if not _payable(loot, budget, keep, known, "Builder walls"):
+    if not payable(loot, budget, keep, known, "Builder walls"):
         return 0
     view = game.refresh().copy()  # selecting a wall moves the camera onto it
     start, upgraded = loot, {}
     try:
         for i, kind in enumerate(budget):
-            if i and not _payable(loot, [kind], keep, known, "Builder walls"):
+            if i and not payable(loot, [kind], keep, known, "Builder walls"):
                 continue
             count, price, loot = _upgrade_walls(game, loot, [kind], keep, known)
             if count:
                 upgraded[kind] = (count, price)
     finally:
-        _close_windows(game)
+        village.close_all_windows(game)
         if not last:
             # The map holds two bases: put the camera back, or the boat home
             # (and the elixir cart) can be out of sight.
@@ -509,7 +527,7 @@ def upgrade_walls(game: Game, cfg: BuilderConfig, read_resources: Callable[[], L
     if not upgraded:
         return 0
     game.wait(1.5)  # the resource counters run down to what's left
-    return _walls_done(start, read_resources(), upgraded, "builder base wall")
+    return walls_done(start, read_resources(), upgraded, "builder base wall")
 
 
 def _drop_and_restore(game: Game, view: np.ndarray) -> None:
@@ -522,22 +540,16 @@ def _drop_and_restore(game: Game, view: np.ndarray) -> None:
     restore_view(game, view)
 
 
-def _close_windows(game: Game) -> None:
-    from farmbot.tasks.village import _close_windows as close
-
-    close(game)
-
-
 def _upgrade_walls(game: Game, loot: Loot, budget: list[str], keep: dict[str, int],
                    known: dict) -> tuple[int, int | None, Loot]:
     """One resource's walls (see ``village._upgrade_walls``). Returns how
     many walls were selected and paid for, at what price, and the
     resources left after (as paid)."""
-    from farmbot.tasks.village import (MAX_WALLS, WALL_SCREENS, _cost_kind, _keep_screen, _select_more,
-                                       _select_wall, _wall_price, find_wall_entry, price_is_red)
+    from farmbot.tasks.village import (MAX_WALLS, WALL_SCREENS, cost_kind, _keep_screen, select_more,
+                                       select_wall, wall_price, find_wall_entry, price_is_red)
 
     # The list doesn't stay open after an upgrade, as it does at home.
-    _close_windows(game)
+    village.close_all_windows(game)
     game.refresh()
     if not game.click(T.BUILD) or not game.wait_for(T.CLOSE, timeout=4):
         log.info("Builder walls: the Build list didn't open")
@@ -547,17 +559,17 @@ def _upgrade_walls(game: Game, loot: Loot, budget: list[str], keep: dict[str, in
     if entry is None:
         log.info("No builder base wall to upgrade in the list")
         return 0, None, loot
-    price = _wall_price(game, entry)
+    price = wall_price(game, entry)
     red = not price and price_is_red(game, entry)
     if price:
         known["price"] = price
-    if not _select_wall(game, entry, T.BB_UPGRADE):
+    if not select_wall(game, entry, T.BB_UPGRADE):
         log.info("Builder walls: no Upgrade button under the wall (%.2f alike)", game.likeness(T.BB_UPGRADE))
         _keep_screen(WALL_SCREENS, game.screen)
         return 0, None, loot
     game.wait(0.6)  # the buttons fade in
     game.refresh()
-    buttons = {_cost_kind(game.screen, m.x, m.y, BB_ICON_OFFSET): m for m in game.find_all(T.BB_UPGRADE)}
+    buttons = {cost_kind(game.screen, m.x, m.y, BB_ICON_OFFSET): m for m in game.find_all(T.BB_UPGRADE)}
     kind = next((k for k in budget if k in buttons), None)
     if kind is None:
         log.info("Builder walls: no upgrade payable with %s (buttons cost %s)", budget, list(buttons))
@@ -579,9 +591,9 @@ def _upgrade_walls(game: Game, loot: Loot, budget: list[str], keep: dict[str, in
     if count > 1 and not (game.has(T.UPGRADE_MORE) and game.has(T.ADD_WALL)):
         count = 1
     if count > 1:
-        count = _select_more(game, count)
+        count = select_more(game, count)
     game.refresh()
-    buttons = {_cost_kind(game.screen, m.x, m.y, BB_ICON_OFFSET): m for m in game.find_all(T.BB_UPGRADE)}
+    buttons = {cost_kind(game.screen, m.x, m.y, BB_ICON_OFFSET): m for m in game.find_all(T.BB_UPGRADE)}
     if kind not in buttons:
         log.info("Builder walls: the %s Upgrade button went away", kind)
         return 0, None, loot

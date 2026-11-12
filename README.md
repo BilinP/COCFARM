@@ -55,8 +55,9 @@ looks after your village, in **both the home village and the builder base**.
 2. **Download COCFARM.** Get `COCFARM-windows.zip` from the
    [latest release](https://github.com/BilinP/COCFARM/releases/latest) and unzip it anywhere.
 3. **Open `COCFARM.exe`.** If Windows warns you, click **More info → Run anyway**.
-4. **Follow the Setup page.** Pick your emulator, press **Check now**, and choose the loot you want.
-   COCFARM sets the emulator up by itself.
+4. **Follow the short tour.** The first time, COCFARM walks you through picking your emulator,
+   checking it can see the game, and choosing what to farm. It sets the emulator up by itself.
+   (Updating never shows the tour again; the emulator settings are under **Advanced → Emulator**.)
 5. **Press Start** (or F5). That's it.
 
 **Updating:** COCFARM tells you when a new version is out. Press **Update now**, then

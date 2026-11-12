@@ -1,7 +1,7 @@
 """COCFARM (farmbot) control window, built with PySide6 (Qt 6) and Fluent Widgets.
 
 * Pages are grouped by what the player wants to do (Dashboard, each village,
-  When to play, History, Setup, Advanced); the first run opens Setup.
+  When to play, History, Advanced); a new install gets the onboarding (farmbot/tour.py).
 * The Dashboard and the title bar always show what the bot is doing in plain words
   (farmbot/friendly.py), and problems come with a button for the fix.
 * Every setting is a Fluent setting card with its explanation underneath,
@@ -46,13 +46,13 @@ from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, EditableComboBox,
                             TransparentPushButton, TransparentToolButton,
                             isDarkTheme, qconfig, setCustomStyleSheet, setTheme, setThemeColor)
 
-from farmbot import __version__, accounts, catalog, icons, instances, splash, standard, townhall
+from farmbot import __version__, accounts, catalog, diag, icons, instances, onboarding, splash, standard, townhall
 from farmbot.config import EMULATORS, Config, DeviceConfig, ensure_config, load_config, save_config, unreachable_minimums, unreachable_note
 from farmbot.form import BY_PATH, apply_form, form_values, parse_amount, plan_summary, validate
 from farmbot.friendly import Problem, Status, describe_status, explain, in_sentence
 from farmbot.geometry import Rect
 from farmbot.human import HABITS
-from farmbot.timings import TIMINGS_FILE, Timings, cost, duration
+from farmbot.timings import Timings, cost, duration
 from farmbot.vision import TemplateLibrary
 
 log = logging.getLogger(__name__)
@@ -154,9 +154,37 @@ def retint() -> None:
         except RuntimeError:  # deleted with its window
             pass
     _TINTED[:] = alive
+
+
+_setting_theme = False  # inside _apply_theme's setTheme, which restyles everything once it's done
+
+
+def _sync_accent() -> None:
+    """Fluent's accent to the theme now showing. Every restyle takes seconds
+    (every widget of every window), so there's one only when the accent
+    changes and setTheme isn't about to do one anyway."""
+    colour = QColor(str(ACCENT))
+    if qconfig.get(qconfig.themeColor) == colour:
+        return
+    if _setting_theme:
+        qconfig.set(qconfig.themeColor, colour, save=False)
+    else:
+        setThemeColor(colour)
 # Top-level pages, most used first; Ctrl+1... follow this order.
-PAGES = ("Dashboard", "Home village", "Builder base", "When to play", "Like a person", "History", "Setup",
-         "Advanced")
+PAGES = ("Dashboard", "Home village", "Builder base", "When to play", "Like a person", "History", "Advanced")
+
+
+class _OneLineFormatter(logging.Formatter):
+    """A record's line, without the traceback farmbot.log gets: the window
+    shows what happened, the file how."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        saved = record.exc_info, record.exc_text, record.stack_info
+        record.exc_info = record.exc_text = record.stack_info = None
+        try:
+            return super().format(record)
+        finally:
+            record.exc_info, record.exc_text, record.stack_info = saved
 
 
 class _QueueLogHandler(logging.Handler):
@@ -167,7 +195,7 @@ class _QueueLogHandler(logging.Handler):
         super().__init__()
         self.events = events
         self.farm = farm
-        self.setFormatter(logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S"))
+        self.setFormatter(_OneLineFormatter("%(asctime)s  %(message)s", "%H:%M:%S"))
 
     def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, "file_only", False):  # details for farmbot.log, not the window
@@ -247,6 +275,21 @@ def _fade(w: QWidget, on: bool) -> None:
         w.setGraphicsEffect(effect)
     elif not on and w.graphicsEffect() is not None:
         w.setGraphicsEffect(None)
+
+
+class _OffFader(QObject):
+    """Fluent's slider looks the same switched off: fade a control (and
+    what's shown beside it) while it's off."""
+
+    def __init__(self, *widgets: QWidget):
+        super().__init__(widgets[0])
+        for w in widgets:
+            w.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.EnabledChange:
+            _fade(obj, not obj.isEnabled())
+        return False
 
 
 class _SegmentFader(QObject):
@@ -424,6 +467,21 @@ class LockBanner(SimpleCardWidget):
         self.setVisible(bool(text))
 
 
+def badged(group: SettingCardGroup, badge: str = "Beta") -> SettingCardGroup:
+    """``group`` with ``badge`` in a pill after its title (as a page's)."""
+    head = QHBoxLayout()
+    head.setSpacing(10)
+    group.vBoxLayout.removeWidget(group.titleLabel)
+    head.addWidget(group.titleLabel)
+    group.badge = QLabel(badge, group)
+    tint(group.badge, ON_ACCENT, lambda: f"background: {ACCENT}; border-radius: 8px; padding: 1px 10px; "
+                                         "font-size: 12px; font-weight: 600;")
+    head.addWidget(group.badge, 0, Qt.AlignVCenter)
+    head.addStretch(1)
+    group.vBoxLayout.insertLayout(0, head)
+    return group
+
+
 class Page(SmoothScrollArea):
     """A scrolling page of setting groups. Without a title it's the body of
     a tab (the tabbed page above it shows the title)."""
@@ -505,6 +563,7 @@ class TabbedPage(QWidget):
         self.stack = QStackedWidget()
         outer.addWidget(self.stack, 1)
         self.tab_pages: dict[str, Page] = {}
+        self.on_show: dict[str, Callable[[], None]] = {}  # a tab's: run each time it's shown
 
     def tab(self, key: str, label: str, intro: str = "") -> Page:
         page = Page(f"{self.objectName()}-{key}", "", intro)
@@ -518,6 +577,8 @@ class TabbedPage(QWidget):
     def show_tab(self, key: str) -> None:
         self.stack.setCurrentWidget(self.tab_pages[key])
         self.tabs.setCurrentItem(key)
+        if key in self.on_show:
+            self.on_show[key]()
 
     def show_lock(self, text: str) -> None:
         """``text`` in a notice above the tabs, and every tab greyed out ("":
@@ -527,7 +588,7 @@ class TabbedPage(QWidget):
 
 
 CARD_HEIGHT = 70  # a setting card's usual height
-# Advanced settings shown only for the emulator picked in Setup.
+# Advanced settings shown only for the emulator picked (Advanced → Emulator).
 EMULATOR_ONLY = {"device.ldplayer": "ldplayer", "device.ldplayer_index": "ldplayer", "device.mumu_index": "mumu",
                  "device.serial": "manual"}
 
@@ -867,6 +928,253 @@ class CropCanvas(QWidget):
             painter.drawRect(shown)
 
 
+class RedactEditor(QWidget):
+    """A screenshot to share, with a box over each thing blocked out (the
+    ones COCFARM put there and the user's own): drag on the picture to add
+    one, drag a box to move it, its edges or corners to resize it; a
+    right-click, or Delete on the picked one, takes it off."""
+
+    HANDLE = 6  # widget px either side of an edge or corner that grab it
+    SMALLEST = 6  # image px: a box drawn smaller isn't kept
+    _CURSORS = {"move": Qt.SizeAllCursor, "tl": Qt.SizeFDiagCursor, "br": Qt.SizeFDiagCursor,
+                "tr": Qt.SizeBDiagCursor, "bl": Qt.SizeBDiagCursor, "l": Qt.SizeHorCursor, "r": Qt.SizeHorCursor,
+                "t": Qt.SizeVerCursor, "b": Qt.SizeVerCursor}
+
+    def __init__(self, empty: str = "No error screenshot picked."):
+        super().__init__()
+        self.image: np.ndarray | None = None  # the screenshot as saved
+        self.areas: list[tuple[str, Rect]] = []  # (what it covers, where), drawn in this order
+        self.selected: int | None = None
+        self.on_change: Callable[[], None] = lambda: None
+        self._empty = empty
+        self._view: np.ndarray | None = None  # the screenshot with the boxes blocked out
+        self._pixmap: QPixmap | None = None
+        self._drag: tuple[str, QPoint, Rect, bool] | None = None  # (edge or "move", start, box before, a new box)
+        self._history: list[tuple[list[tuple[str, Rect]], int | None]] = []
+        self.setMinimumHeight(300)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    # ---- what's shown
+    def set_image(self, image: np.ndarray, areas: list[tuple[str, Rect]]) -> None:
+        self.image, self.areas, self.selected, self._history = image, list(areas), None, []
+        self._render()
+
+    def clear(self) -> None:
+        self.image, self.areas, self.selected, self._history = None, [], None, []
+        self._view, self._pixmap = None, None
+        self.update()
+
+    def view(self) -> np.ndarray | None:
+        """The picture as it will be shared."""
+        return self._view
+
+    def _render(self) -> None:
+        from farmbot import redact
+
+        if self.image is not None:
+            self._view = redact.cover(self.image.copy(), self.areas)
+            self._pixmap = to_pixmap(self._view)
+        self.update()
+
+    def _changed(self) -> None:
+        self._render()
+        self.on_change()
+
+    # ---- changes (each can be undone)
+    def _remember(self) -> None:
+        self._history.append((list(self.areas), self.selected))
+        del self._history[:-100]
+
+    def can_undo(self) -> bool:
+        return bool(self._history)
+
+    def undo(self) -> None:
+        if self._history:
+            self.areas, self.selected = self._history.pop()
+            self._changed()
+
+    def add(self, what: str, rect: Rect) -> None:
+        self._remember()
+        self.areas.append((what, rect))
+        self.selected = len(self.areas) - 1
+        self._changed()
+
+    def remove_selected(self) -> None:
+        if self.selected is not None:
+            self._remember()
+            del self.areas[self.selected]
+            self.selected = None
+            self._changed()
+
+    def reset(self, areas: list[tuple[str, Rect]]) -> None:
+        self._remember()
+        self.areas, self.selected = list(areas), None
+        self._changed()
+
+    # ---- where things are
+    def _frame(self) -> tuple[QRect, float]:
+        iw, ih = self._pixmap.width(), self._pixmap.height()
+        scale = min(self.width() / iw, self.height() / ih)
+        w, h = round(iw * scale), round(ih * scale)
+        return QRect((self.width() - w) // 2, (self.height() - h) // 2, w, h), scale
+
+    def _to_image(self, pos: QPoint) -> QPoint:
+        frame, scale = self._frame()
+        x = min(max(round((pos.x() - frame.x()) / scale), 0), self._pixmap.width())
+        y = min(max(round((pos.y() - frame.y()) / scale), 0), self._pixmap.height())
+        return QPoint(x, y)
+
+    def shown(self, r: Rect) -> QRect:
+        """Where box ``r`` (in image pixels) is drawn on the widget."""
+        frame, scale = self._frame()
+        return QRect(frame.x() + round(r.x * scale), frame.y() + round(r.y * scale),
+                     max(round(r.w * scale), 1), max(round(r.h * scale), 1))
+
+    def hit(self, pos: QPoint) -> tuple[int | None, str | None]:
+        """The box at ``pos`` and what of it: an edge or corner ("t", "br"…)
+        or "move" (inside). The picked box first, then the top one."""
+        if self._pixmap is None:
+            return None, None
+        order = list(range(len(self.areas) - 1, -1, -1))
+        if self.selected is not None:
+            order.remove(self.selected)
+            order.insert(0, self.selected)
+        h = self.HANDLE
+        for i in order:
+            r = self.shown(self.areas[i][1])
+            if not r.adjusted(-h, -h, h, h).contains(pos):
+                continue
+            x, y = pos.x(), pos.y()
+            edge = (("t" if abs(y - r.top()) <= h else "b" if abs(y - r.bottom()) <= h else "")
+                    + ("l" if abs(x - r.left()) <= h else "r" if abs(x - r.right()) <= h else ""))
+            if edge or r.contains(pos):
+                return i, edge or "move"
+        return None, None
+
+    # ---- the mouse and keys
+    def mousePressEvent(self, event) -> None:
+        if self._pixmap is None:
+            return
+        self.setFocus()
+        pos = event.position().toPoint()
+        i, part = self.hit(pos)
+        if event.button() == Qt.RightButton:
+            if i is not None:
+                self.selected = i
+                self.remove_selected()
+            return
+        if event.button() != Qt.LeftButton:
+            return
+        start = self._to_image(pos)
+        self._remember()
+        if i is None:  # a new box, from here
+            self.areas.append(("by hand", Rect(start.x(), start.y(), 0, 0)))
+            self.selected, part = len(self.areas) - 1, "br"
+        else:
+            self.selected = i
+        self._drag = (part, start, self.areas[self.selected][1], i is None)
+        self._changed()
+
+    def mouseMoveEvent(self, event) -> None:
+        pos = event.position().toPoint()
+        if self._drag is None:
+            _, part = self.hit(pos)
+            self.setCursor(self._CURSORS.get(part, Qt.CrossCursor))
+            return
+        part, start, b, _new = self._drag
+        at = self._to_image(pos)
+        dx, dy = at.x() - start.x(), at.y() - start.y()
+        width, height = self._pixmap.width(), self._pixmap.height()
+        if part == "move":
+            x = min(max(b.x + dx, 0), max(width - b.w, 0))
+            y = min(max(b.y + dy, 0), max(height - b.h, 0))
+            r = Rect(x, y, b.w, b.h)
+        else:
+            x0, y0, x1, y1 = b.x, b.y, b.x + b.w, b.y + b.h
+            if "l" in part:
+                x0 += dx
+            if "r" in part:
+                x1 += dx
+            if "t" in part:
+                y0 += dy
+            if "b" in part:
+                y1 += dy
+            x0, x1 = sorted((min(max(x0, 0), width), min(max(x1, 0), width)))
+            y0, y1 = sorted((min(max(y0, 0), height), min(max(y1, 0), height)))
+            r = Rect(x0, y0, x1 - x0, y1 - y0)
+        what, _ = self.areas[self.selected]
+        self.areas[self.selected] = (what, r)
+        self._render()
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._drag is None:
+            return
+        _part, _start, before, new = self._drag
+        self._drag = None
+        r = self.areas[self.selected][1]
+        if new and (r.w < self.SMALLEST or r.h < self.SMALLEST):  # a click, not a box: just picks nothing
+            self.areas.pop()
+            self.selected = None
+            self._history.pop()
+        elif r == before:  # a click on a box: picked, nothing changed
+            self._history.pop()
+        self._changed()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            self.remove_selected()
+        elif event.key() == Qt.Key_Z and event.modifiers() & Qt.ControlModifier:
+            self.undo()
+        elif event.key() == Qt.Key_Escape and self.selected is not None:
+            self.selected = None
+            self._changed()
+        else:
+            super().keyPressEvent(event)
+
+    def paintEvent(self, event) -> None:
+        from farmbot import redact
+
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(255, 255, 255, 10))
+        if self._pixmap is None:
+            painter.setPen(QColor(str(MUTED)))
+            painter.drawText(self.rect(), Qt.AlignCenter, self._empty)
+            return
+        frame, _ = self._frame()
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.drawPixmap(frame, self._pixmap)
+        accent = QColor(str(ACCENT))
+        font = painter.font()
+        font.setPixelSize(11)
+        font.setBold(True)
+        painter.setFont(font)
+        for i, (what, r) in enumerate(self.areas):
+            box = self.shown(r)
+            picked = i == self.selected
+            pen = QPen(accent if picked or what == "by hand" else QColor(255, 255, 255, 200), 2 if picked else 1)
+            if what != "by hand" and not picked:
+                pen.setStyle(Qt.DashLine)  # COCFARM's own boxes: dashed
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(box)
+            label = redact.LABELS.get(what, what)
+            tag_w = painter.fontMetrics().horizontalAdvance(label) + 10
+            if box.width() > tag_w and box.height() > 18:
+                tag = QRect(box.x() + 1, box.y() + 1, tag_w, 16)
+                painter.fillRect(tag, accent if picked or what == "by hand" else QColor(0, 0, 0, 150))
+                painter.setPen(QColor(255, 255, 255))
+                painter.drawText(tag, Qt.AlignCenter, label)
+            if picked:
+                painter.setPen(QPen(accent, 1))
+                painter.setBrush(QColor(255, 255, 255))
+                for hx in (box.left(), box.center().x(), box.right()):
+                    for hy in (box.top(), box.center().y(), box.bottom()):
+                        if (hx, hy) != (box.center().x(), box.center().y()):
+                            painter.drawRect(QRect(hx - 4, hy - 4, 8, 8))
+                painter.setBrush(Qt.NoBrush)
+
+
 def _muted(label: QLabel) -> QLabel:
     tint(label, MUTED)
     return label
@@ -875,6 +1183,15 @@ def _muted(label: QLabel) -> QLabel:
 STAR_ON, STAR_OFF = "\u2605", "\u2606"  # the starred profile: new accounts start from its settings
 STAR = Tone("#f5c542", "#8a6100")
 AVATARS = ("#2f6fdf", "#0f8a5f", "#b5530f", "#8b3fbf", "#c42b6a", "#00838f", "#5b5fc7")  # white text reads on each
+
+
+GOOD_FILL, BAD_FILL = "rgba(16,124,16,0.16)", "rgba(196,43,28,0.16)"  # behind a green or a red pill
+
+
+def here_colours(here: bool) -> tuple[Tone, str]:
+    """A pill's colours on the Farms page: green for the farm (or the account
+    of the farm) this window shows, red for the others."""
+    return (GOOD, GOOD_FILL) if here else (BAD, BAD_FILL)
 
 
 def pill(text: str, tone: Tone, background: str) -> QLabel:
@@ -985,6 +1302,7 @@ class PriorityList(QWidget):
         self.switches: dict[str, SwitchButton] = {}
         self.tags: dict[str, dict[str, QLabel]] = {}  # key -> resource -> its tag
         self.buttons: list[QWidget] = []
+        self.arrows: dict[str, tuple[QWidget, QWidget]] = {}  # key -> its Earlier and Later buttons
         self.callbacks: list[Callable] = []
         for key, (icon, title, resources) in rows.items():
             row = SimpleCardWidget()
@@ -1014,8 +1332,18 @@ class PriorityList(QWidget):
             up.clicked.connect(lambda _=False, k=key: self.move(k, -1))
             down.clicked.connect(lambda _=False, k=key: self.move(k, 1))
             switch = SwitchButton()
-            line.addWidget(up)
-            line.addWidget(down)
+            # The first row has no Earlier and the last no Later: the one arrow left sits in the
+            # middle of where the two go, so every row's arrows line up.
+            arrows = QWidget()
+            pair = QHBoxLayout(arrows)
+            pair.setContentsMargins(0, 0, 0, 0)
+            pair.setSpacing(line.spacing())
+            pair.setAlignment(Qt.AlignCenter)
+            pair.addWidget(up)
+            pair.addWidget(down)
+            arrows.setFixedWidth(up.sizeHint().width() + down.sizeHint().width() + line.spacing())
+            self.arrows[key] = (up, down)
+            line.addWidget(arrows)
             line.addSpacing(6)
             line.addWidget(switch)
             self.rows[key], self.ranks[key], self.switches[key] = row, rank, switch
@@ -1059,6 +1387,9 @@ class PriorityList(QWidget):
         for n, key in enumerate(self.order, 1):
             self.layout_.addWidget(self.rows[key])
             self.ranks[key].setText(str(n))
+            up, down = self.arrows[key]
+            up.setVisible(n > 1)  # (nothing is earlier than the first, or later than the last)
+            down.setVisible(n < len(self.order))
 
     def binding(self) -> Binding:
         return Binding(lambda: list(self.order), self.set_order, self.callbacks.append, self.buttons)
@@ -1161,6 +1492,50 @@ class BelowTitleBar:
 
 class Confirm(BelowTitleBar, MessageBox):
     """An "are you sure?" box."""
+
+
+class ShareDialog(BelowTitleBar, MessageBoxBase):
+    """Before an error screenshot is copied or saved: the picture just as it
+    will go, to look over, with the same editor to block anything else."""
+
+    def __init__(self, image: np.ndarray, areas: list[tuple[str, Rect]], found: list[tuple[str, Rect]],
+                 action: str, parent: QWidget):
+        super().__init__(parent)
+        self.found = found
+        self.viewLayout.setSpacing(8)
+        self.viewLayout.addWidget(SubtitleLabel("Check it before you share it"))
+        self.viewLayout.addWidget(_wrapping(tint(BodyLabel(
+            "This is the picture that goes. Drag on it to block more; drag a box to move or resize it; "
+            "right-click a box to take it off."), MUTED)))
+        self.status = _wrapping(CaptionLabel(""))
+        self.viewLayout.addWidget(self.status)
+        self.editor = RedactEditor()
+        # As big as the window leaves room for, with the words and buttons around it (the smallest window too).
+        high = max(200, min(594, parent.window().height() - 400))
+        self.editor.setMinimumSize(round(high * image.shape[1] / image.shape[0]), high)
+        self.editor.set_image(image, areas)
+        self.editor.on_change = self._changed
+        self.viewLayout.addWidget(self.editor, 1)
+        self.remove_button = PushButton(FIF.DELETE, "Remove box")
+        self.remove_button.clicked.connect(self.editor.remove_selected)
+        self.undo_button = PushButton(FIF.RETURN, "Undo")
+        self.undo_button.clicked.connect(self.editor.undo)
+        for i, w in enumerate((self.remove_button, self.undo_button)):  # beside Copy and Back: no row of their own
+            self.buttonLayout.insertWidget(i, w)
+        self.yesButton.setText(action)
+        self.cancelButton.setText("Back")
+        self.setClosableOnMaskClicked(True)  # a click beside it goes back too
+        self.widget.setMinimumWidth(min(820, max(560, self.editor.minimumWidth() + 60)))
+        self._changed()
+
+    def _changed(self) -> None:
+        from farmbot import redact
+
+        text, warn = redact.describe(self.editor.areas, self.found)
+        self.status.setText(text)
+        tint(self.status, WARN if warn else MUTED)
+        self.remove_button.setEnabled(self.editor.selected is not None)
+        self.undo_button.setEnabled(self.editor.can_undo())
 
 
 class NameDialog(BelowTitleBar, MessageBoxBase):
@@ -1352,6 +1727,10 @@ class AccountsPanel(QWidget):
     def _farms(self) -> list[int]:
         return list(self.page.rows) if self.page is not None else instances.numbers()
 
+    def _here(self) -> int:
+        """The farm the window with this page shows (its account's pill is green, the others' red)."""
+        return self.page.owner.farm if self.page is not None else self.main.farm
+
     def arrangement(self) -> tuple[list[str], dict[str, list[int]], list[int]]:
         """The profiles (the ones farms play first, in farm order), the farms
         playing each, and the farms with no known account."""
@@ -1368,7 +1747,8 @@ class AccountsPanel(QWidget):
         spares = [id(spare) for spare in self.page.spares] if self.page is not None else []
         rows = [id(row) for row in self.page.rows.values()] if self.page is not None else []
         shown = (tuple(names), tuple((k, tuple(v)) for k, v in users.items()), tuple(unassigned),
-                 tuple(sorted(running)), self.main.config.profiles.default, tuple(spares), tuple(rows))
+                 tuple(sorted(running)), self.main.config.profiles.default, tuple(spares), tuple(rows),
+                 self._here())
         if not force and shown == self._shown:
             return
         self._shown = shown
@@ -1392,7 +1772,7 @@ class AccountsPanel(QWidget):
         if loose or not names:
             self._add_group(self.UNASSIGNED, self._header("?", "Not assigned", len(loose), "farm",
                                                           "Farms whose account isn't known yet (found the first "
-                                                          "time they play)"),
+                                                          "time they play)", here=self._here() in unassigned),
                             loose, "Every farm plays a known account.")
         if spare_rows:
             self._add_group(self.SPARE, self._header("+", "Other emulator instances", len(spare_rows), "instance",
@@ -1443,7 +1823,8 @@ class AccountsPanel(QWidget):
         fold.setToolTip("Fold its farms away")
         return fold
 
-    def _header(self, letter: str, name: str, count: int, noun: str, about_text: str, tone=None) -> QWidget:
+    def _header(self, letter: str, name: str, count: int, noun: str, about_text: str, tone=None,
+                here: bool = False) -> QWidget:
         """A group's header that isn't an account's: Not assigned, Other emulator instances."""
         card = SimpleCardWidget()
         row = QHBoxLayout(card)
@@ -1462,7 +1843,7 @@ class AccountsPanel(QWidget):
         if count:
             label = f"{count} {noun}{'s' * (count != 1)}"
             top.addWidget(pill(label, MUTED, "rgba(128,128,128,0.16)") if tone is MUTED
-                          else pill(label, GOOD, "rgba(16,124,16,0.16)"))
+                          else pill(label, *here_colours(here)))
         top.addStretch(1)
         about.addLayout(top)
         about.addWidget(tint(CaptionLabel(about_text), MUTED))
@@ -1492,7 +1873,8 @@ class AccountsPanel(QWidget):
         title.setStyleSheet("font-size: 15px;")
         top.addWidget(title)
         if users:
-            top.addWidget(pill(f"{len(users)} farm{'s' * (len(users) != 1)}", GOOD, "rgba(16,124,16,0.16)"))
+            # Green: the account of the farm this window shows. Red: the others'.
+            top.addWidget(pill(f"{len(users)} farm{'s' * (len(users) != 1)}", *here_colours(self._here() in users)))
         if starred:
             top.addWidget(pill(f"{STAR_ON} Default", STAR, "rgba(245,197,66,0.18)"))
         top.addStretch(1)
@@ -1658,8 +2040,7 @@ class FarmRow(SimpleCardWidget):
         about.setSpacing(4)
         top = QHBoxLayout()
         top.setSpacing(8)
-        self.title = StrongBodyLabel(f"Farm {n}")
-        self.title.setStyleSheet("font-size: 15px;")
+        self.title = QLabel(f"Farm {n}")  # a pill: green on the farm this window shows, red on the others
         top.addWidget(self.title)
         self.chip = QLabel()
         top.addWidget(self.chip)
@@ -1739,6 +2120,10 @@ class FarmRow(SimpleCardWidget):
         self.switch.setChecked(self.n in self.page.picked)
         self.switch.blockSignals(False)
         here = self.page.owner.farm == self.n
+        tone, fill = here_colours(here)
+        tint(self.title, tone, f"background: {fill}; border-radius: 9px; padding: 1px 10px; font-size: 14px; "
+                               "font-weight: 600;")
+        self.title.setToolTip("This window shows this farm" if here else "")
         self.view_button.setText("Showing" if here else "View")
         self.view_button.setEnabled(not here)
         self.view_button.setToolTip("This window shows this farm" if here else "Show this farm in this window")
@@ -1795,12 +2180,13 @@ NEEDS_YOU = ("another COCFARM window", "was not found", "has no instance", "is n
 
 def restart_wait(exc: Exception, restarts: list[float], now: float) -> float | None:
     """How long before a farm stopped by ``exc`` starts again by itself, or
-    None to leave it stopped: what restarting can't fix (no login, another
+    None to leave it stopped: what restarting can't fix (no login, no game, another
     farm on the account, a maintenance break that never ended), or too many
     restarts lately (``restarts``: when the earlier ones were)."""
     from farmbot import bot, screens
+    from farmbot.device import GameNotInstalled
 
-    if isinstance(exc, (screens.NotLoggedIn, screens.MaintenanceBreak, bot.SameAccount)):
+    if isinstance(exc, (screens.NotLoggedIn, screens.MaintenanceBreak, bot.SameAccount, GameNotInstalled)):
         return None
     # What needs you: another COCFARM on it, an emulator or instance missing,
     # or one COCFARM may not start (Open the emulator automatically is off).
@@ -1971,7 +2357,7 @@ class FarmsPage(Page):
         if busy:
             self.footer.setText(busy)
         elif not self.hub.found_emulators:
-            self.footer.setText("No emulator found: install BlueStacks, LDPlayer or MuMu Player (Setup, step 1).")
+            self.footer.setText("No emulator found: install BlueStacks, LDPlayer or MuMu Player (Advanced → Emulator).")
         elif not room:
             self.footer.setText(f"COCFARM runs {instances.MOST} farms at most.")
         else:
@@ -2072,6 +2458,10 @@ class FarmbotWindow(FluentWindow):
         self.config_path = Path(config_path)
         if farm == 1:  # the other farms' folders are beside its file
             instances.ROOT = self.config_path.resolve().parent
+        # A new install (nothing of an earlier COCFARM here) gets the onboarding; an update never does.
+        # Decided before ensure_config writes the settings file (see farmbot/onboarding.py).
+        self.onboarding_due = farm == 1 and onboarding.start_if_new(self.config_path)
+        self.onboarding_dialog = None
         self.first_run = ensure_config(self.config_path)
         if farm == 1:
             instances.mend_sizes()  # farms added before 0.9.10 had none of farm 1's button sizes
@@ -2109,6 +2499,7 @@ class FarmbotWindow(FluentWindow):
                                                            else ""))
         self.setWindowIcon(QIcon(str(LOGO)))
         self._sharp_title_icon()
+        self._title_bar_left()
         # Keep page names visible next to the icons (recognition over recall).
         self.navigationInterface.setExpandWidth(200)
         self.navigationInterface.setMinimumExpandWidth(900)
@@ -2131,8 +2522,7 @@ class FarmbotWindow(FluentWindow):
         self._syncing = False
         self.status_now = Status("ready", "")
         self.problem: Problem | None = None
-        self.setup_passed = not self.first_run  # Setup finished once: no "New here?" banner on the Dashboard
-        self.check_passed = False  # step 2 of Setup passed this session
+        self.check_passed = False  # the emulator and game check passed this session
         self._found: dict[str, bool] = {}
         self.auto_village: str | None = None  # Auto switch: the village it moved on to this run
         self._verdict_kind = "wait"
@@ -2157,15 +2547,13 @@ class FarmbotWindow(FluentWindow):
         self.stackedWidget.addWidget(self.farms_page)
         self.pages["Farms"] = self.farms_page
         self._page_order.append("Farms")
-        self._add_page(self._setup(), FIF.CHECKBOX, "Setup",
-                       NavigationItemPosition.BOTTOM)
         self._add_page(self._advanced(), FIF.SETTING, "Advanced", NavigationItemPosition.BOTTOM)
         # This farm's account; a click opens the Farms page: every farm and every account.
         self.profile_nav = NavigationAvatarWidget("")
         self.navigationInterface.addWidget("profile", self.profile_nav, lambda: self.show_page("Farms"),
                                            NavigationItemPosition.BOTTOM, tooltip="Farms and accounts")
         self._show_profiles()
-        self._find_bluestacks()  # fills both Setup and Advanced
+        self._find_bluestacks()  # fills Advanced → Emulator
         self._dock_side_bar()
         self.stackedWidget.currentChanged.connect(self._page_shown)  # (back and forth too, not only clicks)
 
@@ -2175,9 +2563,7 @@ class FarmbotWindow(FluentWindow):
             binding.connect(lambda *_: self._changed())
         self._wired = True  # (settings changed before this aren't saved: they're as loaded)
         self._changed(save=False)
-        self._show_status(Status("ready", "Welcome! Start with Setup", "Four quick steps, then press Start.")
-                          if self.first_run else
-                          Status("ready", "Ready to farm", plan_summary(validate(self.collect())[0])))
+        self._show_status(Status("ready", "Ready to farm", plan_summary(validate(self.collect())[0])))
 
         self.log_handler = _QueueLogHandler(self.events, farm)
         logging.getLogger().addHandler(self.log_handler)
@@ -2188,8 +2574,8 @@ class FarmbotWindow(FluentWindow):
         self.clock_timer.start()
         QShortcut(QKeySequence("F5"), self, activated=self.start)
         if farm == 1:  # the main window looks for updates and tells what's new, for every farm
-            if self.first_run:
-                QTimer.singleShot(300, self._welcome)
+            if self.onboarding_due:
+                QTimer.singleShot(300, self.show_onboarding)
             self.update_timer = QTimer(self, interval=600_000, timeout=self._check_for_update)  # hourly at most
             self.update_timer.start()
             QTimer.singleShot(1500, self._after_update)
@@ -2227,6 +2613,20 @@ class FarmbotWindow(FluentWindow):
 
     # ------------------------------------------------------------ chrome
     TITLE_ICON = 28  # px; Fluent's own title bar icon is 18, too small for a detailed emblem
+
+    def _title_bar_left(self) -> None:
+        """No Back arrow (the pages aren't a history to go back through), and the
+        title bar from the window's left edge, its logo leftmost."""
+        back = self.navigationInterface.panel.returnButton
+        room = back.sizePolicy()
+        room.setRetainSizeWhenHidden(True)  # (its room kept: the menu button stays below the title bar)
+        back.setSizePolicy(room)
+        self.navigationInterface.setReturnButtonVisible(False)
+        self.titleBar.hBoxLayout.setContentsMargins(14, 0, 0, 0)
+
+    def resizeEvent(self, e) -> None:  # noqa: N802 (Qt's name)
+        super().resizeEvent(e)
+        self.titleBar.setGeometry(0, 0, self.width(), self.titleBar.height())  # (FluentWindow leaves 46 for Back)
 
     def _sharp_title_icon(self) -> None:
         """Draw the title bar logo larger, scaled smoothly at the screen's
@@ -2510,6 +2910,20 @@ class FarmbotWindow(FluentWindow):
         slow, fast = _muted(CaptionLabel("Slow")), _muted(CaptionLabel("Fast"))
         self._bind(path, Binding(slider.value, lambda v: slider.setValue(int(v)), slider.valueChanged.connect, [slider]))
         return self._card(group, path, icon, title, help_text, slow, slider, fast, value)
+
+    def stars(self, group, path: str, icon, title: str, help_text: str) -> Card:
+        """A 0-3 slider for a number of stars, with the number beside it."""
+        slider = Slider(Qt.Horizontal)
+        slider.setRange(0, 3)
+        slider.setPageStep(1)
+        slider.setFixedWidth(140)
+        value = StrongBodyLabel("0 stars")  # (set to 0, its least, changes nothing: no signal)
+        value.setFixedWidth(56)
+        slider.valueChanged.connect(lambda v: value.setText("1 star" if v == 1 else f"{v} stars"))
+        _OffFader(slider, value)  # greyed out while what it depends on is off
+        self._bind(path, Binding(slider.value, lambda v: slider.setValue(int(v)), slider.valueChanged.connect,
+                                 [slider, value]))
+        return self._card(group, path, icon, title, help_text, slider, value)
 
     def share(self, group, path: str, icon, title: str, help_text: str, storage: str, noun: str) -> Card:
         """A 0-100% slider for a share of what a storage holds, with that
@@ -2880,6 +3294,8 @@ class FarmbotWindow(FluentWindow):
         others = any(e.mode != "bluestacks" for e in found_emulators)
         bluestacks.other_ports = (lambda cfg, listed=found: instances.other_ports(cfg, listed)) if others else None
         self.rebuild_farm_pages()
+        if self.onboarding_dialog is not None:  # its list of instances
+            self.onboarding_dialog.refresh()
 
     def rebuild_farm_pages(self) -> None:
         for window in self.farm_windows().values():
@@ -3315,17 +3731,6 @@ class FarmbotWindow(FluentWindow):
 
     def _home(self) -> Page:
         page = Page("home", "Dashboard", "What COCFARM is doing right now, and what it has earned.")
-        self.setup_banner = SimpleCardWidget()
-        row = QHBoxLayout(self.setup_banner)
-        row.setContentsMargins(20, 14, 16, 14)
-        text = BodyLabel("New here? Setup takes a couple of minutes: pick your emulator, check the game, choose "
-                         "the loot you want, and press Start.")
-        text.setWordWrap(True)
-        row.addWidget(text, 1)
-        go = PrimaryPushButton(FIF.RIGHT_ARROW, "Open Setup")
-        go.clicked.connect(lambda: self.show_page("Setup"))
-        row.addWidget(go)
-        page.add(self.setup_banner)
         self.status_card = page.add(self._status_panel())
 
         farm = self.farm_group = page.add(SettingCardGroup("What to farm"))
@@ -3353,12 +3758,19 @@ class FarmbotWindow(FluentWindow):
 
         details = QHBoxLayout()
         details.addWidget(SubtitleLabel("Step-by-step log"))
+        self.error_count = 0
+        self.error_ticker = QLabel()
+        self.error_ticker.setToolTip("Errors in the step-by-step log since COCFARM was opened (Clear starts again). "
+                                     "To report one: Advanced → Bug report.")
+        details.addSpacing(8)
+        details.addWidget(self.error_ticker, 0, Qt.AlignVCenter)
+        self._show_error_count()
         details.addStretch(1)
         self.details_button = PushButton(FIF.VIEW, "Show the step-by-step log")
         self.details_button.setToolTip("Every step the bot takes, with times: useful when something goes wrong")
         self.details_button.clicked.connect(lambda: self._show_details(self.log_view.isHidden()))
         clear = PushButton(FIF.DELETE, "Clear")
-        clear.clicked.connect(lambda: self.log_view.clear())
+        clear.clicked.connect(self._clear_log)
         self.clear_log_button = clear
         details.addWidget(self.details_button)
         details.addWidget(clear)
@@ -3380,7 +3792,7 @@ class FarmbotWindow(FluentWindow):
         # The status panel above grows and shrinks as its text wraps: keep the watched view still.
         page.verticalScrollBar().rangeChanged.connect(self._keep_watch_view)
         anchor = _Watcher(page, (QEvent.Resize,), self._hold_watch_view)
-        for widget in (self.status_card, self.farm_group, self.setup_banner):
+        for widget in (self.status_card, self.farm_group):
             widget.installEventFilter(anchor)
         page.viewport().installEventFilter(_Watcher(page, (QEvent.Wheel,), self._stop_watching))
         page.verticalScrollBar().actionTriggered.connect(self._stop_watching)
@@ -3721,7 +4133,7 @@ class FarmbotWindow(FluentWindow):
         self._village_tab(page.tab("village", "Village"))
         self._upgrades_tab(page.tab("upgrades", "Upgrades", "Upgrades come first, then walls get the loot left."))
         self._clan_tab(page.tab("clan", "Clan"))
-        self._raid_weekend_tab(page.tab("raids", "Raid Weekend (beta)"))
+        self._raid_weekend_tab(page.tab("raids", "Raid Weekend"))
         return page
 
     def _bases_tab(self, page: Page) -> None:
@@ -3821,6 +4233,13 @@ class FarmbotWindow(FluentWindow):
                       {"middle": "Middle", "random": "Random"}, width=90)
         self.depends("attack.spell_placement", "attack.spell_spot", when="together")
 
+        ranked = page.add(badged(SettingCardGroup("Ranked battles")))
+        self.switch(ranked, "ranked.enabled", FIF.TROPHY if hasattr(FIF, "TROPHY") else FIF.FLAG,
+                    "Make the day's ranked attacks",
+                    "Before farming, each ranked attack you have left is started by itself and fought for stars: "
+                    "the battle is never left early over loot. The army trained is used. The bot doesn't sign "
+                    "up for the tournament: do that in the game.")
+
         end = page.add(SettingCardGroup("Ending the battle"))
         self.switch(end, "attack.speed_up", FIF.SPEED_HIGH, "Play the last minute at 4x",
                     "Presses the 1x button when it shows, with a minute of the battle left.")
@@ -3883,11 +4302,16 @@ class FarmbotWindow(FluentWindow):
         self.switch(ups, "upgrade.town_hall", FIF.HOME_FILL, "Upgrade the Town Hall",
                     "First among the buildings, once gold is full. While it can't be (the game wants other "
                     "buildings built first), the next upgrade is started instead.")
+        self.switch(ups, "upgrade.wait_for_town_hall", FIF.PAUSE, "Rest while the Town Hall upgrades",
+                    "Once gold and elixir are full and nothing is left to upgrade, more loot has nowhere to go: "
+                    "the game is closed until the Town Hall is done, then the farm carries on. It looks in "
+                    "every 2 hours (a builder potion or a book ends the upgrade sooner).")
         self.builders_card = self._builders(
             ups, "upgrade.builders", "How many of your builders upgrades may keep busy; the rest stay free for "
             "walls (a wall needs a free builder) or for you. Default: all but one. From your village data.")
         self.depends("upgrade.enabled", "upgrade.order", "upgrade.pets", "upgrade.heroes", "upgrade.lab",
                      "upgrade.buildings", "upgrade.first", "upgrade.new_buildings", "upgrade.town_hall",
+                     "upgrade.wait_for_town_hall",
                      "upgrade.builders")
         walls = page.add(SettingCardGroup("Walls"))
         self.switch(walls, "walls.enabled", FIF.TILES, "Upgrade walls with spare loot",
@@ -4023,10 +4447,26 @@ class FarmbotWindow(FluentWindow):
         self.number(request, "clan.request_every_minutes", FIF.DATE_TIME, "If the timer can't be read",
                     "Minutes to wait between requests.", "min")
         self.depends("clan.request_troops", "clan.request_every_minutes")
-        self._note(page, self._template_note("Donating", "Requesting troops"))
+
+        war = page.add(badged(SettingCardGroup("Clan wars")))
+        self.switch(war, "war.enabled", FIF.FLAG, "Make your war attacks",
+                    "As soon as battle day starts, each war attack you have left is made and fought for stars: "
+                    "the battle is never left early over loot. The army trained is used.")
+        self.segments(war, "war.target", FIF.PIN, "Which base",
+                      "Recommended: the base the game marks \"Recommended target\" for you (about your own "
+                      "strength; the game doesn't show which base is your mirror), then the nearest to it. "
+                      "Bottom: from the bottom of the war map up. Most stars: the base where an attack is likely to "
+                      "add the most stars (fewer above the recommended target, more below it, less the stars "
+                      "already taken); \"Attack bases with at most\" doesn't apply to it.",
+                      {"mirror": "Recommended", "bottom": "Bottom", "gain": "Most stars"}, width=120)
+        self.stars(war, "war.max_stars", FIF.FEEDBACK, "Attack bases with at most",
+                   "0: only bases nobody took a star from yet. 1 or 2: bases with that many stars or fewer "
+                   "may be attacked again. 3: any base.")
+        self.depends("war.enabled", "war.target", "war.max_stars")
+        self._note(page, self._template_note("Donating", "Requesting troops", catalog.WAR))
 
     def _raid_weekend_tab(self, page: Page) -> None:
-        raids = page.add(SettingCardGroup("Clan Capital raids"))
+        raids = page.add(badged(SettingCardGroup("Clan Capital raids")))
         self.switch(raids, "capital.raid", FIF.FLAG, "Raid the Clan Capital on Raid Weekends",
                     "Friday to Monday (07:00 UTC): every raid attack, with the full capital army set in the game. "
                     "Never spends Capital Gold.")
@@ -4151,7 +4591,10 @@ class FarmbotWindow(FluentWindow):
     HABIT_ICONS = {"tap_spread": "MOVE", "tap_hold": "STOP_WATCH", "waits": "HISTORY", "swipes": "SCROLL",
                    "curved_swipes": "SCROLL", "chore_order": "ROTATE", "odd_hours": "DATE_TIME",
                    "battle_rhythm": "MUSIC", "look_at_bases": "VIEW", "result_pause": "PAUSE",
-                   "end_spread": "STOP_WATCH", "scout_look": "ZOOM"}
+                   "end_spread": "STOP_WATCH", "scout_look": "ZOOM", "fatigue": "HISTORY",
+                   "offline_breaks": "POWER_BUTTON", "uneven_days": "CALENDAR", "distracted": "CAFE",
+                   "browse": "VIEW", "near_misses": "FILTER", "few_sides": "TILES",
+                   "hold_deploy": "FINGERPRINT"}
 
     def _like_a_person(self) -> Page:
         page = Page("like_a_person", "Like a person",
@@ -4201,12 +4644,9 @@ class FarmbotWindow(FluentWindow):
         return page
 
     def timings(self) -> Timings:
-        """This farm's round timings (what the "Like a person" page shows)."""
+        """The round timings the "Like a person" page shows: typical ones."""
         if self._timings is None:
-            try:
-                self._timings = Timings(instances.resolve(self.config, TIMINGS_FILE))
-            except Exception:  # no farm folder yet: the typical numbers
-                self._timings = Timings()
+            self._timings = Timings()
         return self._timings
 
     def _show_human(self, form: dict[str, Any]) -> None:
@@ -4218,18 +4658,15 @@ class FarmbotWindow(FluentWindow):
         habits = {h.key for h in HABITS if on and form.get(f"human.{h.key}")}
         timings = self.timings()
         for village, rows in self.human_tables.items():
-            table, measured = timings.summary(village, habits)
+            table = timings.summary(village, habits)
             for (name, plain, added, total), key in zip(table, timings_phases(village) + ["total"]):
                 cells = rows[key]
                 cells[0].setText(name)
                 cells[1].setText(duration(plain))
                 cells[2].setText(cost(added) if added >= 0.005 else "–")
                 cells[3].setText(duration(total))
-            n = timings.rounds(village)
             self.human_notes[village].setText(
-                f"Measured: the average of your last {n} round{'s' if n != 1 else ''} here." if measured else
-                "Typical times (from test runs): yours show here after a few rounds. Upgrades and village care "
-                "vary a lot with what there is to do.")
+                "Typical times (from test runs). Upgrades and village care vary a lot with what there is to do.")
         for key, card in self.habit_cards.items():
             habit = next(h for h in HABITS if h.key == key)
             home, builder = timings.habit_cost("home", key), timings.habit_cost("builder", key)
@@ -4288,6 +4725,8 @@ class FarmbotWindow(FluentWindow):
         self.number_range(breaks, "schedule.break_minutes_min", "schedule.break_minutes_max", FIF.STOP_WATCH,
                           "For", "Minutes, picked at random.", "min")
         self.depends("schedule.breaks", "schedule.break_every_min", "schedule.break_minutes_min")
+        self.number(breaks, "schedule.day_off_every", FIF.CALENDAR, "A day off about every",
+                    "About one day in this many, it doesn't play at all. 0 = never.", "days")
 
         stop = page.add(SettingCardGroup("When to stop"))
         storages = QWidget()
@@ -4316,6 +4755,176 @@ class FarmbotWindow(FluentWindow):
         return page
 
     PREVIEW_WIDTH = 360  # px: the Pictures tab's preview of the picture in use
+
+    def _bug_report(self, page: Page) -> None:
+        """Advanced → Bug report: the log to copy, and the error screenshots
+        with names blocked out."""
+        from farmbot import redact
+
+        group = page.add(SettingCardGroup("Log"))
+        self.report_errors = QLabel()
+        self.report_errors.setToolTip("Errors in the step-by-step log since COCFARM was opened")
+        copy_logs = PrimaryPushButton(FIF.COPY, "Copy for a bug report")
+        copy_logs.clicked.connect(self._copy_logs)
+        self.copy_logs_button = copy_logs
+        self._card(group, None, FIF.DOCUMENT, "Copy the log",
+                   "Your emulator, your settings (which are on and off) and the step-by-step log, with player names, "
+                   "tags, instance names, your Windows user name and other personal details taken out: as much as a "
+                   "GitHub issue takes. Paste it into the bug report's \"COCFARM report\" box.",
+                   self.report_errors, copy_logs)
+        self._show_error_count()
+
+        page.add(SubtitleLabel("Error screenshots"))
+        page.add(_muted(BodyLabel(
+            f"What the game showed when a round failed, from the last {redact.KEEP_DAYS} days. COCFARM blocks out "
+            "by itself the name and clan at the top left (yours, or the defender's in an attack), clan chat, the "
+            "names on a war map, and the Clan Castle when it has a picture of it (Pictures → Clan Castle). Drag "
+            "on the picture to block more; drag a box to move it, or its edges and corners to resize it; "
+            "right-click one to take it off. The saved files aren't changed."))).setWordWrap(True)
+        body = QHBoxLayout()
+        body.setSpacing(12)
+        self.error_screen_list = ListWidget()
+        self.error_screen_list.setFixedWidth(170)
+        self.error_screen_list.setMinimumHeight(300)
+        self.error_screen_list.currentRowChanged.connect(self._error_screen_selected)
+        body.addWidget(self.error_screen_list)
+        right = QVBoxLayout()
+        right.setSpacing(8)
+        self.error_screen_status = CaptionLabel("")
+        self.error_screen_status.setWordWrap(True)
+        right.addWidget(self.error_screen_status)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        self.copy_screen_button = PrimaryPushButton(FIF.COPY, "Copy picture")
+        self.copy_screen_button.setToolTip("Shows the picture just as it will go, to check, then copies it: paste it "
+                                           "into the bug report's Screenshots box with Ctrl+V")
+        self.copy_screen_button.clicked.connect(self._copy_error_screen)
+        self.remove_box_button = PushButton(FIF.DELETE, "Remove")
+        self.remove_box_button.setToolTip("Takes the picked box off (or right-click a box, or press Delete)")
+        self.remove_box_button.clicked.connect(lambda: self.error_canvas.remove_selected())
+        self.undo_block_button = PushButton(FIF.RETURN, "Undo")
+        self.undo_block_button.setToolTip("Takes back the last change to the boxes (Ctrl+Z)")
+        self.undo_block_button.clicked.connect(lambda: self.error_canvas.undo())
+        self.reset_boxes_button = PushButton(FIF.CANCEL, "Start over")
+        self.reset_boxes_button.setToolTip("Back to the boxes COCFARM put there by itself")
+        self.reset_boxes_button.clicked.connect(self._reset_boxes)
+        buttons.addWidget(self.copy_screen_button)
+        buttons.addStretch(1)
+        for w in (self.remove_box_button, self.undo_block_button, self.reset_boxes_button):
+            buttons.addWidget(w)
+        right.addLayout(buttons)
+        self.error_canvas = RedactEditor()
+        self.error_canvas.on_change = self._error_changed
+        right.addWidget(self.error_canvas, 1)
+        body.addLayout(right, 1)
+        page.layout_.addLayout(body)
+        self.error_screens: list[Path] = []
+        self._error_shot = None  # (file, the screenshot as saved, the boxes COCFARM put there by itself)
+        self._refresh_error_screens()
+
+    @property
+    def _error_view(self) -> np.ndarray | None:
+        """The picked error screenshot, blocked out as shown."""
+        return self.error_canvas.view() if self._error_shot else None
+
+    def _refresh_error_screens(self) -> None:
+        """The error screenshots of the last week, newest first (the one
+        showing stays picked)."""
+        from farmbot import redact
+
+        if not hasattr(self, "error_screen_list"):
+            return
+        showing = self._error_shot[0] if self._error_shot else None
+        self.error_screens = redact.recent(instances.resolve(self.config, self.config.bot.error_screens
+                                                             or "screens/errors"))
+        lst = self.error_screen_list
+        lst.blockSignals(True)
+        lst.clear()
+        for path in self.error_screens:
+            lst.addItem(f"{redact.taken_at(path):%a %d %b, %H:%M:%S}")
+        lst.blockSignals(False)
+        if not self.error_screens:
+            self._error_shot = None
+            self.error_canvas.clear()
+            self.error_screen_status.setText(f"No error screenshots from the last {redact.KEEP_DAYS} days.")
+            tint(self.error_screen_status, MUTED)
+            self._error_buttons()
+            return
+        row = self.error_screens.index(showing) if showing in self.error_screens else 0
+        lst.blockSignals(True)
+        lst.setCurrentRow(row)
+        lst.blockSignals(False)
+        if self.error_screens[row] != showing:
+            self._error_screen_selected(row)
+
+    def _error_screen_selected(self, row: int) -> None:
+        from farmbot import redact
+
+        if not 0 <= row < len(self.error_screens):
+            return
+        path = self.error_screens[row]
+        screen = redact.load(path)
+        if screen is None:
+            self._error_shot = None
+            self.error_canvas.clear()
+            self.error_screen_status.setText(f"Couldn't open {path.name}.")
+            tint(self.error_screen_status, BAD)
+            self._error_buttons()
+            return
+        found = redact.block(screen, self.library()).areas
+        self._error_shot = (path, screen, found)
+        self.error_canvas.set_image(screen, found)
+        self._error_changed()
+
+    def _error_changed(self) -> None:
+        from farmbot import redact
+
+        if not self._error_shot:
+            return
+        text, warn = redact.describe(self.error_canvas.areas, self._error_shot[2])
+        self.error_screen_status.setText(text)
+        tint(self.error_screen_status, WARN if warn else MUTED)
+        self._error_buttons()
+
+    def _error_buttons(self) -> None:
+        editor = self.error_canvas
+        have = self._error_shot is not None
+        picked = editor.areas[editor.selected][0] if have and editor.selected is not None else None
+        self.copy_screen_button.setEnabled(have)
+        self.reset_boxes_button.setEnabled(have)
+        self.remove_box_button.setEnabled(picked is not None)
+        self.undo_block_button.setEnabled(have and editor.can_undo())
+
+    def _block_by_hand(self, rect: Rect) -> None:
+        """A box of the user's own over ``rect`` (as if dragged)."""
+        if self._error_shot:
+            self.error_canvas.add("by hand", rect)
+
+    def _reset_boxes(self) -> None:
+        if self._error_shot:
+            self.error_canvas.reset(self._error_shot[2])
+
+    def _review(self, action: str) -> np.ndarray | None:
+        """The picture, shown just as it will go to be looked over (and more
+        blocked on it): what to share, or None if the user went back. What
+        was changed there stays, either way."""
+        if not self._error_shot:
+            return None
+        _path, screen, found = self._error_shot
+        box = ShareDialog(screen, self.error_canvas.areas, found, action, self)
+        shared = box.exec()
+        if box.editor.areas != self.error_canvas.areas:
+            self.error_canvas.reset(box.editor.areas)
+        return box.editor.view() if shared else None
+
+    def _copy_error_screen(self) -> None:
+        image = self._review("Copy")
+        if image is None:
+            return
+        QApplication.clipboard().setPixmap(to_pixmap(image))
+        notice(InfoBarIcon.SUCCESS, "Copied the picture",
+               "Just as you checked it. Paste it into the bug report's Screenshots box (Ctrl+V).",
+               duration=5000, parent=self)
 
     def _pictures(self, page: Page) -> None:
         body = QHBoxLayout()
@@ -4474,6 +5083,7 @@ class FarmbotWindow(FluentWindow):
                 vision = Vision(self.library(), self.config.bot.threshold)
                 self.events.put(("screen", normalize_screen(raw, vision, self.config.device.ui_scale)))
             except Exception as exc:
+                log.warning("Couldn't take the screen: %s", diag.failure(exc))
                 self.events.put(("screen", str(exc)))
 
         self._spawn(work)
@@ -4517,19 +5127,14 @@ class FarmbotWindow(FluentWindow):
         self.canvas.select(None)
         self._refresh_pictures(keep=picture.name)
 
-    # ------------------------------------------------------------ setup
-    STEP_TITLES = ("1.  Pick your emulator", "2.  Connect and check the game", "3.  Choose the loot you want",
-                   "4.  Start farming")
-
-    def _setup(self) -> Page:
-        page = Page("setup", "Setup", "Four steps to get farming. COCFARM sets the emulator up by itself.")
-        self.steps: list[SettingCardGroup] = []
-
-        step = self._step(page, 0)
-        self.segments(step, "device.mode", FIF.PHONE, "Emulator",
+    # ------------------------------------------------------------ emulator
+    def _emulator_cards(self, group: SettingCardGroup) -> None:
+        """Advanced → Emulator's first cards: the emulator, its instance, and
+        the connection and game check (the onboarding walks through these too)."""
+        self.segments(group, "device.mode", FIF.PHONE, "Emulator",
                       "The Android emulator Clash of Clans runs in on this PC. Other: any device by its address "
-                      "(Advanced).", {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "mumu": "MuMu",
-                                     "manual": "Other"}, width=90)
+                      "(below).", {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "mumu": "MuMu",
+                                   "manual": "Other"}, width=90)
         self.bluestacks_info = BodyLabel("")
         self.bluestacks_info.setWordWrap(True)
         self.bluestacks_info.setMinimumWidth(240)
@@ -4537,26 +5142,25 @@ class FarmbotWindow(FluentWindow):
         refresh = PushButton(FIF.SYNC, "Look again")
         refresh.setToolTip("Look for BlueStacks, LDPlayer and MuMu again, e.g. after installing one")
         refresh.clicked.connect(self._find_bluestacks)
-        self.found_card = self._card(step, None, FIF.VIEW, "On this PC", "", self.bluestacks_info, refresh)
+        self.found_card = self._card(group, None, FIF.VIEW, "On this PC", "", self.bluestacks_info, refresh)
         self.instance_box = EditableComboBox()
         self.instance_box.setFixedWidth(240)
         self.instance_box.setPlaceholderText("Main instance")
         self._bind("device.bluestacks_instance", bind_combo(self.instance_box))
-        self.instance_card = self._card(step, "device.bluestacks_instance", FIF.APPLICATION, "BlueStacks window",
+        self.instance_card = self._card(group, "device.bluestacks_instance", FIF.APPLICATION, "BlueStacks window",
                                         "Which BlueStacks instance plays the game. Empty uses the main one.",
                                         self.instance_box)
         self.depends("device.mode", "device.bluestacks_instance", when="bluestacks")
-        self.switch(step, "device.launch_emulator", FIF.ROBOT, "Open the emulator automatically",
+        self.switch(group, "device.launch_emulator", FIF.ROBOT, "Open the emulator automatically",
                     "When you press Start and it isn't open yet.")
 
-        step = self._step(page, 1)
-        test = PrimaryPushButton(FIF.SYNC, "Check now")
+        test = PushButton(FIF.SYNC, "Check now")
         test.clicked.connect(self._test_connection)
         self.test_button = test
         self.device_result = CaptionLabel("Not checked yet")
         self.device_result.setWordWrap(True)
         tint(self.device_result, MUTED)
-        self._card(step, None, FIF.CONNECT, "Connect to the emulator",
+        self._card(group, None, FIF.CONNECT, "Check the connection",
                    "Opens the emulator if needed and sets it up for COCFARM (it may restart once).",
                    self.device_result, test)
         self.game_installed = CaptionLabel("Not checked yet")
@@ -4564,49 +5168,23 @@ class FarmbotWindow(FluentWindow):
         for label in (self.game_installed, self.game_logged_in):
             label.setWordWrap(True)
             tint(label, MUTED)
-        self._card(step, None, FIF.GAME, "Clash of Clans installed",
+        self._card(group, None, FIF.GAME, "Clash of Clans installed",
                    "Install it from the Play Store inside the emulator.", self.game_installed)
-        self._card(step, None, FIF.VPN, "Signed in to your account",
+        self._card(group, None, FIF.VPN, "Signed in to your account",
                    "Open the game once in the emulator and sign in; COCFARM can't do this part.", self.game_logged_in)
         self.fix_button = PrimaryPushButton("")
         self.fix_button.clicked.connect(lambda: self._do_fix(self.fix_action, retry=self._test_connection))
         self.fix_action = ""
-        self.fix_card = self._card(step, None, FIF.INFO, "What to do", " ", self.fix_button)
+        self.fix_card = self._card(group, None, FIF.INFO, "What to do", " ", self.fix_button)
         self.fix_card.hide()
 
-        step = self._step(page, 2)
-        for path, name in (("search.min_gold", "Gold"), ("search.min_elixir", "Elixir"), ("search.min_dark", "Dark elixir")):
-            w = LineEdit()
-            w.setFixedWidth(170)
-            w.setAlignment(Qt.AlignRight)
-            w.setPlaceholderText("e.g. 1.5m")
-            card = Card(icons.icon(path.rsplit("_", 1)[-1], 28), name, "Bases offering less are skipped; 0 ignores it. "
-                        "Untouched, it's set for your Town Hall.", w)
-            step.addSettingCard(card)
-            self._mirror(path, bind_line(with_commas(w)), card)
-            w.textEdited.connect(self._minimums_typed)
-        more = PushButton(FIF.FILTER, "More choices")
-        more.clicked.connect(lambda: self.show_page("Home village", "bases"))
-        self._card(step, None, FIF.MORE, "Want more control?",
-                   "Totals, any-one-is-enough, and when to skip searching: Home village → Bases to attack.", more)
+    def show_onboarding(self) -> None:
+        """A new install's guided tour (farmbot/tour.py), until it's finished or skipped."""
+        if self.onboarding_dialog is not None or not onboarding.due(self.config_path):
+            return
+        from farmbot import tour
 
-        step = self._step(page, 3)
-        go = PrimaryPushButton(FIF.PLAY, "Start")
-        go.clicked.connect(self.start)
-        self.setup_start = go
-        self._card(step, None, FIF.PLAY, "Press Start",
-                   "It opens the game, collects loot and starts attacking. Watch it on the Dashboard; Pause (Esc) any time.", go)
-
-        alerts = PushButton(FIF.RINGER, "Set up alerts")
-        alerts.clicked.connect(lambda: self.show_page("Advanced", "alerts"))
-        self._card(step, None, FIF.MESSAGE, "Alerts on your phone (optional)",
-                   "A Discord message when the bot stops, a storage fills, or each day: Advanced → Alerts.", alerts)
-        return page
-
-    def _step(self, page: Page, index: int) -> SettingCardGroup:
-        group = page.add(SettingCardGroup(self.STEP_TITLES[index]))
-        self.steps.append(group)
-        return group
+        tour.show(self)
 
     def _mirror(self, path: str, binding: Binding, card: Card) -> None:
         """Show the setting ``path`` (bound elsewhere) on a second card too."""
@@ -4711,24 +5289,6 @@ class FarmbotWindow(FluentWindow):
             if self._value(paths[kind]) != f"{least:,}":
                 self._set_value(paths[kind], f"{least:,}")
 
-    def _steps_done(self) -> list[bool]:
-        mode = self.bindings["device.mode"].get()
-        found = (mode == "manual" or (mode == "bluestacks" and self._found.get("bluestacks"))
-                 or (mode in ("ldplayer", "mumu") and self._found.get(mode)))
-        form = self.collect()
-        loot = any(str(form.get(p, "0")).strip() not in ("", "0") for p in
-                   ("search.min_gold", "search.min_elixir", "search.min_dark"))
-        return [bool(found), self.check_passed, loot and not self.has_errors, self._running()]
-
-    def _show_steps(self) -> None:
-        if not getattr(self, "steps", None):
-            return
-        for group, title, done in zip(self.steps, self.STEP_TITLES, self._steps_done()):
-            group.titleLabel.setText(("✓  " if done else "") + title)
-            tint(group.titleLabel, GOOD if done else None)
-        if hasattr(self, "setup_banner"):
-            self.setup_banner.setVisible(not self.setup_passed)
-
     def _emulator_defaults(self) -> ListCard:
         """What COCFARM sets each emulator to (``farmbot/standard.py``): shown,
         not settings."""
@@ -4753,8 +5313,8 @@ class FarmbotWindow(FluentWindow):
 
     def _do_fix(self, action: str, retry: Callable[[], None]) -> None:
         """The button under a problem: do the next step it names."""
-        if action == "setup":
-            self.show_page("Setup")
+        if action == "setup":  # the emulator or its instance
+            self.show_page("Advanced", "settings")
         elif action == "autostart":
             self.bindings["device.launch_emulator"].set(True)
             self._autosave()
@@ -4776,6 +5336,7 @@ class FarmbotWindow(FluentWindow):
                           "phone, and the tools for teaching COCFARM new buttons.")
         tab = page.tab("settings", "Settings")
         emulator = tab.add(SettingCardGroup("Emulator"))
+        self._emulator_cards(emulator)
         self.switch(emulator, "device.enable_adb", ICON_TOOLS, "Turn on ADB",
                     "ADB is how COCFARM controls the emulator in the background. If it's off, COCFARM turns it on "
                     "(the emulator restarts once).")
@@ -4849,20 +5410,25 @@ class FarmbotWindow(FluentWindow):
                     "A message when the game kept failing and COCFARM restarted the emulator.")
         self.switch(notify, "notify.daily_summary", FIF.MAIL, "Daily summary",
                     "Yesterday's attacks and loot, sent after midnight.")
+        self.number(notify, "notify.progress_every", FIF.SYNC, "Progress update every",
+                    "Attacks, loot and the run so far, every so many attacks. 0: none.", suffix="attacks")
+        self.switch(notify, "notify.on_critical_error", FIF.INFO, "When a round fails",
+                    "An alert when an error makes COCFARM restart the game, or stops the bot.")
+        self.switch(notify, "notify.on_deploy_failed", FIF.PEOPLE, "When troops won't deploy",
+                    "An alert when no troop or hero would go down in a battle, after every retry.")
+        self.number(notify, "notify.alert_cooldown_minutes", FIF.HISTORY, "Same alert at most every",
+                    "Repeats inside this time aren't sent; the next alert says how many there were.", suffix="min")
         test_notify = PushButton(FIF.SEND, "Send a test")
         test_notify.clicked.connect(self._test_notify)
         self.notify_result = CaptionLabel("")
         self._card(notify, None, FIF.SEND, "Test", "Sends a message to the webhook above.",
                    self.notify_result, test_notify)
+        self._bug_report(page.tab("report", "Bug report", "What a bug report on GitHub needs, with your player "
+                                  "name, your clan and other personal details taken out."))
+        page.on_show["report"] = self._refresh_error_screens
         self._pictures(page.tab("pictures", "Pictures", "COCFARM finds buttons by comparing the screen with small "
                                 "pictures of them. Pick one, show the screen it's on, and drag a box tightly around it."))
         return page
-
-    def _welcome(self) -> None:
-        """First run: open Setup, where the steps say what to do."""
-        self.show_page("Setup")
-        notice(InfoBarIcon.INFORMATION, "Welcome to COCFARM",
-               "Follow the four steps on this page. It takes a couple of minutes.", duration=8000, parent=self)
 
     def _check_for_update(self, force: bool = False) -> None:
         """Ask GitHub for a newer COCFARM in the background (see farmbot/update.py
@@ -4965,7 +5531,8 @@ class FarmbotWindow(FluentWindow):
             except update.UpdateError as exc:
                 self.events.put(("update_failed", str(exc)))
             except Exception as exc:
-                log.exception("Update failed")
+                log.error("Update failed: %s", diag.failure(exc))
+                diag.traceback_to_file(log, exc, "update")
                 self.events.put(("update_failed", f"Something went wrong: {exc}"))
 
         self._spawn(work)
@@ -5076,6 +5643,8 @@ class FarmbotWindow(FluentWindow):
                 screen = normalize_screen(open_device(self.config.device).screenshot(), vision, self.config.device.ui_scale)
                 self.events.put(("seen", describe(screen, self.config, vision)))
             except Exception as exc:
+                log.warning("Couldn't tell what the game shows: %s", diag.failure(exc))
+                diag.traceback_to_file(log, exc)
                 self.events.put(("seen", str(exc)))
 
         self._spawn(work)
@@ -5122,7 +5691,6 @@ class FarmbotWindow(FluentWindow):
                          "(mumuplayer.com), then press Look again.")
         self.bluestacks_info.setText(chr(10).join(lines))
         tint(self.bluestacks_info, WARN if not any(self._found.values()) else None)
-        self._show_steps()
 
     # ------------------------------------------------------------ form state
     def collect(self) -> dict[str, Any]:
@@ -5200,8 +5768,6 @@ class FarmbotWindow(FluentWindow):
                 b.enable(on)
         self._show_locked(form, values)  # after: what's locked stays greyed out
         self.start_button.setEnabled(not errors and (not self._running() or self.pause_event.is_set()))
-        self.setup_start.setEnabled(self.start_button.isEnabled() and not self._running())
-        self._show_steps()
         self._show_big_buttons()
         if form.get("bot.theme") in THEMES and form.get("bot.theme") != self._theme:
             self._apply_theme(form.get("bot.theme"))
@@ -5657,7 +6223,6 @@ class FarmbotWindow(FluentWindow):
                       on_builder=lambda battle: self.events.put(("builder", battle)),
                       on_storage_max=lambda village, maxes: self.events.put(("storage_max", (village, maxes))),
                       on_account=self._account_from_bot,
-                      on_timings=lambda t: self.events.put(("timings", t)),
                       on_village=lambda name, v: self.events.put(("village", (name, v))),
                       village_path=self.village_file,
                       pause_event=self.pause_event,
@@ -5679,6 +6244,8 @@ class FarmbotWindow(FluentWindow):
                     raise
                 except Exception as exc:  # shown in the window instead of a silent thread death
                     log.error("Bot stopped: %s", exc)
+                    log.info("Bot stopped by %s", diag.failure(exc), extra=diag.FILE_ONLY)
+                    diag.traceback_to_file(log, exc, "bot stopped")
                     wait = restart_wait(exc, restarts, time.monotonic())
                     if wait is None:
                         self.events.put(("error", str(exc)))
@@ -5699,6 +6266,8 @@ class FarmbotWindow(FluentWindow):
             pass
         except Exception as exc:  # shown in the window instead of a silent thread death
             log.error("Bot stopped: %s", exc)
+            log.info("Bot stopped by %s", diag.failure(exc), extra=diag.FILE_ONLY)
+            diag.traceback_to_file(log, exc, "bot stopped")
             self.events.put(("error", str(exc)))
         finally:
             instances.active.pop(self.farm, None)
@@ -5777,6 +6346,7 @@ class FarmbotWindow(FluentWindow):
                 h, w = device.screenshot().shape[:2]
                 self.events.put(("device", (True, f"✓ Connected to {name}")))
             except Exception as exc:
+                log.warning("Couldn't connect: %s", diag.failure(exc))
                 self.events.put(("device", (False, str(exc))))
                 self.events.put(("game", (None, None)))
                 return
@@ -5799,6 +6369,7 @@ class FarmbotWindow(FluentWindow):
         if ok:
             self.device_result.setText(message)
             tint(self.device_result, GOOD)
+            self._onboarding_check()
             return
         problem = explain(message, self._emulator_name())
         self.device_result.setText(f"✗ {problem.title}")
@@ -5806,6 +6377,7 @@ class FarmbotWindow(FluentWindow):
         self.device_result.setToolTip(problem.details)
         self._show_fix(problem.why, problem.action, problem.action_text)
         self.test_button.setEnabled(True)
+        self._onboarding_check()
 
     def _show_fix(self, text: str, action: str, button: str) -> None:
         self.fix_card.help_text = text  # survives the error/explanation refresh
@@ -5837,11 +6409,12 @@ class FarmbotWindow(FluentWindow):
         if installed and logged_in:
             self.fix_card.hide()
             self.check_passed = True
-            if not self.setup_passed:
-                self.setup_passed = True
-                notice(InfoBarIcon.SUCCESS, "All set", "COCFARM can see your village. Choose the loot you want "
-                       "(step 3), then press Start.", duration=6000, parent=self)
-            self._show_steps()
+        self._onboarding_check()
+
+    def _onboarding_check(self) -> None:
+        """The connection check's result, shown in the onboarding too while it's open."""
+        if self.onboarding_dialog is not None:
+            self.onboarding_dialog.show_check()
 
     # ------------------------------------------------------------ events
     def _show_status(self, status: Status) -> None:
@@ -5925,13 +6498,18 @@ class FarmbotWindow(FluentWindow):
             self._show_details(True)
 
     def _apply_theme(self, name: str) -> None:
+        global _setting_theme
         self._theme = name
-        setTheme({"auto": Theme.AUTO, "light": Theme.LIGHT, "dark": Theme.DARK}[name])
+        _setting_theme = True  # setTheme restyles every widget itself, after its themeChanged
+        try:
+            setTheme({"auto": Theme.AUTO, "light": Theme.LIGHT, "dark": Theme.DARK}[name])
+        finally:
+            _setting_theme = False
         self._theme_changed()
 
     def _theme_changed(self) -> None:
         """Recolour everything coloured by hand for the theme now showing."""
-        setThemeColor(str(ACCENT))
+        _sync_accent()
         retint()
         if hasattr(self, "big_state"):
             self._show_status(self.status_now)
@@ -5999,9 +6577,6 @@ class FarmbotWindow(FluentWindow):
                         self._village_for, self._village = (name or None,), village
                         self._fit_search_minimums()
                         self._changed(save=False)
-                elif kind == "timings":
-                    self._timings = data
-                    self._show_human(self.collect())
                 elif kind == "builder":
                     self._bb_show(data)
                     self._bb_stage("Done")
@@ -6121,6 +6696,58 @@ class FarmbotWindow(FluentWindow):
     def _append_log(self, level: int, line: str) -> None:
         colour = BAD if level >= logging.ERROR else WARN if level >= logging.WARNING else GOOD if "→ attack" in line else TEXT
         self.log_view.appendHtml(f'<span style="color:{colour}; font-family: Consolas, monospace;">{escape(line)}</span>')
+        if level >= logging.ERROR:
+            self.error_count += 1
+            self._show_error_count()
+
+    def _clear_log(self) -> None:
+        self.log_view.clear()
+        self.error_count = 0
+        self._show_error_count()
+
+    def _show_error_count(self) -> None:
+        """The pill after the log's title: how many errors it holds (red
+        when there are any)."""
+        n = self.error_count
+        back = BAD if n else SUBTLE
+        for label in (self.error_ticker, getattr(self, "report_errors", None)):
+            if label is None:
+                continue
+            label.setText("No errors" if not n else f"{n:,} error{'' if n == 1 else 's'}")
+            tint(label, ON_ACCENT if n else MUTED,
+                 lambda: f"background: {back}; border-radius: 8px; padding: 1px 10px; font-size: 12px; "
+                         "font-weight: 600;")
+
+    def _copy_logs(self) -> None:
+        """The log, personal details taken out, to the clipboard: as much as
+        a GitHub issue takes, the newest lines kept."""
+        from farmbot import logshare
+
+        names = set(self.profiles.names())
+        if self.config.profiles.active:
+            names.add(self.config.profiles.active)
+        try:
+            files = logshare.log_files()
+            # (No log file: the bot isn't writing one. The window's own log, then.)
+            lines = None if files else self.log_view.toPlainText().splitlines()
+            try:
+                farms = max(len(instances.picked()), 1)
+            except OSError:
+                farms = 1
+            sections = [*logshare.emulator_section(self.config.device, farms), "",
+                        *logshare.settings_section(self.config)]
+            text, kept, _total = logshare.report(names, files=files, lines=lines, titles=logshare.instance_titles(),
+                                                 sections=sections)
+        except Exception as exc:  # (a file that can't be read: say so, rather than copy nothing)
+            log.warning("Couldn't copy the log: %s", exc)
+            notice(InfoBarIcon.ERROR, "Couldn't copy the log", str(exc), duration=6000, parent=self)
+            return
+        QApplication.clipboard().setText(text)
+        notice(InfoBarIcon.SUCCESS, "Copied for a bug report",
+               f"Your emulator, your settings, the errors of the last days and {kept:,} log lines, with player "
+               "names, instance names and other "
+               "personal details taken out. Paste it into the bug report's \"COCFARM report\" box.",
+               duration=6000, parent=self)
 
     def _theme_signal(self, *_) -> None:
         self._theme_changed()

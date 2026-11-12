@@ -297,7 +297,7 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
     it if allowed, and connect over MuMu's own ADB."""
     install = find()
     if install is None:
-        raise DeviceError("MuMu Player was not found. Install MuMu Player, or pick another emulator in Setup.")
+        raise DeviceError("MuMu Player was not found. Install MuMu Player, or pick another emulator in Advanced → Emulator.")
     found = instances(install, run)
     inst = next((i for i in found if i.index == cfg.mumu_index), None)
     if inst is None:
@@ -314,7 +314,7 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
         inst = _wait_stopped(install, inst, run, sleep)
     if not inst.started:
         if not cfg.launch_emulator:
-            raise DeviceError(f"{install.name} is not running. Start it, or turn on 'Open the emulator automatically' in Setup.")
+            raise DeviceError(f"{install.name} is not running. Start it, or turn on 'Open the emulator automatically' in Advanced → Emulator.")
         log.info("Starting %s (instance %d)", install.name, inst.index + 1)
         run([str(install.manager), "control", "-v", str(inst.index), "launch"])
     deadline = clock() + cfg.launch_timeout

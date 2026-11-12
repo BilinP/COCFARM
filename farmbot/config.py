@@ -224,6 +224,19 @@ class AttackConfig:
     # "together": the one spot, "middle" (the base centre) or "random" (a new
     # spot each battle, within the middle half of the base).
     spell_spot: str = "random"
+    # Battles fought for stars (war, ranked): "side" sends the whole army in
+    # from one side, "corner" from two neighbouring sides, "spread" round the
+    # base as when farming. Spells then follow the push: star_spell_depth of
+    # the way in from that side to the centre, star_spell_delay s after the
+    # army is down.
+    star_focus: str = "side"
+    star_spell_delay: float = 6.0
+    star_spell_depth: float = 0.4
+    # In those battles: s the Clan Castle's troops get to come out to a lure
+    # troop (only with a lure card picture and a Clan Castle picture found on
+    # the base), and s a ground army's heroes and siege lead the troops by.
+    star_lure_wait: float = 10.0
+    star_ground_lead: float = 3.0
     # Last-resort deploy lines per side, [x1, y1, x2, y2], used when neither
     # the red line nor the building area can be found. They were measured on
     # a screen deploy_lines_width wide and shift with the screen's width.
@@ -365,6 +378,29 @@ class ClanConfig:
 
 
 @dataclass
+class RankedConfig:
+    """Ranked battles: the day's ranked attacks, made before farming and
+    fought for stars (never ended early over loot)."""
+
+    enabled: bool = False
+
+
+@dataclass
+class WarConfig:
+    """Clan war attacks, made once battle day starts and fought for stars."""
+
+    enabled: bool = False
+    # Which enemy base: "mirror" (the game's recommended target, a base of about your own
+    # strength, then the nearest to it: the game doesn't show which base has your number) or
+    # "bottom" (from the bottom of the map up) or "gain" (the base where the most new stars
+    # are likely: about 1 well above the recommended target, 2 near it, 3 well below it,
+    # less the stars already taken; max_stars doesn't apply to it).
+    target: str = "mirror"
+    # Only bases with at most this many stars so far are attacked (0: ones not starred yet).
+    max_stars: int = 0
+
+
+@dataclass
 class CapitalConfig:
     """Clan Capital raids on Raid Weekends (Friday 07:00 to Monday 07:00 UTC)."""
 
@@ -390,6 +426,8 @@ class ScheduleConfig:
     break_every_max: int = 25
     break_minutes_min: int = 5
     break_minutes_max: int = 20
+    # A day off about one day in this many (0: never): no play that day.
+    day_off_every: int = 0
 
 
 @dataclass
@@ -411,6 +449,15 @@ class HumanConfig:
     result_pause: bool = True  # a look at the result before Return Home
     end_spread: bool = True  # battles end at slightly different moments
     scout_look: bool = False  # a look around the base (a drag and back) before deploying
+    # Off until switched on: each changes what the farm does, not just its rhythm.
+    fatigue: bool = False  # waits grow the longer it has played without a break
+    offline_breaks: bool = False  # the game is closed on breaks and outside playing hours
+    uneven_days: bool = False  # each day's attack limit and break spacing scaled by its own factor
+    distracted: bool = False  # now and then a round's rest runs long
+    browse: bool = False  # now and then the clan chat, the Build list or a drag around the village
+    near_misses: bool = False  # a base just under the minimums taken, one just over passed, sometimes
+    few_sides: bool = False  # some battles go in from one or two sides
+    hold_deploy: bool = False  # big troop cards go down with a held finger
 
     def uses(self, habit: str) -> bool:
         return self.enabled and bool(getattr(self, habit))
@@ -430,6 +477,10 @@ class NotifyConfig:
     on_stopped: bool = True  # the bot stopped: by an error, or after a run
     on_emulator_restart: bool = True
     daily_summary: bool = True  # yesterday's attacks and loot, sent after midnight
+    progress_every: int = 0  # a progress update (attacks, loot, ...) every N attacks; 0: none
+    on_critical_error: bool = False  # a round failed and the game is restarted, or an error stops the bot
+    on_deploy_failed: bool = False  # a battle where no troop or hero would go down, after every retry
+    alert_cooldown_minutes: int = 30  # the same alert at most once in this long; repeats are counted in the next
 
 
 @dataclass
@@ -500,6 +551,9 @@ class UpgradeConfig:
     # (when it can't be yet, the next upgrade instead).
     new_buildings: bool = True
     town_hall: bool = True
+    # While the Town Hall is being upgraded, once gold and elixir are full
+    # and nothing is left to spend them on: the game is closed until it's done.
+    wait_for_town_hall: bool = True
     # How many of the village's builders upgrades may keep busy (walls aside),
     # once the village data says how many there are. 0: all but one; -1: none.
     builders: int = 0
@@ -516,6 +570,8 @@ BUILDER_HEROES = ("any", "machine", "copter")
 SPELL_PLACEMENTS = ("together", "spread")
 SPELL_CHOICES = ("bat", "all")
 SPELL_SPOTS = ("middle", "random")
+STAR_FOCUS = ("side", "corner", "spread")
+WAR_TARGETS = ("mirror", "bottom", "gain")
 
 
 @dataclass
@@ -648,6 +704,8 @@ class Config:
     redline: RedLineConfig = field(default_factory=RedLineConfig)
     clan: ClanConfig = field(default_factory=ClanConfig)
     capital: CapitalConfig = field(default_factory=CapitalConfig)
+    ranked: RankedConfig = field(default_factory=RankedConfig)
+    war: WarConfig = field(default_factory=WarConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     human: HumanConfig = field(default_factory=HumanConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
@@ -693,6 +751,10 @@ class Config:
             raise ValueError(f"attack.spells must be one of {SPELL_CHOICES}")
         if self.attack.spell_spot not in SPELL_SPOTS:
             raise ValueError(f"attack.spell_spot must be one of {SPELL_SPOTS}")
+        if self.attack.star_focus not in STAR_FOCUS:
+            raise ValueError(f"attack.star_focus must be one of {STAR_FOCUS}")
+        if self.war.target not in WAR_TARGETS:
+            raise ValueError(f"war.target must be one of {WAR_TARGETS}")
         if self.builder.first_hero not in BUILDER_HEROES:
             raise ValueError(f"builder.first_hero must be one of {BUILDER_HEROES}")
         if self.builder.corner not in BUILDER_CORNERS:

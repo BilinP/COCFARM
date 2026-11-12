@@ -25,6 +25,7 @@ class Screen(enum.Enum):
     REWARD = "reward picker"
     POPUP = "popup"
     CAPITAL = "clan capital"  # the capital or its raid map (left open, or the game reopened there)
+    WAR = "clan war"  # the war map (left open, or where a war battle's result leads)
     LOGIN = "login screen"  # no account logged in: the bot can't play
     MAINTENANCE = "maintenance break"  # Supercell's: nothing can be played until it's over
     UNKNOWN = "unknown screen"  # loading, an animation, or something new
@@ -54,6 +55,15 @@ def identify(game: Game, refresh: bool = True) -> Screen:
     """Name the screen on show. The order matters: the reward picker
     covers a battle, popups cover a village, and the home village's
     Battle button also matches the builder base's."""
+    screen = _identify(game, refresh)
+    try:
+        game.last_seen = screen  # (said in a failed round's log line)
+    except AttributeError:  # (a stand-in game that takes no new attributes)
+        pass
+    return screen
+
+
+def _identify(game: Game, refresh: bool) -> Screen:
     from farmbot.tasks import builder  # tasks import this module's callers
 
     if refresh:
@@ -72,7 +82,7 @@ def identify(game: Game, refresh: bool = True) -> Screen:
         return Screen.RESULTS
     if any(_seen(game, name) for name in (T.END_BATTLE, T.BB_BATTLE_STARTS, T.BB_BATTLE_ENDS)):
         return Screen.BATTLE
-    game.prefetch([(name, None) for name in (*POPUP_BUTTONS, T.BATTLE, T.LOGIN, *CAPITAL_EXITS)]
+    game.prefetch([(name, None) for name in (*POPUP_BUTTONS, T.BATTLE, T.LOGIN, *CAPITAL_EXITS, T.WAR_RETURN_HOME, T.WAR_TO_ENEMY, T.WAR_TO_HOME)]
                   + [(T.BB_BATTLE, game.region(builder.BATTLE_AREA))])
     if any(_seen(game, name) for name in POPUP_BUTTONS):
         return Screen.POPUP
@@ -82,6 +92,8 @@ def identify(game: Game, refresh: bool = True) -> Screen:
         return Screen.HOME
     if _seen(game, T.LOGIN):
         return Screen.LOGIN
+    if _seen(game, T.WAR_RETURN_HOME) and (_seen(game, T.WAR_TO_ENEMY) or _seen(game, T.WAR_TO_HOME)):
+        return Screen.WAR  # (before the capital: its Return Home looks the same)
     if any(_seen(game, name) for name in CAPITAL_EXITS):
         return Screen.CAPITAL
     return Screen.UNKNOWN
@@ -149,6 +161,10 @@ def settle(game: Game, steps: int | None = None) -> Screen:
 
             log.info("In the Clan Capital: going home")
             capital._go_home(game)
+        elif screen is Screen.WAR:
+            log.info("On the war map: going home")
+            game.click(T.WAR_RETURN_HOME)
+            game.wait(3)
         elif _seen(game, T.FIND_MATCH) and getattr(game.device, "back", None):
             # The battle menu, left open by a round that failed: Back closes it.
             log.info("Closing the battle menu")

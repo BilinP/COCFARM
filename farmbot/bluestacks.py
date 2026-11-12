@@ -262,11 +262,33 @@ def wanted_settings(cfg: DeviceConfig | None = None) -> dict[str, int | str]:
                 device_profile_code=standard.BLUESTACKS_PROFILE)
 
 
+# Settings for every instance (whole ``bst.`` keys, not ``bst.instance.<name>.``).
+# "Allow BlueStacks to show Ads during gameplay" (Settings > Preferences), on
+# when BlueStacks is installed: its ads open in a panel beside the game,
+# which shrinks the game's window (what the bot drives with ADB off) and
+# covers part of the screen.
+WANTED_GLOBAL = {"bst.enable_programmatic_ads": 0}
+
+
+def read_global(install: Install) -> dict[str, str]:
+    """bluestacks.conf's settings for every instance (whole keys, e.g.
+    "bst.enable_programmatic_ads"), without the instances' own."""
+    try:
+        text = (install.data_dir / "bluestacks.conf").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    return {m.group(1): m.group(2) for line in text.splitlines()
+            if (m := _LINE.match(line)) and not m.group(1).startswith("bst.instance.")}
+
+
 def settings_to_change(install: Install, instance: Instance, cfg: DeviceConfig) -> dict[str, int]:
     current = read_instance(install, instance)
     if not current:
         return {}
-    return {k: v for k, v in wanted_settings(cfg).items() if current.get(k) != str(v)}
+    changes = {k: v for k, v in wanted_settings(cfg).items() if current.get(k) != str(v)}
+    shared = read_global(install)
+    changes.update({k: v for k, v in WANTED_GLOBAL.items() if shared.get(k) != str(v)})
+    return changes
 
 
 def set_display(install: Install, instance: Instance, width: int, height: int, dpi: int,
@@ -294,7 +316,8 @@ def apply_settings(install: Install, instance: Instance, values: dict[str, int],
     if "fb_width" in wanted:
         wanted["custom_resolution_selected"] = 1
     for key, value in wanted.items():
-        name = f"bst.instance.{instance.name}.{key}".encode()
+        # (a whole "bst." key is every instance's: WANTED_GLOBAL)
+        name = (key if key.startswith("bst.") else f"bst.instance.{instance.name}.{key}").encode()
         line = name + b'="' + str(value).encode() + b'"'
         data, count = re.subn(rb"^" + re.escape(name) + rb'="[^"]*"', line, data, flags=re.M)
         if not count:
@@ -346,7 +369,7 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
         return device
 
     if install is None:
-        raise DeviceError("BlueStacks 5 was not found. Install it, or pick another emulator in Setup.")
+        raise DeviceError("BlueStacks 5 was not found. Install it, or pick another emulator in Advanced → Emulator.")
     instance = install.instance(cfg.bluestacks_instance)
     if instance is None:
         names = ", ".join(i.display_name for i in install.instances) or "none"
@@ -378,7 +401,7 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
 
     if not running():
         if not cfg.launch_emulator and install.adb_enabled:
-            raise DeviceError("BlueStacks is not running. Start it, or turn on 'Open the emulator automatically' in Setup.")
+            raise DeviceError("BlueStacks is not running. Start it, or turn on 'Open the emulator automatically' in Advanced → Emulator.")
         start(install, instance)
 
     deadline = clock() + cfg.launch_timeout

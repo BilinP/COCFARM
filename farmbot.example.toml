@@ -61,6 +61,13 @@ spell_placement = "together"  # "together": all on one spot at once; "spread": o
 spell_reach = 0.45
 spells = "bat"  # "bat": only Bat Spells; "all": every spell
 spell_spot = "random"  # one spot: "middle" of the base, or "random" within its middle half
+# War and ranked battles: "side" sends the army in from one side, "corner" from two neighbouring
+# sides, "spread" round the base as when farming. Spells then follow the push, after the delay.
+star_focus = "side"
+star_spell_delay = 6.0  # s after the army is down before the spells, in a war or ranked battle
+star_spell_depth = 0.4  # spells: this share of the way in from the push side to the base centre
+star_lure_wait = 10.0  # s for the Clan Castle's troops to come out to a lure troop (needs the lure and Clan Castle pictures)
+star_ground_lead = 3.0  # s a ground army's heroes and siege go in ahead of its troops (needs the ground troop pictures)
 
 [attack.deploy_lines]
 nw = [190, 380, 620, 90]
@@ -150,6 +157,10 @@ on_storage_full = true
 on_stopped = true
 on_emulator_restart = true
 daily_summary = true
+progress_every = 0  # a progress update (attacks, loot, ...) every N attacks; 0 = none
+on_critical_error = false  # alert: a round failed and the game is restarted, or an error stopped the bot
+on_deploy_failed = false  # alert: no troop or hero would go down in a battle, after every retry
+alert_cooldown_minutes = 30  # the same alert at most once in this long; repeats are counted in the next one
 
 [bot]
 mode = "home"  # "home", "builder", or "auto": one village until its stop_when_full storages are full, then the other

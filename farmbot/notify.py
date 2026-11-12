@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import urllib.request
 import uuid
 from datetime import datetime, timezone
@@ -42,6 +43,14 @@ COLOURS = {
 RESOURCES = (("gold", "🪙"), ("elixir", "💧"), ("dark", "⚫"))  # emoji: when the loot card can't be drawn
 
 Post = Callable[[str, dict, dict], None]  # webhook url, Discord message (JSON payload), files by name
+
+# Alerts' limit on repeats (Notifier.alert), kept here rather than on a
+# Notifier: the window starts a stopped farm again with a new Bot (and
+# Notifier), and a farm failing over and over must not alert each time.
+# By (webhook, account, alert).
+_LAST_ALERT: dict[tuple[str, str, str], float] = {}  # when it was last sent
+_HELD: dict[tuple[str, str, str], int] = {}  # repeats not sent since
+_ALERTS_LOCK = threading.Lock()
 
 
 def compact(value: int) -> str:
@@ -170,11 +179,36 @@ def loot_parts(attacks: int | None, loot) -> tuple[list[tuple[str, str]], dict]:
 
 
 class Notifier:
-    def __init__(self, cfg: NotifyConfig, post: Post = _post, background: bool = True):
+    def __init__(self, cfg: NotifyConfig, post: Post = _post, background: bool = True,
+                 clock: Callable[[], float] = time.monotonic):
         self.cfg = cfg
         self._post = post
         self._background = background
+        self._clock = clock
         self.who = ""  # the account being farmed (its profile), shown on each message
+
+    def alert(self, key: str, title: str, text: str = "", event: str = "", kind: str = "error",
+              attacks: int | None = None, loot=None, fields: list[tuple[str, str]] = ()) -> bool:
+        """An alert (a problem): like :meth:`send`, but the same ``key`` is
+        sent at most once every ``alert_cooldown_minutes``; repeats in
+        between are counted, and the next one sent says how many there
+        were. True if it went out (to be posted)."""
+        if not self.configured or (event and not getattr(self.cfg, event, True)):
+            return False
+        now, slot = self._clock(), (self.cfg.discord_webhook, self.who, key)
+        with _ALERTS_LOCK:
+            last = _LAST_ALERT.get(slot)
+            if last is not None and now - last < max(0, self.cfg.alert_cooldown_minutes) * 60:
+                _HELD[slot] = _HELD.get(slot, 0) + 1
+                log.info("Alert %r not sent again so soon (%d held back)", key, _HELD[slot])
+                return False
+            _LAST_ALERT[slot] = now
+            held = _HELD.pop(slot, 0)
+        fields = list(fields)
+        if held:
+            fields.append(("🔁 Repeats", f"{held:,} more like this since the last message"))
+        self.send(title, text, kind=kind, attacks=attacks, loot=loot, fields=fields)
+        return True
 
     @property
     def configured(self) -> bool:
@@ -207,4 +241,5 @@ class Notifier:
         """Send a test message now (not in the background). True if Discord took it."""
         return self.configured and self._send(message(
             "Notifications work", "COCFARM can post to this channel. You'll hear from it here when storage is "
-            "full, when it stops, when it restarts the emulator, and with a daily summary.", "info"))
+            "full, when it stops, when it restarts the emulator, and with a daily summary (and, if turned on, "
+            "with progress updates and alerts when something goes wrong).", "info"))

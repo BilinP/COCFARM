@@ -25,8 +25,20 @@ farmbot.log
 # Settings per account, with a picture of each player name: kept locally
 /profiles/
 
+# The game's data export of an account's village (its buildings and levels): kept locally
+village.json
+*.village.json
+
 # Which farms are picked on the Farms page: kept locally
 /instances/
 
 # A tool for working on the raids (recording them to replay): kept locally
 farmbot/recorder.py
+
+# Local copies of work-in-progress changes (never pushed)
+*.patch
+
+# Your own Clan Castle, marked in the Bug report tab (personal: never shared)
+templates/redact/
+# Air troop cards taught in the Pictures tab (your own: not shipped)
+templates/cards/air/

@@ -22,6 +22,7 @@ import functools
 import math
 import random
 from dataclasses import dataclass
+from datetime import date
 
 
 @dataclass(frozen=True)
@@ -47,12 +48,30 @@ HABITS = (
     Habit("curved_swipes", "Swipes curve",
           "Swipes follow a slight curve, quick in the middle and slow at each end, as a finger moves "
           "(written to the touchscreen; a plain swipe where that isn't possible).", "touch"),
+    Habit("fatigue", "Slow down over a session",
+          "Waits between taps grow a little the longer it has played without a break: up to a quarter longer "
+          "after an hour. A break (When to play) makes it fresh again.", "touch"),
     Habit("chore_order", "Village jobs in a new order",
           "Collecting, the loot cart and gravestones (and the clan chat and Clan Capital) go in a different order "
-          "each round; on the builder base, the Clock Tower and the elixir cart.", "village"),
+          "each round; on the builder base, the Clock Tower and the elixir cart. The collectors are emptied "
+          "every few rounds, give or take two, not on the dot.", "village"),
     Habit("odd_hours", "Start and stop off the hour",
           "With playing hours set (When to play), each day it starts 5-25 minutes into the first hour and stops "
           "5-25 minutes before the last one ends.", "village"),
+    Habit("offline_breaks", "Close the game when not playing",
+          "On a break, outside your playing hours and once the day's attacks are done, the game is closed (the "
+          "account goes offline) and opened again when it plays on. Off: the game stays open through them. "
+          "While it's closed your village can be attacked, as when you close the game yourself.",
+          "village"),
+    Habit("uneven_days", "Uneven days",
+          "Some days it plays more, some less: each day's attack limit and how often breaks come are scaled by "
+          "that day's own factor (0.6 to 1.2).", "village"),
+    Habit("distracted", "Distracted now and then",
+          "About one round in 25, the rest before the next round runs 10-60 s longer.", "village"),
+    Habit("browse", "Look around the game",
+          "Every 8-20 rounds it does something besides farming: opens the clan chat and reads a moment, opens "
+          "the Build list and scrolls it, or drags around its own village. It never taps anything in them.",
+          "village"),
     Habit("battle_rhythm", "Battle rhythm varies",
           "Pauses and batch sizes vary, each battle starts somewhere new along a side, and heroes and their "
           "abilities each go at their own moment. Builder base: troop pauses, the hero's ability and the pause "
@@ -68,6 +87,17 @@ HABITS = (
     Habit("scout_look", "Look around before deploying",
           "Drags the view a little, looks, and drags it back before the first troop goes down, in both villages "
           "(checked, and put right if it didn't come back).", "battle"),
+    Habit("near_misses", "Imperfect choices",
+          "A base up to 5% under your minimums is attacked one time in three, and one up to 5% over them is "
+          "passed over one time in twenty.", "battle"),
+    Habit("few_sides", "Fewer sides some battles",
+          "About one battle in three goes in from one or two neighbouring sides, not all the sides set. Can "
+          "take less loot from a spread-out base.", "battle"),
+    Habit("hold_deploy", "Hold to deploy",
+          "Troop cards of 8 or more units go down as a person mixes it: mostly a held finger that slides along the "
+          "side, dropping them in a line, sometimes one held on a spot, and bursts of taps in between (held on one "
+          "spot where the emulator can't slide it). Each card's last few units are always tapped. Needs the "
+          "card's count to be readable.", "battle"),
 )
 HABIT_KEYS = tuple(h.key for h in HABITS)
 
@@ -359,3 +389,164 @@ def scout_drag(rng: random.Random) -> tuple[int, int]:
 def scout_extra() -> float:
     """Seconds a look around adds: two drags, the look, and the view settling."""
     return 2 * SCOUT_DRAG_MS / 1000 + SCOUT_LOOK * _factor(0.3, 0.5) + 2 * 0.4
+
+
+# -- days, sessions and slips ---------------------------------------------
+DAY_FACTOR = (0.6, 1.2)  # "Uneven days": a day's attack limit and break spacing, times this
+
+
+def day_factor(seed: str, day: date) -> float:
+    """That day's factor for ``seed`` (the account): the same whenever it's
+    asked, so stopping and starting doesn't change the day."""
+    return random.Random(f"{seed}:{day.isoformat()}:factor").uniform(*DAY_FACTOR)
+
+
+def day_off(seed: str, day: date, every: int) -> bool:
+    """Whether ``day`` is a day off: about one day in ``every`` (0: never),
+    the same whenever it's asked."""
+    return every > 0 and random.Random(f"{seed}:{day.isoformat()}:off").random() < 1.0 / every
+
+
+TIRED_AFTER = 60.0  # minutes of play without a break until fully tired
+TIRED_SLOWER = 0.25  # ...when waits run this much longer
+
+
+def tiredness(minutes: float) -> float:
+    """What waits are multiplied by after ``minutes`` of play: 1 fresh,
+    rising to 1 + TIRED_SLOWER."""
+    return 1.0 + TIRED_SLOWER * min(max(minutes, 0.0) / TIRED_AFTER, 1.0)
+
+
+def tired(seconds: float, tiredness: float) -> float:
+    """What being tired adds to a wait of ``seconds`` (as linger: a share of
+    at most LINGER_UPTO of it, so a long wait for the game stays about as long)."""
+    return min(seconds, LINGER_UPTO) * max(tiredness - 1.0, 0.0) if seconds > 0 else 0.0
+
+
+def tired_extra(seconds: float) -> float:
+    """What "Slow down over a session" adds to a wait, on average (half tired)."""
+    return tired(seconds, 1.0 + TIRED_SLOWER / 2)
+
+
+DISTRACTED = 1 / 25  # chance a round's rest runs long
+DISTRACTED_SECONDS = (10.0, 60.0)
+DISTRACTED_EXTRA = DISTRACTED * sum(DISTRACTED_SECONDS) / 2  # what it adds to a round, on average
+
+
+def distraction(rng: random.Random) -> float:
+    """Seconds this round's rest runs longer: mostly none."""
+    return rng.uniform(*DISTRACTED_SECONDS) if rng.random() < DISTRACTED else 0.0
+
+
+NEAR = 0.05  # a base this close to the minimums, under or over, is a near miss
+TAKE_UNDER = 1 / 3  # chance one just under is attacked anyway
+SKIP_OVER = 1 / 20  # chance one just over is passed over
+
+COLLECT_SPREAD = 2  # rounds either way of bot.collect_every
+
+
+def collect_gap(rng: random.Random, every: int, on: bool = True) -> int:
+    """Rounds until the collectors are emptied again: ``every``, give or take."""
+    return max(1, every + rng.randint(-COLLECT_SPREAD, COLLECT_SPREAD)) if on else every
+
+
+BROWSE_EVERY = (8, 20)  # rounds between looks around the game
+BROWSE_READ = (3.0, 10.0)  # seconds spent looking at what was opened
+BROWSE_EXTRA = 9.0 / (sum(BROWSE_EVERY) / 2)  # what it adds to a round, on average
+
+
+def browse_gap(rng: random.Random) -> int:
+    return rng.randint(*BROWSE_EVERY)
+
+
+RING = ("nw", "ne", "se", "sw")  # the sides, going round the base
+FEW_SIDES = 1 / 3  # chance a battle goes in from fewer sides
+
+
+def fewer_sides(rng: random.Random, sides: list[str]) -> list[str]:
+    """The sides this battle goes in from: mostly all of ``sides``, some
+    battles one of them or two neighbours."""
+    known = [s for s in RING if s in sides]
+    if len(known) < 3 or rng.random() >= FEW_SIDES:
+        return list(sides)
+    start = rng.randrange(len(known))
+    return [known[start]] if rng.random() < 0.4 else [known[start], known[(start + 1) % len(known)]]
+
+
+HOLD_SHARE = 0.65  # of a big card's goes are a held finger; the rest bursts of taps, as a person mixes them
+HOLD_STILL = 0.25  # ...and of those, this share stay on one spot instead of sliding along the side
+HOLD_FROM = 8  # units a card needs for a held finger to be worth it
+HOLD_KEEP = 4  # ...and its last units are always tapped (a hold a moment too long drops the next card)
+HOLD_UNITS = (5, 12)  # units a hold aims to drop
+# A held finger drops one unit at once, then, after a moment, a steady stream. Measured on MuMu
+# (2026-11-10): 1 unit in 0.4 s, 9 in 1.6 s: the stream starts about 0.4 s in, at 6-7 units a second.
+HOLD_START = 0.3  # s before the stream starts, taken a little short (so holds come out short, not long)
+HOLD_RATE = 8.0  # units a second once it streams, until measured: taken a little fast, for the same reason
+HOLD_LEARN_FROM = 4  # units a hold must drop to say how fast the stream is (fewer: mostly its start)
+HOLD_RATE_MOST = 12.0  # units a second a stream is believed to reach at most
+HOLD_RATE_LEAST = 4.5  # ...and at least (5.6-6.7 measured on MuMu and LDPlayer): a slide the game cut short
+# reads as a slow stream (1.9 seen live), and the next hold, sized by it, ran on and emptied the card
+HOLD_SAFETY = 0.8  # a hold lasts this share of what its units would take: short rather than long
+HOLD_LIMITS_MS = (250, 2500)
+
+
+def hold_units(rng: random.Random, left: int) -> int:
+    """How many of a card's ``left`` units the next hold aims to drop (0: tap the rest)."""
+    spare = left - HOLD_KEEP
+    return 0 if spare < 2 else min(spare, rng.randint(*HOLD_UNITS))
+
+
+def hold_length(units: int, rate: float | None) -> int:
+    """Milliseconds to hold for ``units``: the first at once, the rest at
+    ``rate`` units a second once the stream starts (None: not measured yet)."""
+    rate = rate if rate and rate > 0 else HOLD_RATE
+    seconds = (HOLD_START + (units - 1) / rate) * HOLD_SAFETY
+    return round(min(max(seconds * 1000, HOLD_LIMITS_MS[0]), HOLD_LIMITS_MS[1]))
+
+
+SLIDE_PER_UNIT = 28  # px of the side a unit gets as the finger slides along it
+SLIDE_JUMP = 130  # px: two of a side's points farther apart than this aren't joined (the side's two ends)
+SLIDE_FRAME_MS = 70  # about a point of the finger's path for each of these
+# Seen live on MuMu (2026-11-10): a finger resting 0.6-1.0 s and then moving at up to ~175 px a second
+# streams its troops out along the way; one moving at ~400 px a second dropped nothing (and the points
+# were off after: the game took it for a drag of the view).
+SLIDE_REST = 0.6  # s the finger rests before it moves: until the stream has started
+SLIDE_SPEED = 150  # px a second it moves at, at most
+SLIDE_FRAMES = (4, 18)
+
+
+def slide_path(points: list[tuple[int, int]], ms: int) -> list[tuple[int, int]]:
+    """The finger's path for a slide of ``ms`` through ``points``: still on
+    the first for SLIDE_REST, then along them at an even pace, no quicker
+    than SLIDE_SPEED (so only as far along them as the time allows: the
+    game takes a finger that moves early or fast for a drag of the view)."""
+    frames = min(max(round(ms / SLIDE_FRAME_MS), SLIDE_FRAMES[0]), SLIDE_FRAMES[1])
+    gap = ms / 1000 / (frames - 1)  # s from one point of the path to the next
+    still = min(max(math.ceil(SLIDE_REST / gap) + 1, 2), frames - 2)  # (points on the first: the rest between them)
+    moving = frames - still
+    lengths = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:])]
+    total = min(sum(lengths), SLIDE_SPEED * gap * moving)
+    path = [points[0]] * still
+    for i in range(1, moving + 1):
+        at, k = total * i / moving, 0
+        while k < len(lengths) - 1 and at > lengths[k]:  # (the stretch of the path this point is on)
+            at -= lengths[k]
+            k += 1
+        t = min(at / lengths[k], 1.0) if lengths[k] else 1.0
+        (x1, y1), (x2, y2) = points[k], points[k + 1]
+        path.append((round(x1 + (x2 - x1) * t), round(y1 + (y2 - y1) * t)))
+    return path
+
+
+def hold_rate(dropped: int, ms: int, known: float | None) -> float | None:
+    """The stream's rate after a hold of ``ms`` dropped ``dropped`` units:
+    a quicker one than ``known`` is taken at once (the next hold must not
+    run long), a slower one only half way. A hold that dropped just the
+    first unit says nothing about the stream."""
+    if dropped < HOLD_LEARN_FROM:
+        return known
+    seen = (dropped - 1) / max(ms / 1000 - HOLD_START, 0.1)
+    # (Never past HOLD_RATE_MOST: a count misread after a hold, 49 as 40 seen live, looks like a
+    # stream of 90 a second, and every hold after it would be cut to nothing.)
+    seen = max(min(seen, HOLD_RATE_MOST), HOLD_RATE_LEAST)
+    return seen if known is None or seen > known else (known + seen) / 2

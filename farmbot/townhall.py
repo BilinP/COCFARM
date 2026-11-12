@@ -34,7 +34,8 @@ OTTO_OUTPOST = 1000078  # the builder base's second builder (O.T.T.O)
 # feature is left out only when it can't be there yet).
 DARK_ELIXIR_AT = 7
 HEROES_AT = 7
-BUILDER_BASE_AT = 5  # the boat is repaired from Town Hall 5
+BUILDER_BASE_AT = 6  # the boat is repaired from Town Hall 6 (an account that repaired it earlier, when the
+# game let it, keeps its builder base: see Village.builder_base)
 SPELLS_AT = 5  # the Spell Factory
 WALL_ELIXIR_AT = 5  # walls take elixir from level 5, which Town Hall 5 opens
 SUPER_TROOPS_AT = 11
@@ -60,6 +61,8 @@ class Village:
     builders: int = 0  # the home village's builders: a hut each, and B.O.B (0: not in the export)
     builder_base_builders: int = 0  # the Master Builder, and O.T.T.O (0: no builder base in the export)
     timestamp: int = 0  # when the game made the export (seconds since 1970)
+    town_hall_until: int = 0  # when the Town Hall's upgrade under way ends (seconds since 1970; 0: none)
+    builder_base: bool = False  # the builder base is in use (it has troops or a hero): the boat is repaired
     read_on: str = ""  # the day the bot read it (YYYY-MM-DD)
 
     def has(self, building: int) -> bool:
@@ -86,6 +89,9 @@ def parse(text: str | None) -> Village | None:
     hall = buildings.get(TOWN_HALL, (0, 0))[0]
     if hall < 1:
         return None
+    # A building being upgraded carries "timer": the seconds left when the export was made.
+    left = max((b["timer"] for b in data["buildings"] if isinstance(b, dict) and b.get("data") == TOWN_HALL
+                and isinstance(b.get("timer"), int)), default=0)
     count = lambda key: len(data.get(key) or []) if isinstance(data.get(key), list) else 0
     stamp = data.get("timestamp")
     base2 = [b.get("data") for b in (data.get("buildings2") if isinstance(data.get("buildings2"), list) else [])
@@ -96,11 +102,14 @@ def parse(text: str | None) -> Village | None:
                    builder_heroes=count("heroes2") if isinstance(data.get("heroes2"), list) else -1,
                    builders=huts + bob if huts else 0,
                    builder_base_builders=(1 + (OTTO_OUTPOST in base2)) if base2 else 0,
-                   timestamp=stamp if isinstance(stamp, int) else 0)
+                   timestamp=stamp if isinstance(stamp, int) else 0,
+                   town_hall_until=stamp + left if isinstance(stamp, int) and left > 0 else 0,
+                   builder_base=bool(count("units2") or count("heroes2")))
 
 
-def load(path: str | Path | None) -> Village | None:
-    """The export kept at ``path`` (see :func:`save`), if any."""
+def _read_kept(path: str | Path | None) -> tuple[dict, Village] | None:
+    """What :func:`save` kept at ``path`` and the village in it; None if
+    there's no file, or no export the game would give in it."""
     if path is None:
         return None
     try:
@@ -110,8 +119,16 @@ def load(path: str | Path | None) -> Village | None:
     if not isinstance(kept, dict):
         return None
     village = parse(json.dumps(kept.get("export")))
-    if village is not None:
-        village.read_on = str(kept.get("read_on", ""))
+    return None if village is None else (kept, village)
+
+
+def load(path: str | Path | None) -> Village | None:
+    """The export kept at ``path`` (see :func:`save`), if any."""
+    read = _read_kept(path)
+    if read is None:
+        return None
+    kept, village = read
+    village.read_on = str(kept.get("read_on", ""))
     return village
 
 
@@ -153,7 +170,7 @@ def locked(village: Village | None) -> dict[str, str]:
         out["super_troops"] = f"super troops come at Town Hall {SUPER_TROOPS_AT}"
     if th < SIEGE_AT:
         out["siege"] = f"the Workshop comes at Town Hall {SIEGE_AT}"
-    if th < BUILDER_BASE_AT:
+    if th < BUILDER_BASE_AT and not village.builder_base:
         out["builder_base"] = f"the Builder Base opens at Town Hall {BUILDER_BASE_AT}"
     elif village.builder_heroes == 0:
         out["builder_heroes"] = "no hero in the builder base yet (the Battle Machine comes with the Builder Hall)"
@@ -170,14 +187,10 @@ def describe(village: Village | None) -> str:
 def load_export(path: str | Path | None) -> tuple[dict, str] | None:
     """The export kept at ``path`` as the game gave it, and the day it was
     read; None if there's none."""
-    if path is None:
+    read = _read_kept(path)
+    if read is None:
         return None
-    try:
-        kept = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(kept, dict) or parse(json.dumps(kept.get("export"))) is None:
-        return None
+    kept, _ = read
     return kept["export"], str(kept.get("read_on", ""))
 
 

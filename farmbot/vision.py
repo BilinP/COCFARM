@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import threading
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,10 +121,102 @@ def match_template(
 # size, so the scores (and what passes) are the full-size ones. A picture
 # that's there scores well above COARSE_DROP below the threshold at half
 # size; small pictures (blurred to nothing at half size) are matched in full.
-COARSE_MIN = 16  # px: a picture's smaller side for the coarse look
+#
+# The half-size look is itself in two steps: in grey first (a third of a
+# colour match's work), then in colour at the grey spots only. On real
+# screens a picture that's there scores the same in grey as in colour to
+# within a few hundredths, so grey is given GREY_DROP more room; a picture
+# with little light and dark in it (told apart by its colours) skips grey.
+# (14: a picture 16 px high is 15 at a window size of 0.94, and a full match costs ten times the coarse one)
+COARSE_MIN = 14  # px: a picture's smaller side for the coarse look
 COARSE_DROP = 0.2
 COARSE_PAD = 3  # px around a coarse spot (full size) searched again in full
 COARSE_MAX_SPOTS = 150  # more than this near: match in full (each spot is a tiny match, so many are still quicker)
+GREY_DROP = 0.07  # below the colour look's bar
+GREY_MIN_CONTRAST = 12.0  # a half-size picture's grey levels (standard deviation) for the grey look
+GREY_MAX_SPOTS = 400  # more grey spots than this: the colour look over the whole half-size screen instead
+_KERNEL = np.ones((3, 3), np.uint8)
+
+# The half-size screen (colour and grey) of the areas looked at lately: a
+# screen check looks at one screenshot for dozens of pictures. Kept by the
+# area's memory and shape, with the array itself (so its memory can't be
+# reused) and a sprinkling of its pixels (so one drawn on since is seen).
+#
+# The screenshot is held weakly: once nothing else has it (the bot has moved
+# on to the next), it can't be looked at again, so its entries go with it
+# rather than keeping up to a dozen old screenshots alive (~50 MB). Its
+# memory can't be reused while an entry is kept: the entry goes first.
+_HALVES_KEPT = 12
+_halves: dict[tuple, tuple[object, bytes, np.ndarray, np.ndarray]] = {}
+_halves_lock = threading.RLock()  # RLock: a screenshot freed while it's held drops its entries
+
+
+def _owner(area: np.ndarray) -> np.ndarray:
+    while isinstance(area.base, np.ndarray):
+        area = area.base
+    return area
+
+
+def _half(area: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """``area`` at half size, in colour and in grey."""
+    key = (area.__array_interface__["data"][0], area.shape, area.strides)
+    sample = area[::53, ::59].tobytes()
+    with _halves_lock:
+        kept = _halves.get(key)
+        if kept is not None and kept[1] == sample:
+            return kept[2], kept[3]
+    small = cv2.resize(area, (area.shape[1] // 2, area.shape[0] // 2), interpolation=cv2.INTER_AREA)
+    grey = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY) if small.ndim == 3 and small.shape[2] == 3 else small
+
+    def forget(_ref, key=key) -> None:
+        with _halves_lock:
+            entry = _halves.get(key)
+            if entry is not None and entry[0] is _ref:
+                del _halves[key]
+
+    try:
+        holder: object = weakref.ref(_owner(area), forget)
+    except TypeError:  # memory not owned by an array: held as before
+        holder = area
+    with _halves_lock:
+        _halves.pop(key, None)
+        while len(_halves) >= _HALVES_KEPT:
+            del _halves[next(iter(_halves))]
+        _halves[key] = (holder, sample, small, grey)
+    return small, grey
+
+
+def _coarse_spots(small: np.ndarray, grey: np.ndarray, tsmall: np.ndarray, bar: float) -> list[tuple[int, int]] | None:
+    """Half-size positions ``(x, y)`` where ``tsmall`` scores ``bar`` or
+    more in colour, one per neighbourhood; ``None`` for too many."""
+    tgrey = cv2.cvtColor(tsmall, cv2.COLOR_BGR2GRAY) if tsmall.ndim == 3 and tsmall.shape[2] == 3 else None
+    spots: list[tuple[int, int]] | None = None
+    if tgrey is not None and grey is not small and float(tgrey.std()) >= GREY_MIN_CONTRAST:
+        first = cv2.matchTemplate(grey, tgrey, cv2.TM_CCOEFF_NORMED)
+        near = first >= bar - GREY_DROP
+        if not near.any():
+            return []
+        ys, xs = np.nonzero(near & (first == cv2.dilate(first, _KERNEL)))
+        if len(xs) <= GREY_MAX_SPOTS:
+            # Each grey spot in colour, with its neighbours: the best of them, if it passes.
+            h, w = tsmall.shape[:2]
+            found = set()
+            for gx, gy in zip(xs.tolist(), ys.tolist()):
+                x0, y0 = max(gx - 1, 0), max(gy - 1, 0)
+                scores = cv2.matchTemplate(small[y0:gy + 2 + h, x0:gx + 2 + w], tsmall, cv2.TM_CCOEFF_NORMED)
+                _, best, _, (bx, by) = cv2.minMaxLoc(scores)
+                if best >= bar:
+                    found.add((x0 + bx, y0 + by))
+            spots = sorted(found)
+    if spots is None:  # the colour look over all of it
+        coarse = cv2.matchTemplate(small, tsmall, cv2.TM_CCOEFF_NORMED)
+        near = coarse >= bar
+        if not near.any():
+            return []
+        # One spot per neighbourhood: the best of each 3 x 3 block of coarse positions.
+        ys, xs = np.nonzero(near & (coarse == cv2.dilate(coarse, _KERNEL)))
+        spots = list(zip(xs.tolist(), ys.tolist()))
+    return None if len(spots) > COARSE_MAX_SPOTS else spots
 
 
 def _coarse_hits(area: np.ndarray, template: np.ndarray, threshold: float) -> list[tuple[float, int, int]] | None:
@@ -133,22 +226,16 @@ def _coarse_hits(area: np.ndarray, template: np.ndarray, threshold: float) -> li
     th, tw = template.shape[:2]
     if min(th, tw) < COARSE_MIN or min(area.shape[:2]) < 2 * min(th, tw):
         return None
-    small = cv2.resize(area, (area.shape[1] // 2, area.shape[0] // 2), interpolation=cv2.INTER_AREA)
+    small, grey = _half(area)
     tsmall = cv2.resize(template, (tw // 2, th // 2), interpolation=cv2.INTER_AREA)
-    coarse = cv2.matchTemplate(small, tsmall, cv2.TM_CCOEFF_NORMED)
-    near = coarse >= threshold - COARSE_DROP
-    if not near.any():
-        return []
-    # One spot per neighbourhood: the best of each 3 x 3 block of coarse positions.
-    peaks = near & (coarse == cv2.dilate(coarse, np.ones((3, 3), np.uint8)))
-    ys, xs = np.nonzero(peaks)
-    if len(xs) > COARSE_MAX_SPOTS:
-        return None
+    spots = _coarse_spots(small, grey, tsmall, threshold - COARSE_DROP)
+    if not spots:
+        return spots
     found: dict[tuple[int, int], float] = {}
     h, w = area.shape[:2]
-    for sx, sy in zip(xs, ys):
-        x0, y0 = max(2 * int(sx) - COARSE_PAD, 0), max(2 * int(sy) - COARSE_PAD, 0)
-        x1, y1 = min(2 * int(sx) + COARSE_PAD + 2 + tw, w), min(2 * int(sy) + COARSE_PAD + 2 + th, h)
+    for sx, sy in spots:
+        x0, y0 = max(2 * sx - COARSE_PAD, 0), max(2 * sy - COARSE_PAD, 0)
+        x1, y1 = min(2 * sx + COARSE_PAD + 2 + tw, w), min(2 * sy + COARSE_PAD + 2 + th, h)
         scores = cv2.matchTemplate(area[y0:y1, x0:x1], template, cv2.TM_CCOEFF_NORMED)
         for y, x in zip(*np.nonzero(scores >= threshold)):
             found[(x0 + int(x), y0 + int(y))] = float(scores[y, x])

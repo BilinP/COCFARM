@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from farmbot import human
@@ -64,6 +64,23 @@ def is_worth_attacking(loot: Loot, criteria: SearchConfig) -> bool:
     ]
     enough = any(checks) if criteria.match_any else all(checks)
     return enough
+
+
+def near_miss(rng, loot: Loot, criteria: SearchConfig, accepted: bool) -> bool | None:
+    """"Imperfect choices": True to attack a base up to NEAR under the
+    minimums after all, False to pass over one up to NEAR over them, None
+    to leave the choice as it is (nearly always)."""
+    def scaled(by: float) -> SearchConfig:
+        return replace(criteria, min_gold=int(criteria.min_gold * by), min_elixir=int(criteria.min_elixir * by),
+                       min_dark=int(criteria.min_dark * by))
+
+    if not (criteria.min_gold or criteria.min_elixir or criteria.min_dark):
+        return None  # no minimums: every base is taken
+    if accepted:
+        just = not is_worth_attacking(loot, scaled(1 + human.NEAR))
+        return False if just and rng.random() < human.SKIP_OVER else None
+    just = is_worth_attacking(loot, scaled(1 - human.NEAR))
+    return True if just and rng.random() < human.TAKE_UNDER else None
 
 
 def closeness(loot: Loot, criteria: SearchConfig) -> float:
@@ -150,6 +167,8 @@ MAX_STYLE = TextStyle(min_height_ratio=0.85)
 MAX_ROW = (33, 30)  # top and height of the "Max:" row, below the bar's middle
 MAX_SPAN = (190, 40)  # the row reaches this far left of the bar's number and right of it
 LEAST_STORAGE = 1000  # no storage holds less (a town hall 1's gold storage holds 1 500)
+ROUND_SIZE = 500  # what storages hold comes in steps of this at least
+OVER_FULL = 3  # a storage holding more than its size holds at most this many times it
 
 
 def _max_region(game: Game, regions: RegionsConfig, kind: str) -> Rect:
@@ -233,7 +252,12 @@ def storage_maxes(game: Game, regions: RegionsConfig, kinds: tuple[str, ...] = (
         # A misread size (say, numbers read at the wrong place before the
         # UI's scale is known) would make that storage look full, or keep
         # nothing of it: only a size that can hold what's in it is kept.
-        if most and most >= max(held, LEAST_STORAGE):
+        # A storage can hold more than its size, though (rewards go in over
+        # it: 7 071 000 gold seen in 6 500 000, 12 724 973 elixir too): a
+        # round size, as storages' are, not far under what's in it is then
+        # believed all the same.
+        over = most and most % ROUND_SIZE == 0 and held <= most * OVER_FULL
+        if most and most >= LEAST_STORAGE and (most >= held or over):
             maxes[kind] = most
         elif most:
             log.info("Storage size read as %s for %s holding %s: not believed", f"{most:,}", kind, f"{held:,}")
@@ -419,11 +443,13 @@ MAX_UNREADABLE = 3  # bases in a row whose loot can't be read before giving up
 
 
 def search(game: Game, criteria: SearchConfig, regions: RegionsConfig, on_base: BaseCallback | None = None,
-           zoom_out: bool = False, look: bool = False) -> Loot:
+           zoom_out: bool = False, look: bool = False, near: bool = False) -> Loot:
     """Press Next until a base meets ``criteria``; returns its loot.
     ``zoom_out``: the village was left zoomed in (on an upgrade), and the
     battle opens at its zoom: zoom out on the first base. ``look``: look at
     each base a while first, as a person would ("Look at each base").
+    ``near``: "Imperfect choices": a base just under the minimums is
+    sometimes attacked, one just over them sometimes passed over.
 
     Must be called after :func:`start_search`. Raises :class:`SearchError`
     if the search gets stuck or exceeds ``criteria.max_searches``.
@@ -456,8 +482,13 @@ def search(game: Game, criteria: SearchConfig, regions: RegionsConfig, on_base: 
             continue
         unreadable = 0
         accepted = is_worth_attacking(loot, criteria)
-        log.info("Base %d: gold %s, elixir %s, dark %s%s", count, f"{loot.gold:,}", f"{loot.elixir:,}",
-                 f"{loot.dark:,}", "  → attack" if accepted else "")
+        slip = near_miss(game.rng, loot, criteria, accepted) if near else None
+        if slip is not None:
+            accepted = slip
+        log.info("Base %d: gold %s, elixir %s, dark %s%s%s", count, f"{loot.gold:,}", f"{loot.elixir:,}",
+                 f"{loot.dark:,}", "  → attack" if accepted else "",
+                 "" if slip is None else " (a little under the minimums: taken anyway)" if slip else
+                 " (meets the minimums, only just: passed over)")
         if on_base:
             on_base(loot, accepted)
         look_at_base(game, loot, criteria, accepted, look)

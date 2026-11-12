@@ -19,7 +19,7 @@ from farmbot.device import Device
 from farmbot.timings import Ledger
 from farmbot.geometry import Rect
 from farmbot.text import TextStyle
-from farmbot.vision import Match, Vision, _resized, _score, best_scale, match_template
+from farmbot.vision import Match, Vision, _resized, _scale_pool, _score, best_scale, match_template
 
 log = logging.getLogger(__name__)
 
@@ -66,14 +66,18 @@ def detect_ui_scale(image: np.ndarray, vision: Vision, names: list[str], thresho
                 best = max(best, float(cv2.minMaxLoc(cv2.matchTemplate(area, t, cv2.TM_CCOEFF_NORMED))[1]))
         return best
 
-    coarse_score, coarse = max((score(s, coarse=True), s) for s in UI_SCALES)
+    # Each size is its own match, and matchTemplate lets go of the GIL: tried side by side.
+    pool = _scale_pool()
+    coarse_score, coarse = max(zip(pool.map(lambda s: score(s, coarse=True), UI_SCALES), UI_SCALES))
     # Not even close at half size: the button isn't there, so skip the slow
     # full-size search. (On the real screenshots in tests/fixtures, a button
     # that is there scores 0.89 or more here, one that isn't 0.81 at most.)
     if coarse_score < threshold - COARSE_MARGIN:
         return None
     # The match falls off within a couple of hundredths, so finish in fine steps.
-    fine = max((round(coarse + 0.01 * i, 2) for i in range(-4, 5)), key=score)
+    sizes = [round(coarse + 0.01 * i, 2) for i in range(-4, 5)]
+    scores = list(pool.map(score, sizes))
+    fine = sizes[scores.index(max(scores))]  # the first of equal bests, as max() gives
     # Verify the way the bot will actually see it: the screen rescaled, templates as they are.
     rescaled = normalize(image, ui_scale=fine)
     found = any(match_template(rescaled, t, threshold) for t in templates)
@@ -155,6 +159,7 @@ class T:
     # Builder base
     BB_HOME_BOAT = "builder/home_boat"  # home village, bottom left: sails to the builder base
     BB_BUILDER_BOAT = "builder/builder_boat"  # builder base, top right: sails back
+    BB_BOAT_MARKER = "builder/boat_marker"  # home village, a scenery whose boat looks different: the pin above it
     BB_BATTLE = "builder/battle"  # builder base Battle (crossed axes)
     BB_FIND_NOW = "builder/find_now"
     BB_BATTLE_STARTS = "builder/battle_starts"  # "Battle starts in:" before the first troop
@@ -238,8 +243,24 @@ class T:
     CAPITAL_CARD_DIR = "capital/cards"  # capital/cards/<name>.png: the army editor's units, found in the troop bar too
     CAPITAL_BATTLE_HEAL = "capital/battle_heal"  # the heal spell's card in the raid's troop bar
     CAPITAL_RESULT_MAP = "capital/result_map"  # "Map" under a raid's result
+    WAR_BUTTON = "war/button"  # the crossed swords of the war button, left of the home village
+    WAR_RETURN_HOME = "war/return_home"  # "Return Home", bottom left of the war map
+    WAR_BATTLE_DAY = "war/battle_day"  # "Battle Day" under the war's timer
+    WAR_TO_ENEMY = "war/to_enemy"  # "Enemy" on the map's side button (the home map is showing)
+    WAR_TO_HOME = "war/to_home"  # "Home" on it (the enemy map is showing)
+    WAR_RECOMMENDED = "war/recommended"  # "Recommended target" under an enemy base
+    WAR_ATTACK = "war/attack"  # "Attack!" on a base's panel
+    WAR_SCOUT = "war/scout"  # "Scout" under it
+    WAR_ARMY_ATTACK = "war/army_attack"  # "Attack!" on the war army's window (after a base's Attack!)
+    WAR_CONFIRM_TITLE = "war/confirm_title"  # "Confirm Attack": "Proceeding will use one of your remaining attacks"
+    WAR_CONFIRM_ATTACK = "war/confirm_attack"  # its green "Attack!"
     BAT_SPELL_CARD = "cards/bat_spell"  # the Bat Spell card's picture in the troop bar
     WARDEN_CARD = "cards/grand_warden"  # the Grand Warden card's picture in the troop bar
+    AIR_CARDS = "cards/air"  # air troops' card pictures (one per troop): the army is an air army
+    GROUND_CARDS = "cards/ground"  # ground troops' card pictures: the army is a ground army
+    LURE_CARDS = "cards/lure"  # a cheap troop's card picture: one goes in first to pull out the Clan Castle
+    AIR_DEFENSE = "buildings/air_defense"  # an enemy Air Defense, battle view zoomed out (one per level)
+    CLAN_CASTLE = "buildings/clan_castle"  # an enemy Clan Castle, battle view zoomed out (one per level)
     DONATE_ITEM_DIR = "donate"  # donate/<unit slug>.png: units in the donate window
     DONATE_WINDOW = "buttons/donate_window"  # the donate window's "Donation Resource" title
     # Digit glyphs (directory, made with ``farmbot learn-digits``)
@@ -409,6 +430,14 @@ class Game:
         # The human-like habits in use (the bot sets them from cfg.human):
         # see farmbot/human.py. None: everything exact.
         self.habits: set[str] = set()
+        # "Slow down over a session": what waits are multiplied by (the bot sets it each round).
+        self.tiredness = 1.0
+        # "Hold to deploy": units a held finger drops a second, once measured; holds that dropped nothing.
+        self.hold_rate: float | None = None
+        self.hold_misses = 0
+        # The last battle's army wouldn't go down at all (attack.attack): why, for the bot's alert; else None.
+        self.deploy_failed: str | None = None
+        self.deploy_origins: dict[str, str] = {}  # the last battle's deploy sides: where their points came from
         # This round's parts and what the habits add to them (farmbot/timings.py).
         self.ledger = Ledger(clock)
         # New buildings the upgrades put down (not free walls): the bot reads
@@ -437,7 +466,9 @@ class Game:
         if not exact:
             longer = human.linger(self.rng, seconds, self.uses("waits"))
             self.note("waits", human.linger_extra(seconds), longer - seconds)
-            seconds = longer
+            slower = human.tired(seconds, self.tiredness)
+            self.note("fatigue", human.tired_extra(seconds), slower)
+            seconds = longer + slower
         if self._sleep is time.sleep:
             self.stop_event.wait(seconds)  # "Stop now" cuts the wait short
         else:
@@ -448,6 +479,7 @@ class Game:
     # -- screen ---------------------------------------------------------
     def refresh(self) -> np.ndarray:
         self.raw = self.device.screenshot()
+        self._has = {}
         return self._rescale()
 
     def _rescale(self) -> np.ndarray:
@@ -546,7 +578,12 @@ class Game:
         return rect.resolve(*self.size)
 
     def has(self, name: str) -> bool:
-        return self.vision.library.has(name)
+        # Asked before nearly every look, and each ask reads the pictures'
+        # folder: answered once a screenshot (a picture added since shows on the next).
+        known = self.__dict__.setdefault("_has", {})
+        if name not in known:
+            known[name] = self.vision.library.has(name)
+        return known[name]
 
     def find(self, name: str, threshold: float | None = None, region: Rect | None = None) -> Match | None:
         matches = self.find_all(name, threshold, region)
@@ -656,6 +693,37 @@ class Game:
             self.device.tap(x, y)
             self.note("tap_hold", human.hold_extra())
 
+    def hold(self, x: int, y: int, ms: int) -> bool:
+        """A finger held on (x, y) for ``ms`` (in a battle, the selected
+        troop streams out under it). False on a device that can't hold."""
+        press = getattr(self.device, "press", None)
+        if press is None:
+            return False
+        if self.stop_event.is_set():
+            raise Stopped
+        self.check_in_front()
+        dx, dy = self._offset(3, self.uses("tap_spread"))
+        press(round((x + dx) * self.scale), round((y + dy) * self.scale), int(ms))
+        self.screen = None
+        return True
+
+    def slide(self, points: list[tuple[int, int]], ms: int) -> bool:
+        """A finger held down and slid through ``points`` over ``ms`` (in a
+        battle, the selected troop streams out along its path). False on
+        a device that can't (no touchscreen to write to): nothing was done."""
+        drag = getattr(self.device, "drag", None)
+        if drag is None or len(points) < 2:
+            return False
+        if self.stop_event.is_set():
+            raise Stopped
+        self.check_in_front()
+        dx, dy = self._offset(3, self.uses("tap_spread"))
+        path = human.slide_path([(x + dx, y + dy) for x, y in points], int(ms))
+        if not drag([(round(x * self.scale), round(y * self.scale)) for x, y in path], int(ms)):
+            return False
+        self.screen = None
+        return True
+
     def _offset(self, jitter: int, spread: bool) -> tuple[int, int]:
         """Where a tap lands around its point: mostly near it (human-like),
         or anywhere in the square ``jitter`` px around it."""
@@ -706,6 +774,16 @@ class Game:
         if pinch is None:
             return False
         self.check_in_front()
+        can = pinch
+
+        def pinch(**kw) -> bool:
+            done = can(**kw)
+            if not done and not getattr(self, "_no_pinch_said", False):
+                self._no_pinch_said = True
+                log.warning("Can't zoom out: no touchscreen to pinch on was found on this emulator. A view "
+                            "left zoomed in stays so, and troops dropped on it may be refused")
+            return done
+
         if not force and self._still_zoomed_out(self.refresh()):
             # The view the last zoom-out ended on, unmoved: still all the
             # way out. Another pinch would only make the map spring back.

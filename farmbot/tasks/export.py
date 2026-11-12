@@ -21,6 +21,7 @@ from typing import Callable, Iterator, Protocol
 from farmbot import townhall
 from farmbot.game import Game, T
 from farmbot.geometry import Rect
+from farmbot.tasks.village import close_all_windows
 
 log = logging.getLogger(__name__)
 
@@ -164,7 +165,7 @@ def copy_village(game: Game, clipboard: Clipboard | None = None, now: Callable[[
         try:
             text = _copy(game, clipboard, now)
         finally:
-            _close(game)
+            close_all_windows(game)
             if before is not None and clipboard.text() != before:
                 clipboard.set_text(before)  # what was copied on the PC, back
         return text
@@ -219,11 +220,3 @@ def _copy(game: Game, clipboard: Clipboard, now: Callable[[], float]) -> str | N
             log.info("Village data: the copy didn't reach the PC's clipboard (the emulator's clipboard "
                      "sharing may be off)")
             return None
-
-
-def _close(game: Game) -> None:
-    for _ in range(2):
-        game.refresh()
-        if not game.click(T.CLOSE):
-            break
-        game.wait(0.8)

@@ -16,7 +16,7 @@ from farmbot.config import WallsConfig
 from farmbot.game import Game, T
 from farmbot.geometry import Rect
 from farmbot.tasks.build_list import (LIST_BOTTOM_FROM_BOTTOM, LIST_PAGE, LIST_STEP, LIST_SWIPE_FROM_BOTTOM,
-                                      LIST_SWIPE_TO_Y, LIST_SWIPE_X, LIST_TOP, MAX_SORTED_SCROLLS, SLOW_SWIPE_MS,
+                                      LIST_SWIPE_TO_Y, LIST_SWIPE_X, MAX_SORTED_SCROLLS, SLOW_SWIPE_MS,
                                       asks_for_gems, free_builders, green_confirm, list_still, open_tab, set_filter,
                                       shows_gems)
 from farmbot.tasks.search import Loot
@@ -279,7 +279,7 @@ def _icon_offset(match, offset: tuple[int, int] = WALL_ICON_OFFSET, height: int 
 GOLD_HUE, ELIXIR_HUE = (15, 35), (135, 165)
 
 
-def _cost_kind(screen: np.ndarray, x: int, y: int, offset: tuple[int, int] = WALL_ICON_OFFSET) -> str | None:
+def cost_kind(screen: np.ndarray, x: int, y: int, offset: tuple[int, int] = WALL_ICON_OFFSET) -> str | None:
     """"gold" or "elixir": the colour of the cost icon above an Upgrade button."""
     dx, dy = offset
     patch = screen[max(y + dy - 5, 0):y + dy + 5, max(x + dx - 5, 0):x + dx + 5]
@@ -296,7 +296,7 @@ def _cost_kind(screen: np.ndarray, x: int, y: int, offset: tuple[int, int] = WAL
     return None
 
 
-def _wall_budget(use: str, loot: Loot, keep: dict[str, int]) -> list[str]:
+def wall_budget(use: str, loot: Loot, keep: dict[str, int]) -> list[str]:
     """Resources that may go on walls (``use``), the one with most to spare
     above what's kept first; one without an amount to keep is left alone."""
     spare = {k: getattr(loot, k) - keep[k] for k in ("gold", "elixir") if k in keep}
@@ -338,7 +338,7 @@ def find_wall_entry(game: Game):
     or the block's end couldn't be brought into view."""
     w, h = game.size
     x, y = w - LIST_SWIPE_X, h - LIST_SWIPE_FROM_BOTTOM
-    top, bottom = LIST_TOP, h - LIST_BOTTOM_FROM_BOTTOM
+    bottom = h - LIST_BOTTOM_FROM_BOTTOM
     walls = _walls_in_view(game)
     for _ in range(MAX_SCROLLS):
         if walls:
@@ -384,7 +384,7 @@ def _price_rect(entry) -> Rect:
     return Rect(entry.x + round(PRICE_X * h), entry.y + round(PRICE_Y * h), round(PRICE_W * h), round(PRICE_H * h))
 
 
-def _wall_price(game: Game, entry) -> int | None:
+def wall_price(game: Game, entry) -> int | None:
     """The price on a "Wall x N" row of the list (right of it, a little lower)."""
     return game.read_number(_price_rect(entry), T.LOOT_FONT)
 
@@ -425,7 +425,7 @@ def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Lo
 
     def skip() -> int:
         if list_open:
-            _close_windows(game)
+            close_all_windows(game)
         return 0
 
     if not cfg.enabled or not all(game.has(n) for n in needed):
@@ -447,7 +447,7 @@ def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Lo
         game.deselect()
         game.zoom_out()
         loot = read_resources()
-    budget = _wall_budget(cfg.use, loot, keep) if loot else []
+    budget = wall_budget(cfg.use, loot, keep) if loot else []
     if cfg.only_when_full:
         budget = [k for k in budget if k in (full or set())]
     if not budget:
@@ -469,7 +469,7 @@ def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Lo
             if not left:
                 return skip()
             budget = left
-    if not _payable(loot, budget, keep, known):
+    if not payable(loot, budget, keep, known):
         return skip()
     in_list = False
     if list_open:
@@ -479,11 +479,11 @@ def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Lo
         open_tab(game, "buildings")
         in_list = set_filter(game, sort=T.SORT_COST_MIN)
         if not in_list:
-            _close_windows(game)
+            close_all_windows(game)
     start, upgraded = loot, {}
     try:
         for i, kind in enumerate(budget):
-            if i and not _payable(loot, [kind], keep, known):
+            if i and not payable(loot, [kind], keep, known):
                 continue
             count, price, loot, in_list = _upgrade_walls(game, cfg, loot, [kind], keep, known, in_list)
             if count:
@@ -492,17 +492,17 @@ def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Lo
         # Selecting a wall moved the camera to it and zoomed in, and the
         # walls just upgraded stay selected: close the list and, unless a
         # battle is next, drop them and zoom out.
-        _close_windows(game)
+        close_all_windows(game)
         if not last:
             game.deselect()
             game.zoom_out()
     if not upgraded:
         return 0
     game.wait(1.5)  # the resource counters run down to what's left
-    return _walls_done(start, read_resources(), upgraded)
+    return walls_done(start, read_resources(), upgraded)
 
 
-def _walls_done(before: Loot, after: Loot | None, upgraded: dict[str, tuple[int, int | None]],
+def walls_done(before: Loot, after: Loot | None, upgraded: dict[str, tuple[int, int | None]],
                 what: str = "wall") -> int:
     """Log the walls upgraded with each resource (``upgraded``: how many
     were selected, at what price), from what the storages lost once the
@@ -527,7 +527,7 @@ def _walls_done(before: Loot, after: Loot | None, upgraded: dict[str, tuple[int,
     return done
 
 
-def _payable(loot: Loot | None, budget: list[str], keep: dict[str, int], known: dict,
+def payable(loot: Loot | None, budget: list[str], keep: dict[str, int], known: dict,
              what: str = "Walls") -> bool:
     """Whether one of ``budget``'s resources pays for a wall at the price
     last seen (not seen yet: it may). Every PRICE_RECHECK rounds skipped,
@@ -553,7 +553,7 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, loot: Loot, budget: list[str], 
     paid: the numbers beside the open list can't be read reliably), and
     whether the list is still open."""
     if not in_list:
-        _close_windows(game)
+        close_all_windows(game)
         game.refresh()
         if not game.click(T.BUILD) or not game.wait_for(T.CLOSE, timeout=4):
             log.info("Walls: the Build list didn't open")
@@ -571,7 +571,7 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, loot: Loot, budget: list[str], 
     if entry is None:
         log.info("No wall to upgrade in the list")
         return 0, None, loot, in_list
-    price = _wall_price(game, entry)
+    price = wall_price(game, entry)
     red = not price and price_is_red(game, entry)
     if price:
         known["price"] = price
@@ -581,13 +581,13 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, loot: Loot, budget: list[str], 
             log.info("Walls: %s spare, a wall costs %s",
                      " and ".join(f"{v:,} {k}" for k, v in short.items()), f"{price:,}")
             return 0, None, loot, True
-    if not _select_wall(game, entry):
+    if not select_wall(game, entry):
         log.info("Walls: no Upgrade button under the wall (%.2f alike)", game.likeness(T.UPGRADE))
         _keep_screen(WALL_SCREENS, game.screen)
         return 0, None, loot, False
     game.wait(0.6)  # the buttons fade in
     game.refresh()
-    buttons ={_cost_kind(game.screen, m.x, m.y, _icon_offset(m)): m for m in game.find_all(T.UPGRADE)}
+    buttons ={cost_kind(game.screen, m.x, m.y, _icon_offset(m)): m for m in game.find_all(T.UPGRADE)}
     takes = {k for k in buttons if k in ("gold", "elixir")}
     if takes:
         known["pays"] = takes  # what this wall's buttons cost
@@ -612,9 +612,9 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, loot: Loot, budget: list[str], 
     if count > 1 and not (game.has(T.UPGRADE_MORE) and game.has(T.ADD_WALL)):
         count = 1
     if count > 1:
-        count = _select_more(game, count)
+        count = select_more(game, count)
     game.refresh()
-    buttons = {_cost_kind(game.screen, m.x, m.y, _icon_offset(m)): m for m in game.find_all(T.UPGRADE)}
+    buttons = {cost_kind(game.screen, m.x, m.y, _icon_offset(m)): m for m in game.find_all(T.UPGRADE)}
     if kind not in buttons:
         log.info("Walls: the %s Upgrade button went away", kind)
         return 0, None, loot, False
@@ -632,7 +632,7 @@ def _upgrade_walls(game: Game, cfg: WallsConfig, loot: Loot, budget: list[str], 
     return count, price, replace(loot, **{kind: left}), True
 
 
-def _select_wall(game: Game, entry, button: str = T.UPGRADE) -> bool:
+def select_wall(game: Game, entry, button: str = T.UPGRADE) -> bool:
     """Tap a "Wall x N" row: the list closes and the game selects one of
     those walls, its Upgrade button (``button``) under it. A tap the list
     took as the end of a glide leaves it open: the row is tapped once more."""
@@ -648,7 +648,7 @@ def _select_wall(game: Game, entry, button: str = T.UPGRADE) -> bool:
     return game.wait_for(button, timeout=4) is not None
 
 
-def _select_more(game: Game, count: int) -> int:
+def select_more(game: Game, count: int) -> int:
     """Upgrade More switches to picking more walls of the same level: Add
     Wall +10 (left; only while ten more are left) and +1 each add that
     many to the selection. Returns how many are selected (1 if the Add Wall
@@ -713,7 +713,7 @@ def _confirm_walls(game: Game, timeout: float = 4) -> bool | None:
         game.wait(0.5)
 
 
-def _close_windows(game: Game) -> None:
+def close_all_windows(game: Game) -> None:
     """Close whatever is still open: the confirm window, then Buildings & Heroes."""
     for _ in range(2):
         game.refresh()

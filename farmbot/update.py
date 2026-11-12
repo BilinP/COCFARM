@@ -50,7 +50,8 @@ WORK = Path("_update")
 EXE = "COCFARM.exe"
 CHUNK = 1 << 20
 # Never moved or replaced by an update, whatever a release contains.
-KEEP = {"farmbot.toml", "attacks.csv", "screens", "logs", "farmbot.log", "update.json", "_update", "templates"}
+KEEP = {"farmbot.toml", "attacks.csv", "screens", "logs", "farmbot.log", "update.json", "onboarding.json",
+        "_update", "templates"}
 
 
 class UpdateError(Exception):

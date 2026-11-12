@@ -273,6 +273,103 @@ def _in_box(path: Path, installs: list[Install]) -> bool:
         text.startswith(str(i.path).lower().replace("/", "\\").rstrip("\\") + "\\") for i in installs)
 
 
+# LDPlayer's player (dnplayer.exe) fetches an ad from ad.ldplayer.net when it
+# starts and, a minute or two later, shows it in a small window of its own
+# ("adframe", 300 x 420, at the screen's bottom right). It's a Windows
+# window, so it never covers the game in ADB screenshots, but it sits over
+# the desktop until closed: closed for the user, for a while after connect.
+AD_WINDOW_CLASS = "adframe"
+AD_WATCH = 300  # seconds after connecting that LDPlayer's ad windows are looked for
+AD_WATCH_EVERY = 3  # seconds between looks
+
+
+def _ad_windows() -> list[tuple[int, Path | None]]:
+    """Every window of class ``AD_WINDOW_CLASS``, with its program's path."""
+    if sys.platform != "win32":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    found: list[tuple[int, Path | None]] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):
+        name = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, name, 64)
+        if name.value == AD_WINDOW_CLASS:
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            found.append((hwnd, ports.process_path(pid.value)))
+        return True
+
+    user32.EnumWindows(each, 0)
+    return found
+
+
+def _close_window(hwnd: int) -> None:
+    import ctypes
+
+    ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE: as its own close button
+
+
+def close_ad_windows(installs: list[Install], windows: Callable[[], list[tuple[int, Path | None]]] | None = None,
+                     close: Callable[[int], None] | None = None) -> int:
+    """Close LDPlayer's ad windows (only those of a program in one of
+    ``installs``: another program's window of the same class is left
+    alone). Never stops the bot. Returns how many were closed."""
+    windows, close = windows or _ad_windows, close or _close_window
+    closed = 0
+    try:
+        for hwnd, path in windows():
+            if path is None or emulator_of(path, installs)[0] != "ldplayer":
+                continue
+            close(hwnd)
+            closed += 1
+    except Exception as exc:  # noqa: BLE001 - only an ad: never worth stopping for
+        log.info("Couldn't close LDPlayer's ad window: %s", exc, extra={"file_only": True})
+    if closed:
+        log.info("Closed LDPlayer's ad window")
+    return closed
+
+
+def watch_ad_windows(installs: list[Install], seconds: float = AD_WATCH, sleep: Callable[[float], None] = time.sleep,
+                     clock: Callable[[], float] = time.monotonic,
+                     close: Callable[[list[Install]], int] | None = None) -> None:
+    """Close LDPlayer's ad windows as they show, for ``seconds``."""
+    close = close or close_ad_windows
+    end = clock() + seconds
+    while True:
+        close(installs)
+        if clock() >= end:
+            return
+        sleep(AD_WATCH_EVERY)
+
+
+_ad_watch: dict = {"until": 0.0, "thread": None}
+
+
+def start_ad_watch(installs: list[Install]) -> None:
+    """``watch_ad_windows`` in the background (the ad shows a minute or two
+    after the player starts, while the bot is already playing). Connecting
+    again while it watches only makes it watch longer."""
+    if sys.platform != "win32":
+        return
+    import threading
+
+    _ad_watch["until"] = time.monotonic() + AD_WATCH
+    thread = _ad_watch["thread"]
+    if thread is not None and thread.is_alive():
+        return
+
+    def watch() -> None:
+        while (left := _ad_watch["until"] - time.monotonic()) > 0:
+            watch_ad_windows(installs, seconds=left)
+
+    _ad_watch["thread"] = thread = threading.Thread(target=watch, name="ldplayer-ads", daemon=True)
+    thread.start()
+
+
 def _running(install: Install, index: int, run: Runner) -> bool:
     try:
         return any(i.index == index and i.running for i in instances(install, run))
@@ -493,7 +590,7 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
     installs = find()
     install = pick_install(cfg, installs)
     if install is None:
-        raise DeviceError("LDPlayer was not found. Install LDPlayer 9 or newer, or pick another emulator in Setup.")
+        raise DeviceError("LDPlayer was not found. Install LDPlayer 9 or newer, or pick another emulator in Advanced → Emulator.")
     found = instances(install, run)
     inst = next((i for i in found if i.index == cfg.ldplayer_index), None)
     if inst is None:
@@ -533,7 +630,7 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
         inst.running = False
     if not inst.running:
         if not cfg.launch_emulator:
-            raise DeviceError(f"{install.name} is not running. Start it, or turn on 'Open the emulator automatically' in Setup.")
+            raise DeviceError(f"{install.name} is not running. Start it, or turn on 'Open the emulator automatically' in Advanced → Emulator.")
         log.info("Starting %s (instance %d)", install.name, inst.index + 1)
         run([str(install.console), "launch", "--index", str(inst.index)])
     launched = clock()
@@ -551,8 +648,9 @@ def open_device(cfg: DeviceConfig, run: Runner = _run, sleep: Callable[[float], 
                     # LDPlayer's first instance, and wins: playing on would
                     # quietly farm in the wrong emulator.
                     raise WrongEmulator(f"{inst.serial} reached BlueStacks instead of {install.name}: both use "
-                                        f"port {5555 + 2 * inst.index}. Close BlueStacks, or pick BlueStacks in Setup.")
+                                        f"port {5555 + 2 * inst.index}. Close BlueStacks, or pick BlueStacks in Advanced → Emulator.")
                 switch_off_ad_apps(device, AD_PACKAGES, install.name)
+                start_ad_watch(installs)
                 log.info("Connected to %s at %s", install.name, inst.serial)
                 return device
         except WrongEmulator:

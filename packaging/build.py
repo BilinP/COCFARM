@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,8 +41,8 @@ START_HERE = """COCFARM
 2. Open Clash of Clans in the emulator.
 3. Double-click COCFARM.exe (Windows may warn about an unknown publisher:
    More info > Run anyway).
-4. COCFARM opens on Setup: follow its four steps (emulator, Check now,
-   the loot you want, Start).
+4. The first time, COCFARM opens a short tour: pick your emulator,
+   check the game, choose what to farm, Start.
 
 Your settings (farmbot.toml), button pictures (templates), attack log
 (attacks.csv) and error screenshots (screens) are kept in this folder.
@@ -106,6 +107,15 @@ def add_licenses(app: Path) -> None:
                 shutil.copy(file.locate(), target / file.name)
 
 
+def make_zip(folder: Path, archive: Path) -> Path:
+    """``folder`` zipped (with it as the top folder), deflated at its best:
+    every update downloads this. Plain deflate, so Explorer still opens it."""
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for path in sorted(folder.rglob("*")):
+            zf.write(path, path.relative_to(folder.parent).as_posix())
+    return archive
+
+
 def main() -> int:
     shutil.rmtree(DIST, ignore_errors=True)
     shutil.rmtree(ROOT / "build", ignore_errors=True)
@@ -116,8 +126,12 @@ def main() -> int:
         "--add-data", f"{ROOT / 'farmbot' / 'assets'}{os.pathsep}farmbot/assets",
         "--add-data", f"{ROOT / 'farmbot' / 'profiles'}{os.pathsep}farmbot/profiles",
         "--add-data", f"{ROOT / 'farmbot' / 'ocr.ps1'}{os.pathsep}farmbot",  # Windows' OCR: reads player names
-        "--collect-all", "qfluentwidgets",
-        "--collect-all", "qframelesswindow",
+        "--add-data", f"{ROOT / 'farmbot' / 'ocr_lines.ps1'}{os.pathsep}farmbot",  # and finds war maps' text
+        # Their modules only: --collect-all also copied their source next to
+        # the exe (4 MB, 3 MB of it Fluent's pictures), which runs from the
+        # compiled copy anyway. They have no data files of their own.
+        "--collect-submodules", "qfluentwidgets",
+        "--collect-submodules", "qframelesswindow",
         "--collect-submodules", "farmbot",
         # Qt add-ons the window never uses; Fluent Widgets' optional media
         # player would otherwise pull in half a gigabyte of Qt.
@@ -127,11 +141,13 @@ def main() -> int:
     ], check=True, cwd=ROOT)
     prune(APP / "_internal")
     # Pictures stay as plain files next to the exe so new ones can be added.
-    shutil.copytree(ROOT / "templates", APP / "templates")
+    # (Not the builder's own pictures, kept out of git too: their Clan Castle, their air troop cards.)
+    own = {ROOT / "templates": ["redact"], ROOT / "templates" / "cards": ["air"]}
+    shutil.copytree(ROOT / "templates", APP / "templates", ignore=lambda folder, names: own.get(Path(folder), []))
     shutil.copy(ROOT / "farmbot.example.toml", APP / "farmbot.example.toml")
     add_licenses(APP)
     (APP / "START HERE.txt").write_text(START_HERE, encoding="utf-8")
-    archive = shutil.make_archive(str(DIST / f"{NAME}-windows"), "zip", DIST, NAME)
+    archive = make_zip(APP, DIST / f"{NAME}-windows.zip")
     print(f"built {APP} and {archive}")
     return 0
 

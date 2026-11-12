@@ -18,6 +18,28 @@ from farmbot.update import STATE, _load, _save, parse_version
 KINDS = ["New", "Improved", "Fixed"]
 
 NOTES: dict[str, list[tuple[str, str, str]]] = {
+    "1.5.4": [
+        ("New", "Clan war and ranked battles (beta)",
+         "COCFARM can make your war attacks on battle day and the day's ranked battles. These are fought for "
+         "stars: the army goes in together from one side (or a corner), and the spells follow it."),
+        ("New", "A bug report in two clicks",
+         "Advanced → Bug report → Copy for a bug report copies your emulator, the game's version, your "
+         "settings, the errors of the last days and the log, with player names, tags, instance names, your "
+         "Windows user name and the folders above COCFARM's taken out. Paste it into the GitHub bug form."),
+        ("New", "Screenshots that are safe to share",
+         "The Bug report tab shows what the game looked like when a round failed. Player and clan names, clan "
+         "chat and a war map's names are blocked out; drag a box over anything else before you copy it."),
+        ("Improved", "Logs that tell what went wrong",
+         "When a round fails, the log now says where, what the bot was doing and what it saw. Crashes are "
+         "kept too, and the log no longer stops when two COCFARM windows are open past midnight."),
+        ("New", "A short tour for a new install",
+         "The first time, COCFARM walks you through picking your emulator, checking the game and choosing "
+         "what to farm. Updating never shows it again."),
+        ("Improved", "Looks around between battles",
+         "Like a player does: a look at the clan chat, the Build list or the village now and then."),
+        ("Fixed", "Zooming out keeps working",
+         "If fast taps fail on an emulator, the pinch to zoom out still works."),
+    ],
     "1.5.3": [
         ("Improved", "Super Miners are healed where they dig",
          "In Raid Weekend, Healing spells go just ahead of the Super Miners, by where they're heading, every 17 "

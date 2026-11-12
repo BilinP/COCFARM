@@ -122,7 +122,7 @@ def describe_status(text: str, now: datetime | None = None) -> Status:
 class Problem:
     title: str  # what happened
     why: str  # why it matters
-    action: str  # what the fix button does: setup | retry | autostart | pictures | logs
+    action: str  # what the fix button does: setup (emulator settings) | retry | autostart | pictures | logs
     action_text: str  # the button's label
     details: str  # the original message, for "Technical details"
 
@@ -137,18 +137,23 @@ RULES = [
     (r"reached BlueStacks instead",
      "BlueStacks is in LDPlayer's way",
      "Both emulators use the same connection (port 5555), so with BlueStacks open COCFARM reaches it instead of "
-     "LDPlayer. Close BlueStacks, or pick BlueStacks in Setup.", "setup", "Open Setup"),
+     "LDPlayer. Close BlueStacks, or pick BlueStacks in Advanced → Emulator.", "setup", "Emulator settings"),
     (r"is using port|still holds port",
      "Another program is using {emulator}'s connection",
      "COCFARM closes other emulators in the way by itself, but couldn't close this one. Close it, then try again.",
      "retry", "Try again"),
     (r"instance .* not found|has no instance",
-     "The emulator instance picked in Setup doesn't exist",
-     "COCFARM doesn't know which emulator window to play in.", "setup", "Open Setup"),
+     "The emulator instance picked doesn't exist",
+     "COCFARM doesn't know which emulator window to play in.", "setup", "Emulator settings"),
+    (r"isn't installed on this emulator instance",
+     "Clash of Clans isn't on this emulator instance",
+     "This farm's instance has no game to play, so it stopped. Install Clash of Clans in it and sign in "
+     "(or make the farm from an instance that has the game), or switch this farm off on the Farms page.",
+     "retry", "Try again"),
     (r"(BlueStacks|LDPlayer|MuMu)[^.]* (was )?not found|not installed",
      "COCFARM can't find {emulator}",
      "The game runs inside the emulator, so nothing can be played. Install it, or pick the other one.",
-     "setup", "Open Setup"),
+     "setup", "Emulator settings"),
     (r"isn't in English",
      "Clash of Clans isn't in English",
      "COCFARM finds the game's buttons by their English words, so it doesn't recognise anything. Open the "
@@ -175,7 +180,7 @@ RULES = [
      "then try again.", "retry", "Try again"),
     (r"adb not found",
      "A part COCFARM needs to talk to the emulator is missing",
-     "Without it the bot can't control the game.", "setup", "Open Setup"),
+     "Without it the bot can't control the game.", "setup", "Emulator settings"),
     (r"timed out",
      "{emulator} took too long to answer",
      "It may be restarting after COCFARM set it up, or your PC is busy. Wait a moment, then try again.",

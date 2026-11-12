@@ -6,8 +6,35 @@ body:
     attributes:
       value: |
         Thanks for reporting! The more specific you are, the faster it can be fixed.
-        Please fill in every field. (A problem with the Android app on your phone? Use the
+        Please fill in every required field. (A problem with the Android app on your phone? Use the
         Android app's bug report instead.)
+
+        **The quickest way:** in COCFARM, go to **Advanced → Bug report → Copy for a bug report**,
+        then paste into **COCFARM report** below. It holds your emulator and the game's version, your
+        settings (which are on and off), every error of the last days and the log, with player names,
+        tags, instance names, your Windows user name and other personal details already taken out.
+        (COCFARM 1.5.4 and later.)
+
+        <details>
+        <summary><b>Where COCFARM keeps its logs and screenshots</b> (if you can't use the button)</summary>
+
+        All in the folder COCFARM.exe is in (open it: right-click COCFARM in the taskbar or Start menu →
+        Open file location):
+
+        | What | Where |
+        | --- | --- |
+        | Today's log | `logs\farmbot.log` |
+        | The days before (14 kept) | `logs\farmbot.log.2026-11-11` and so on, one per day |
+        | A hard crash (the window closed by itself) | `logs\crash.log` (1.5.4 and later) |
+        | What the game showed when a round failed (farm 1) | `screens\errors\` (named by date and time, e.g. `20261112-101500.png`) |
+        | The same for farm 2 and up | `instances\2\screens\errors\`, `instances\3\screens\errors\`, ... |
+        | Your settings | `farmbot.toml` (farm 2 and up: `instances\2\farmbot.toml`, ...) |
+
+        Every farm writes to the same log: farm 2 and up's lines start with `[farm 2]` and so on.
+        **These files aren't cleaned like the button's copy:** they can hold your player names, your
+        Windows user name and your folders. Look them over before pasting, and don't attach
+        `farmbot.toml` if it holds a Discord webhook or a Telegram token.
+        </details>
 
   - type: dropdown
     id: area
@@ -19,6 +46,25 @@ body:
         - Builder base
     validations:
       required: true
+
+  - type: textarea
+    id: report
+    attributes:
+      label: COCFARM report
+      description: |
+        Advanced → Bug report → **Copy for a bug report**, then paste here (Ctrl+V).
+        Paste it as it is: it's already formatted. Copy it right after the problem happens,
+        so the log still holds it. With it pasted, the two version fields below can stay empty.
+      placeholder: |
+        COCFARM 1.5.4 report (personal details removed by COCFARM)
+
+        ### Emulator
+        - Plays on: LDPlayer 14 instance 2 (14.0.29.2)
+        - The device says: game 17.1.5, Android 9, display 860x672, density 240
+        ...
+        ### Problems (the log's days: 11-07 to 11-12)
+        **Errors (the newest first):**
+        - 3x Cycle failed (3 in a row): SearchError: find-a-match button did not appear ...
 
   - type: dropdown
     id: emulator
@@ -42,7 +88,7 @@ body:
         MuMu Player: its About page. For another emulator, give its name and version.
       placeholder: e.g. BlueStacks 5.22.110.1028 (Pie 64-bit), LDPlayer 14.0.29.2 or MuMu Player 12
     validations:
-      required: true
+      required: false
 
   - type: input
     id: cocfarm-version
@@ -50,10 +96,10 @@ body:
       label: COCFARM version
       description: |
         Shown in COCFARM's title bar, next to the logo (also under Advanced → Settings → Updates,
-        and on the first line of `logs/farmbot.log` each time it starts).
-      placeholder: e.g. 0.9.7
+        and on the first line of `logs/farmbot.log` each time it starts). Already in the COCFARM report.
+      placeholder: e.g. 1.5.4
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: description
@@ -68,7 +114,9 @@ body:
     id: steps
     attributes:
       label: Steps to reproduce
-      description: What you did, step by step, until the problem showed up.
+      description: |
+        What you did, step by step, until the problem showed up. Your settings are in the
+        COCFARM report: say here only what you changed or pressed.
       placeholder: |
         1. Pressed Start
         2. It found a base and pressed Attack!
@@ -79,10 +127,12 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: Log
+      label: Log (COCFARM 1.5.3 and earlier)
       description: |
-        The lines around the problem from `logs/farmbot.log` in the COCFARM folder
-        (or Dashboard → Details). Pasted text is formatted automatically.
+        No "Copy for a bug report" button? Open `logs\farmbot.log` in the COCFARM folder with Notepad
+        (an older day: `logs\farmbot.log.<date>`) and paste the lines from a few minutes before the
+        problem to after it, especially any `ERROR` lines. Take out your player names and Windows user
+        name first. Pasted text is formatted automatically.
       render: text
 
   - type: textarea
@@ -90,5 +140,11 @@ body:
     attributes:
       label: Screenshots
       description: |
-        Optional: drag in screenshots of the problem, or the matching ones from
-        `screens/errors/`. They show other players' bases, so crop them if you like.
+        Optional, but they help a lot. In COCFARM, Advanced → Bug report shows what the game
+        looked like when a round failed (the last 7 days), with the player and clan names at the
+        top left, clan chat and a war map's names blocked out. The Clan Castle shows its clan's
+        name: if it isn't blocked already, drag a box over it. Pick the one from when the problem happened, drag a box over
+        anything else you'd rather hide (or move, resize or take off COCFARM's own boxes), press
+        **Copy picture**, check the picture it shows you, press **Copy**, then click here and paste
+        (Ctrl+V). (The pictures themselves are in `screens\errors\` in the COCFARM folder, or
+        `instances\2\screens\errors\` and so on for farm 2 and up, but those have nothing blocked out.)

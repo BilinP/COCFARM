@@ -48,7 +48,7 @@ from farmbot.tasks.build_list import (BUILDER, FAILED, HOME, HUD_SHIFT_PX, LOCKE
                                       top_row_affordable, town_hall_row, upgrade_row)
 from farmbot.tasks.builder import restore_view
 from farmbot.tasks.search import Loot
-from farmbot.tasks.village import _close_windows, deselect
+from farmbot.tasks.village import close_all_windows, deselect
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +88,8 @@ def plan(order: list[str], enabled: dict[str, bool]) -> list[str]:
 
 
 def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], last: bool = False,
-            hand_over: dict | None = None, locked: dict[str, str] | None = None, total: int = 0) -> int:
+            hand_over: dict | None = None, locked: dict[str, str] | None = None, total: int = 0,
+            report: dict | None = None) -> int:
     """Spend the home village's ``full`` storages' resources on upgrades.
     What was upgraded is left zoomed in on (the walls, or the battle,
     next zoom out), and dropped unless ``last`` (a battle comes next, which
@@ -100,8 +101,13 @@ def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], las
     left open. ``locked``: what this account hasn't unlocked yet
     (``townhall.locked``): left out. ``total``: the village's builders,
     from its data (0: not known); with it, upgrades keep at most
-    ``upgrade.builders`` of them busy (see :func:`_within`). Returns how
-    many were started."""
+    ``upgrade.builders`` of them busy (see :func:`_within`). ``report``
+    gets "idle": nothing was started and nothing could be, because the
+    buildings were looked through with a builder free and there was
+    none to start, or because no builder may be used (all working, or
+    the free ones kept free); not: the list didn't open, the builders
+    couldn't be read, or a row wouldn't upgrade. And "town_hall": the
+    Town Hall's upgrade was started. Returns how many were started."""
     ucfg = cfg.upgrade
     full = {k for k in full if k in HOME.resources}
     if not ucfg.enabled or not full or not all(game.has(n) for n in NEEDED):
@@ -136,8 +142,14 @@ def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], las
         if not _open_list(game):
             return 0
         left = {"builders": builders}
+        seen: dict | None = None if report is None else {}
         done = _in_order(game, kinds, HOME_SPEND, ucfg.first, ucfg.heroes, budget, builders, read_resources, lst,
-                         new=ucfg.new_buildings, left=left)
+                         new=ucfg.new_buildings, left=left, seen=seen)
+        if seen is not None:
+            report["town_hall"] = bool(seen.get("town_hall"))
+            no_builder = "building" in kinds and free is not None and builders <= 0
+            report["idle"] = bool(not done and (seen.get("looked") or no_builder) and not seen.get("failed")
+                                  and not seen.get("broken") and not _passed_over(game))
         if hand_over is not None:
             # The walls need one free: what was free less what these upgrades just put to work.
             still_free = None if free is None else max(free - (builders - left["builders"]), 0)
@@ -145,7 +157,7 @@ def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], las
             handed = True
     finally:
         if not handed:
-            _close_windows(game)
+            close_all_windows(game)
             if not last:
                 deselect(game)  # a pinch on what's still selected would move it
     return done
@@ -182,7 +194,7 @@ def upgrade_builder_base(game: Game, bcfg: BuilderConfig, read_resources: Reader
         done = _in_order(game, kinds, BUILDER_SPEND, bcfg.upgrade_first, bcfg.upgrade_heroes, budget, builders,
                          read_resources, BUILDER)
     finally:
-        _close_windows(game)
+        close_all_windows(game)
         if not last:
             _leave(game, view)
     return done
@@ -190,7 +202,7 @@ def upgrade_builder_base(game: Game, bcfg: BuilderConfig, read_resources: Reader
 
 def _in_order(game: Game, kinds: list[str], spend: dict[str, tuple[str, ...]], first: str, heroes: bool,
               budget: dict[str, int], builders: int, read_resources: Reader, lst: BuildList,
-              new: bool = False, left: dict | None = None) -> int:
+              new: bool = False, left: dict | None = None, seen: dict | None = None) -> int:
     """Each kind of upgrade in turn, with the resources it may spend that
     are still in ``budget``; with ``new``, buildings not built yet come
     first among the buildings (free ones, like new walls, before anything). Returns
@@ -213,7 +225,8 @@ def _in_order(game: Game, kinds: list[str], spend: dict[str, tuple[str, ...]], f
                 types = ["town hall", *types]
             if new and kind == "building":
                 types = ["new", *types]
-            started = _buildings(game, types, money, budget, builders, read_resources, lst)
+            started = _buildings(game, types, money, budget, builders, read_resources, lst,
+                                 **({} if seen is None else {"seen": seen}))
             builders -= started
             done += started
     if left is not None:
@@ -379,9 +392,13 @@ def _town_hall(game: Game, money: list[str], budget: dict[str, int], read_resour
 
 
 def _buildings(game: Game, kinds: list[str | None], money: list[str], budget: dict[str, int], builders: int,
-               read_resources: Reader, lst: BuildList) -> int:
+               read_resources: Reader, lst: BuildList, seen: dict | None = None) -> int:
     """Up to ``builders`` upgrades of the ``kinds`` of building (``None``:
-    any), paid with ``money``. Returns how many were started."""
+    any), paid with ``money``. Returns how many were started. ``seen``
+    gets how it went: "looked" (every kind was looked through), "failed"
+    (a row wouldn't upgrade), "broken" (the list was lost), "town_hall"
+    (its upgrade was started)."""
+    seen = {} if seen is None else seen
     open_tab(game, "buildings", lst)
     done = 0
     for kind in kinds:
@@ -390,7 +407,10 @@ def _buildings(game: Game, kinds: list[str | None], money: list[str], budget: di
                 started_ = _town_hall(game, money, budget, read_resources, lst)
                 builders -= started_
                 done += started_
+                if started_:
+                    seen["town_hall"] = True
                 if not _list_open(game, lst):
+                    seen["broken"] = True
                     return done
             continue
         # New buildings are few: one list of them in every resource (one
@@ -422,8 +442,10 @@ def _buildings(game: Game, kinds: list[str | None], money: list[str], budget: di
                 what = "a new building" if kind == "new" else kind or "a building"
                 outcome = _spend(game, row, budget, read_resources, what, lst)
                 if not _list_open(game, lst):
+                    seen["broken"] = True
                     return done
                 if not started(outcome):
+                    seen["failed"] = True
                     skip.add((row.kind, row.price))
                     _pass_over(game, row)
                     failed += outcome != LOCKED
@@ -431,6 +453,7 @@ def _buildings(game: Game, kinds: list[str | None], money: list[str], budget: di
                 spent = True
                 builders -= 1
                 done += 1
+    seen["looked"] = True
     return done
 
 

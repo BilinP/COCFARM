@@ -7,12 +7,13 @@ import logging
 import signal
 import sys
 import threading
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from farmbot import __version__, bluestacks, catalog, imagefile, text
+from farmbot import bluestacks, catalog, imagefile, text
 from farmbot.accounts import load_active
 from farmbot.bot import Bot
 from farmbot.config import EMULATORS, Config, ensure_config
@@ -262,17 +263,29 @@ LOG_DAYS = 14
 def log_to_file(path: str) -> None:
     """Keep the activity log on disk too: a new file each midnight, the last
     ``LOG_DAYS`` days kept, so a problem can be looked at after the fact."""
-    from logging.handlers import TimedRotatingFileHandler
 
     try:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        handler = TimedRotatingFileHandler(path, when="midnight", backupCount=LOG_DAYS, encoding="utf-8")
+        handler = _DailyLog(path, when="midnight", backupCount=LOG_DAYS, encoding="utf-8")
     except OSError as exc:
         logging.getLogger(__name__).warning("Not logging to %s: %s", path, exc)
         return
     handler.addFilter(_farm_tag)
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(farm_tag)s%(name)s: %(message)s"))
     logging.getLogger().addHandler(handler)
+
+
+class _DailyLog(TimedRotatingFileHandler):
+    """A new file each midnight, unless another program (a second COCFARM
+    window) has the log open: Windows won't rename it then. It carries on
+    in the same file until the next midnight, rather than lose every line
+    (the standard handler tries again, and fails, for each one)."""
+
+    def rotate(self, source: str, dest: str) -> None:
+        try:
+            super().rotate(source, dest)
+        except OSError:
+            pass
 
 
 def _farm_tag(record: logging.LogRecord) -> bool:
@@ -301,7 +314,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.func in (cmd_run, cmd_gui):
         log_to_file(LOG_FILE)
-        logging.getLogger(__name__).info("COCFARM %s", __version__)  # first thing a bug report's log shows
+        from farmbot import diag
+
+        diag.install(Path(LOG_FILE).parent)  # (a windowed program has no console for what nothing caught)
+        logging.getLogger(__name__).info(diag.startup())  # first thing a bug report's log shows
     try:
         return args.func(args)
     except (DeviceError, FileNotFoundError, ValueError) as exc:

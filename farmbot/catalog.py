@@ -38,6 +38,8 @@ BAT_SPELLS = "Casting only Bat Spells"
 WARDEN_SIDE = "Putting the Grand Warden with the most troops"
 SUPER_TROOPS = "Activating super troops"
 CAPITAL = "Clan Capital raids"
+STAR_PLANS = "War and ranked attacks planned by army and base"
+WAR = "Clan war attacks"
 
 PICTURES: list[Picture] = [
     # Attacking: without these the bot cannot get into or out of a battle.
@@ -48,7 +50,22 @@ PICTURES: list[Picture] = [
     Picture(T.BAT_SPELL_CARD, "Bat Spell card", "Troop bar during a battle: the bats and bottle on the "
             "Bat Spell card (not its count or level).", BAT_SPELLS),
     Picture(T.WARDEN_CARD, "Grand Warden card", "Troop bar during a battle: the Grand Warden's face on his "
-            "card (not his level).", WARDEN_SIDE),
+            "card: just his mouth and beard (not his level, the equipment icon in the corner or the green "
+            "button).", WARDEN_SIDE),
+    Picture(T.AIR_CARDS, "Air troop cards", "Troop bar during a battle: the picture of an air troop's card "
+            "(Dragon, Electro Dragon, Balloon...), not its count or level; one picture per troop. With an air "
+            "army, war and ranked attacks go in facing the most Air Defenses.", STAR_PLANS, folder=True),
+    Picture(T.GROUND_CARDS, "Ground troop cards", "Troop bar during a battle: the picture of a ground troop's "
+            "card, not its count or level; one picture per troop. With a ground army, the heroes and siege go "
+            "in first in war and ranked attacks, to open the way.", STAR_PLANS, folder=True),
+    Picture(T.LURE_CARDS, "Lure troop card", "Troop bar during a battle: the picture of a cheap troop's card "
+            "(a Barbarian, say). In war and ranked attacks one goes in first, by the Clan Castle, to pull out "
+            "its troops.", STAR_PLANS, folder=True),
+    Picture(T.AIR_DEFENSE, "Air Defense", "An enemy base in a war or ranked battle, zoomed out (kept in "
+            "screens/bases): one Air Defense, just the building; one picture per level.", STAR_PLANS, folder=True),
+    Picture(T.CLAN_CASTLE, "Clan Castle", "An enemy base in a war or ranked battle, zoomed out (kept in "
+            "screens/bases): the Clan Castle, just the building; one picture per level. Also blocks it out in "
+            "bug report screenshots.", STAR_PLANS, folder=True),
     Picture(T.END_BATTLE, "End Battle", "During a battle, bottom left: the words \"End Battle\" "
             "(\"Surrender\" once units are out).", "Attacking", True, folder=True),
     # Recommended: without these two the bot closes the game to leave a battle.
@@ -84,6 +101,8 @@ PICTURES: list[Picture] = [
     Picture(T.SUPER_BOOST_DARK, "Boost with dark elixir", "The same window: the dark elixir drop on the green "
             "button (not the Super Potion).", SUPER_TROOPS),
     Picture(T.BB_HOME_BOAT, "Boat to the builder base", "Home village, bottom left: the boat.", "Builder base"),
+    Picture(T.BB_BOAT_MARKER, "Boat marker", "Home village, with a scenery that draws its own boat: the small "
+            "sail in the pin above it (just the sail and hull, not the pin's frame).", "Builder base"),
     Picture(T.BB_BUILDER_BOAT, "Boat home", "Builder base, top right: the boat's hull.", "Builder base"),
     Picture(T.BB_BATTLE, "Builder Battle", "Builder base, bottom left: the crossed axes.", "Builder base"),
     Picture(T.BB_FIND_NOW, "Find Now!", "Builder Start Attack window: the words \"Find Now!\".", "Builder base"),
@@ -233,6 +252,24 @@ PICTURES: list[Picture] = [
     Picture(T.CAPITAL_BATTLE_HEAL, "Raid Heal card", "Troop bar during a raid: the Heal Spell card's bottle.",
             CAPITAL),
     Picture(T.CAPITAL_RESULT_MAP, "Raid result: Map", "Raid result screen: the word \"Map\".", CAPITAL),
+    Picture(T.WAR_BUTTON, "War button", "Home village, left edge, during a war: the middle of the crossed swords "
+            "(not the red badge or the timer).", WAR),
+    Picture(T.WAR_RETURN_HOME, "War: Return Home", "War map, bottom left: the words \"Return Home\".", WAR),
+    Picture(T.WAR_BATTLE_DAY, "Battle Day", "War map, under the timer at the top: the words \"Battle Day\".", WAR),
+    Picture(T.WAR_TO_ENEMY, "War map: Enemy", "Your clan's war map, right edge: the word \"Enemy\" on the "
+            "arrow button.", WAR),
+    Picture(T.WAR_TO_HOME, "War map: Home", "The enemy's war map, right edge: the word \"Home\" on the arrow "
+            "button.", WAR),
+    Picture(T.WAR_RECOMMENDED, "Recommended target", "The enemy's war map: the words \"Recommended target\" "
+            "under a base.", WAR),
+    Picture(T.WAR_ATTACK, "War Attack!", "A tapped enemy base's panel: the word \"Attack!\" on the orange "
+            "button.", WAR),
+    Picture(T.WAR_ARMY_ATTACK, "War army: Attack!", "The war army's window (after a base's Attack!): the word "
+            "\"Attack!\" on the green button, bottom right.", WAR),
+    Picture(T.WAR_CONFIRM_TITLE, "Confirm Attack", "After the war army's Attack!: the title \"Confirm Attack\".", WAR),
+    Picture(T.WAR_CONFIRM_ATTACK, "Confirm Attack: Attack!", "The \"Confirm Attack\" question: the word "
+            "\"Attack!\" on its green button.", WAR),
+    Picture(T.WAR_SCOUT, "War Scout", "A tapped enemy base's panel: the word \"Scout\" on the green button.", WAR),
     Picture(T.TRY_AGAIN, "Try Again", "Connection lost popup: \"Try Again\".", "Recovering from disconnects"),
     Picture(T.RELOAD, "Reload", "\"Another device is connected\" popup: \"Reload\".", "Recovering from disconnects"),
     Picture(T.LOGIN, "Not logged in", "The game's start screen with no account logged in: \"Log in with Supercell ID\".",
