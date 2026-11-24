@@ -897,7 +897,7 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
     read again after each one), so the last units don't come with spare
     taps that would drop whatever the game selects once the card is empty."""
     acfg = cfg.attack
-    if card.kind in ("single", "siege"):  # a hero or siege machine: one unit
+    if card.kind in ("single", "siege", "castle"):  # one deployment, including standalone Castle troops
         return place_single(game, card, points, cfg, fallback)
     stalled = 0
     progressed = False  # any of it went out
@@ -1078,7 +1078,7 @@ def place_single(game: Game, card: Card, points: Iterator[Point], cfg: Config,
             after = game.screen
         if armybar.unit_on_field(before, after, card) or armybar.is_spent(after, card, cfg.bar):
             return True
-    log.warning("Hero/siege card at x=%d was not placed after %d tries", card.left, SINGLE_TRIES)
+    log.warning("Hero/siege/Clan Castle card at x=%d was not placed after %d tries", card.left, SINGLE_TRIES)
     return False
 
 
@@ -1163,7 +1163,7 @@ def place_singles(game: Game, cards: list[Card], points: Iterator[Point], cfg: C
         placed += out
         waiting = [c for c in waiting if c not in out]
     for card in waiting:
-        log.warning("Hero/siege card at x=%d was not placed after %d tries", card.left, SINGLE_TRIES)
+        log.warning("Hero/siege/Clan Castle card at x=%d was not placed after %d tries", card.left, SINGLE_TRIES)
     return placed
 
 
@@ -1880,11 +1880,13 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         cards = _bar_cards(game, cfg)
         if not cards and page == 0:
             raise RuntimeError("no cards found in the troop bar")
-        counts = {card: read_count(game, card, cfg) for card in cards if card.kind not in ("single", "siege")}
+        counts = {card: read_count(game, card, cfg) for card in cards
+                  if card.kind not in ("single", "siege", "castle")}
         log.info("Troop bar%s: %s", f" (screen {page + 1})" if scrolls else "", ", ".join(
             f"{c.kind} x{counts[c]}" if counts.get(c) else c.kind for c in cards))
         troops = [c for c in cards if c.kind == "troop"]
-        singles = [c for c in cards if c.kind in ("single", "siege") and not _out_already(game.screen, c)]
+        singles = [c for c in cards if c.kind == "castle"
+                   or (c.kind in ("single", "siege") and not _out_already(game.screen, c))]
         spells = spells_to_cast(game, [c for c in cards if c.kind == "spell"], cfg)
         quakes = quake_cards(game, spells) if acfg.spells in ("earthquake", "all") else []
 
@@ -1897,7 +1899,8 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
 
         walked: list[Card] = []  # the walker: out already, her ability still to fire (if it didn't on the walk)
         if walking and page == 0:
-            went = hero_walk.walk(game, cfg, singles, troops, [c for c in cards if c.kind == "spell"], counts,
+            went = hero_walk.walk(game, cfg, abilities_to_fire(singles), troops,
+                                  [c for c in cards if c.kind == "spell"], counts,
                                   troop_edges, sides, fixed_points, spear=hero_walk.spear_level(village))
             if went is not None:
                 singles = [c for c in singles if c is not went.hero]
@@ -1998,14 +2001,14 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         if not scrolls or not scroll_bar(game, cfg):
             break
     if singles_seen:
-        log.info("Placed %d of %d hero/siege card(s)", placed_total, singles_seen)
+        log.info("Placed %d of %d hero/siege/Clan Castle card(s)", placed_total, singles_seen)
     landed = troops_out or placed_total or edge_points.seen_land or fixed_points.seen_land
     if (troops_seen or singles_seen) and not landed:
         # Every card was given up on: plain taps, the fixed lines, a zoom-out, 4 points per hero.
         # (Only ever set here: the bot reads and clears it after the round, so a later battle in the
         # same round, ranked or war, doesn't wipe it.)
         game.deploy_failed = (f"No troop or hero went down: {troops_seen} troop card(s) and {singles_seen} "
-                              "hero/siege card(s) were refused after every retry")
+                              "hero/siege/Clan Castle card(s) were refused after every retry")
         log.warning("%s", game.deploy_failed)
     if scrolls and len(placed) < placed_total:
         # Abilities need the cards on show: the bar's end may hold only some
@@ -2038,8 +2041,9 @@ SPELL_BEAT = 0.8  # human-like: about this long between the heroes and the spell
 def abilities_to_fire(placed: list[Card]) -> list[Card]:
     """The placed cards tapped again for their ability: the heroes. Not the
     siege machines: a second tap releases the troops inside and ends the
-    machine's own damage (they come out anyway once it falls)."""
-    return [c for c in placed if c.kind != "siege"]
+    machine's own damage (they come out anyway once it falls). Standalone
+    Clan Castle troops have no hero ability either."""
+    return [c for c in placed if c.kind == "single"]
 
 
 def fire_abilities_on_time(game: Game, cards: list[Card], cfg: Config, since: float | None = None) -> None:
