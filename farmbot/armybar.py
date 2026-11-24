@@ -10,6 +10,7 @@ then classified:
 * ``siege`` – no count, on the light cyan background every siege machine
   card has (heroes' cards are blue to purple). Its Clan Castle troops come
   out when it's destroyed.
+* ``castle`` – standalone Clan Castle troops: a solid cyan card without a level badge.
 
 A card is *spent* once it greys out.
 """
@@ -31,7 +32,7 @@ class Card:
     right: int
     top: int
     bottom: int
-    kind: str  # troop | spell | single | siege
+    kind: str  # troop | spell | single | siege | castle
     saturation: float  # mean colour saturation when first seen
 
     @property
@@ -54,6 +55,7 @@ SQUAD_VALUE = 120
 COUNT_FROM = 0.6  # the "xN" count sits in the right part of the header (a siege picture can reach the middle)
 WIDTH_PENALTY = 20.0  # score lost per card width of size mismatch
 MAX_OVERLAP = 10  # px two cards may share (touching cards share an edge)
+CASTLE_FRAME = 0.9  # both solid sides; an empty slot has only a dashed outline
 
 
 def _edge_columns(gray: np.ndarray, cfg: BarConfig) -> list[int]:
@@ -84,13 +86,17 @@ def _background_hue(hsv: np.ndarray, rect: Rect) -> float:
     return float(np.median(coloured[:, 0])) if len(coloured) > len(pixels) // 3 else -1.0
 
 
-def _classify(hsv: np.ndarray, rect: Rect, cfg: BarConfig) -> str:
+def _classify(hsv: np.ndarray, rect: Rect, cfg: BarConfig, *, no_level: bool = False) -> str:
     header_h = max(6, int(rect.h * cfg.header_share))
     corner = hsv[rect.y:rect.y + header_h, rect.x + int(rect.w * COUNT_FROM):rect.x + rect.w - 4]
     white = ((corner[:, :, 1] < 50) & (corner[:, :, 2] > 215)).mean() if corner.size else 0.0
     if white < cfg.count_white_share:
         lo, hi = cfg.siege_hue
-        return "siege" if lo <= _background_hue(hsv, rect) <= hi else "single"
+        if lo <= _background_hue(hsv, rect) <= hi:
+            if no_level and min(_frame_sides(hsv, rect, cfg)) >= CASTLE_FRAME:
+                return "castle"  # no level badge, unlike a Siege Machine
+            return "siege"
+        return "single"
     mid = hsv[rect.y + 2:rect.y + header_h, rect.x + int(rect.w * 0.45):rect.x + int(rect.w * 0.6)]
     coloured = mid[:, :, 1] > 80
     hue = float(np.median(mid[:, :, 0][coloured])) if coloured.any() else 0.0
@@ -122,14 +128,22 @@ SLOT_WHITE = 0.002  # share of white (a level number) below which a card's botto
 
 def is_empty_slot(screen: np.ndarray, rect: Rect) -> bool:
     """An unused slot of the bar (a dashed outline over the battlefield),
-    not a card: every card has a white level number on a dark badge along
-    its bottom; an empty slot shows only the battlefield there. (Only for
+    not a card: troop, spell, hero and Siege cards have a white level number
+    on a dark badge along the bottom; standalone Castle troops don't.
+    Their solid cyan frame is checked separately by find_cards. (Only for
     cards that aren't greyed out yet: the bar is read before deploying.)"""
     gray = cv2.cvtColor(screen[rect.y + int(rect.h * 0.7):rect.y + rect.h - 2, rect.x + 6:rect.x + rect.w - 6],
                         cv2.COLOR_BGR2GRAY)
     if gray.size == 0:
         return False
     return float((gray > 220).mean()) < SLOT_WHITE
+
+
+def _no_level_badge(screen: np.ndarray, rect: Rect) -> bool:
+    # Levels sit at bottom left. The Castle's emblem occupies the middle:
+    # white on a clan's badge must not turn the card into a Siege Machine.
+    badge = Rect(rect.x, rect.y, round(rect.w * 0.28), rect.h)
+    return is_empty_slot(screen, badge)
 
 
 def find_cards(screen: np.ndarray, cfg: BarConfig) -> list[Card]:
@@ -152,7 +166,9 @@ def find_cards(screen: np.ndarray, cfg: BarConfig) -> list[Card]:
                 continue
             rect = Rect(band.x + left, band.y, right - left, band.h)
             sides = _frame_sides(hsv, rect, cfg)
-            if max(sides) < cfg.min_frame_share or is_empty_slot(screen, rect):
+            empty = is_empty_slot(screen, rect)
+            kind = _classify(hsv, rect, cfg, no_level=_no_level_badge(screen, rect))
+            if max(sides) < cfg.min_frame_share or (empty and kind != "castle"):
                 continue
             candidates.append((sum(sides) / 2 - WIDTH_PENALTY * abs(rect.w - cfg.card_width) / cfg.card_width, rect))
     picked: list[Rect] = []
@@ -166,9 +182,12 @@ def find_cards(screen: np.ndarray, cfg: BarConfig) -> list[Card]:
         space = b.x - (a.x + a.w)
         if cfg.card_width * 0.85 <= space <= cfg.card_width + 2 * GAP_FILL:
             rect = Rect(a.x + a.w + (space - cfg.card_width) // 2, a.y, cfg.card_width, a.h)
-            if not is_empty_slot(screen, rect) and max(_frame_sides(hsv, rect, cfg)) >= cfg.min_frame_share / 2:
+            empty = is_empty_slot(screen, rect)
+            kind = _classify(hsv, rect, cfg, no_level=_no_level_badge(screen, rect))
+            if (not empty or kind == "castle") and max(_frame_sides(hsv, rect, cfg)) >= cfg.min_frame_share / 2:
                 picked.append(rect)
-    cards = [Card(r.x, r.x + r.w, r.y, r.y + r.h, _classify(hsv, r, cfg), _saturation(hsv, r))
+    cards = [Card(r.x, r.x + r.w, r.y, r.y + r.h,
+                  _classify(hsv, r, cfg, no_level=_no_level_badge(screen, r)), _saturation(hsv, r))
              for r in sorted(picked, key=lambda r: r.x)]
     return cards
 
