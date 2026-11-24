@@ -28,8 +28,9 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from farmbot import human
+from farmbot import human, text
 from farmbot.config import BuilderConfig
+from farmbot.geometry import Rect
 from farmbot.tasks.search import Loot
 from farmbot.game import VIEW_AREA, VIEW_NEAR, VIEW_STILL, Game, T, view_change, view_shift
 from farmbot.tasks.build_list import asks_for_gems
@@ -57,6 +58,10 @@ BATTLE_AREA = [0, -200, 220, 200]  # [x, y, w, h]: the Battle button, bottom lef
 
 class BuilderError(RuntimeError):
     pass
+
+
+class DeploymentCountError(BuilderError):
+    """A deployment count is unknown: finish the battle, then stop without retry."""
 
 
 # ------------------------------------------------------------------ getting there
@@ -985,9 +990,32 @@ def card_state(screen: np.ndarray, x: int, cfg: BuilderConfig) -> str:
         return "out"
     if 130 <= h <= 155 and s > 100 and v > 200:
         return "ready"  # fresh troop
-    if 100 <= h <= 125 and s > 120 and 60 <= v <= 170:
-        return "ready"  # survived the first base: carried over to the second
+    if 100 <= h <= 125 and s > 120 and v >= 60:
+        return "ready"  # blue: counted ordinary troops, or carried-over troops
     return "empty"
+
+
+def without_hero(cfg: BuilderConfig) -> BuilderConfig:
+    """No unlocked hero: ordinary troops start one card further left."""
+    return replace(cfg, use_hero=False, hero_ability=False,
+                   first_troop_x=round(cfg.first_troop_x - cfg.card_step))
+
+
+def troop_count(screen: np.ndarray, slot: Slot, cfg: BuilderConfig, vision) -> int | None:
+    """Ordinary blue cards show Nx; purple/remaining single-unit cards hold one."""
+    patch = screen[cfg.card_y - 34:cfg.card_y - 18, slot.x - 30:slot.x + 30]
+    h, _, v = np.median(cv2.cvtColor(patch, cv2.COLOR_BGR2HSV), axis=(0, 1))
+    if not (100 <= h <= 125 and v > 170):
+        return 1
+    # Selecting a card raises its header eight pixels; keep both positions in view.
+    pieces = text.segment(screen, Rect(slot.x + 5, cfg.card_y - 51, 43, 36))
+    if len(pieces) < 2:
+        return None
+    digits = [vision.font("fonts/count").classify(p) for p in pieces[:-1]]  # trailing x
+    if any(not char.isdigit() or score < 0.7 for char, score in digits):
+        return None
+    count = int("".join(char for char, _ in digits))
+    return count if 0 < count <= 400 else None
 
 
 def hero_out(screen: np.ndarray, cfg: BuilderConfig) -> bool:
@@ -1367,6 +1395,7 @@ def deploy_stage(game: Game, cfg: BuilderConfig, first: bool = False) -> tuple[f
             if switch_hero(game, cfg):
                 screen = game.refresh()
     landed = game.clock()
+    sent: list[Slot] = []
     if cfg.use_hero and not hero_out(screen, cfg):
         found = place_first(game, hero, point, centre, lambda s: hero_out(s, cfg), cfg)
         if found is None:
@@ -1378,18 +1407,29 @@ def deploy_stage(game: Game, cfg: BuilderConfig, first: bool = False) -> tuple[f
     elif troops:
         # No hero to find a good spot with: the first troop does it.
         first = troops[0]
-        found = place_first(game, first, point, centre, lambda s: card_state(s, first.x, cfg) != "ready", cfg)
+        count = troop_count(screen, first, cfg, game.vision)
+        def placed(s):
+            if card_state(s, first.x, cfg) != "ready":
+                return True
+            left = troop_count(s, first, cfg, game.vision)
+            if left is None:
+                raise DeploymentCountError("Builder troop count unreadable after first deployment; effect uncertain")
+            return count is not None and left is not None and left < count
+        found = place_first(game, first, point, centre, placed, cfg) if count is not None else None
         if found is not None:
             point = found
+            sent.append(first)
         troops = ready_troops(game.refresh(), cfg)
-    sent: list[Slot] = []
     for _ in range(2):  # a second pass for cards whose tap was dropped
         if not troops:
             break
         # Select the first card; each tap on the map sends the selected
         # troop and the game selects the next card. The pause is the troop speed.
+        counts = [troop_count(game.screen, s, cfg, game.vision) for s in troops]
+        if any(n is None for n in counts):
+            raise DeploymentCountError("Builder troop count unreadable; remaining deployments stopped")
         _tap_card(game, troops[0], cfg)
-        taps = len(troops)
+        taps = sum(counts)
         pause = human.pauses(game.rng, taps, cfg.tap_delay, game.uses("battle_rhythm"))
         game.note("battle_rhythm", human.pauses_extra(taps, cfg.tap_delay),
                   sum(pause[:-1]) - cfg.tap_delay * (taps - 1) if isinstance(pause, list) else 0.0)
@@ -1480,7 +1520,8 @@ def _settle_home(game: Game) -> None:
         before = after
 
 
-def attack(game: Game, cfg: BuilderConfig, on_stage: Callable[[int], None] | None = None) -> BattleResult:
+def attack(game: Game, cfg: BuilderConfig, on_stage: Callable[[int], None] | None = None,
+           on_deployment_error: Callable[[], None] | None = None) -> BattleResult:
     """One builder battle, every stage, back to the builder base.
     ``on_stage`` hears each base as it begins (1, 2)."""
     start_battle(game)
@@ -1489,7 +1530,17 @@ def attack(game: Game, cfg: BuilderConfig, on_stage: Callable[[int], None] | Non
     while stages < MAX_STAGES:
         if on_stage:
             on_stage(stages + 1)
-        landed, troops = deploy_stage(game, cfg, first=stages == 0)
+        try:
+            landed, troops = deploy_stage(game, cfg, first=stages == 0)
+        except DeploymentCountError:
+            # Preserve this phase before waiting changes the screen. No further
+            # deployments or abilities after an uncertain input effect.
+            log.exception("Builder deployment stopped; waiting for the natural battle result")
+            if on_deployment_error:
+                on_deployment_error()
+            if game.wait_for(T.BB_RETURN_HOME, timeout=cfg.battle_timeout + 90, interval=2):
+                _finish(game, stages + 1)
+            raise
         stages += 1
         batches = [troops[i:i + cfg.ability_batch] for i in range(0, len(troops), max(cfg.ability_batch, 1))]
         next_batch = game.clock() + _later(game, cfg.ability_delay)

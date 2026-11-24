@@ -2001,6 +2001,8 @@ class Bot:
             self.game.refresh()
         if self.check_account():
             return self.cycle()
+        if self.village is None:
+            self.know_village()  # also load the cached export when the game opened in Builder Base
         self.game.ledger.begin("builder", "village")
         village.clear_popups(self.game)
         if self._left_selected:  # the last round's upgrades, if its battle didn't happen
@@ -2123,12 +2125,13 @@ class Bot:
         before = self.read_resources()
         started = self.game.clock()
         self.status("Attacking (builder base)")
-        if (bcfg.use_hero or bcfg.hero_ability) and self._not_yet("builder_heroes", "the builder base hero"):
-            bcfg = replace(bcfg, use_hero=False, hero_ability=False)
+        if self._not_yet("builder_heroes", "the builder base hero"):
+            bcfg = builder.without_hero(bcfg)
         # (A Clan Games challenge's note: caught right after Return Home, and read once home.)
         self.game.note_wanted, self.game.games_note = bool(self.config.clan_games.enabled and self._games_going), None
         result = builder.attack(self.game, bcfg,
-                                on_stage=lambda n: self.status(f"Attacking (builder base): base {n}"))
+                                on_stage=lambda n: self.status(f"Attacking (builder base): base {n}"),
+                                on_deployment_error=self._save_error_screen)
         self._games_note("builder")
         seconds = self.game.clock() - started
         self._left_selected = False  # the battle dropped it
@@ -2357,7 +2360,8 @@ class Bot:
                 except screens.MaintenanceBreak as exc:  # over in an hour or so: waited out
                     self._wait_out_maintenance(exc)
                     continue
-                except (screens.NotLoggedIn, SameAccount, GameNotInstalled) as exc:  # restarting won't help
+                except (screens.NotLoggedIn, SameAccount, GameNotInstalled,
+                        builder.DeploymentCountError) as exc:  # restarting won't help
                     log.error("%s: stopping", exc)
                     self._save_error_screen()
                     raise
