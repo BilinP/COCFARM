@@ -60,6 +60,8 @@ RUNNING_LINES = {  # status line -> (headline, what comes next)
 def describe_status(text: str, now: datetime | None = None) -> Status:
     """A bot status line as a :class:`Status`."""
     now = now or datetime.now()
+    if text.startswith("Queued:"):
+        return Status("waiting", "Queued", text.partition(":")[2].strip())
     if text.startswith("Attacking (builder base)"):
         stage = re.search(r"base (\d)", text)
         return Status("attacking", "Builder battle" + (f": base {stage.group(1)} of 2" if stage else ""),

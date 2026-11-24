@@ -144,27 +144,113 @@ def find_install(registry: Callable[[str], tuple[Path, Path] | None] = _registry
     return None
 
 
-def players(listing: str | None = None) -> list[tuple[int, str]]:
+class _InventoryChanging(DeviceError):
+    """A native player is between having a window and entering/exiting."""
+
+
+def _player_listing(strict: bool) -> str:
+    if sys.platform != "win32":
+        if strict:
+            raise DeviceError("BlueStacks' running instances can only be checked on Windows")
+        return ""
+    command = (f"Get-CimInstance Win32_Process -Filter \"Name='{PLAYER_EXE}'\" | "
+               "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }")
+    if strict:
+        command = ("$ErrorActionPreference='Stop'; "
+                   f"Get-CimInstance Win32_Process -Filter \"Name='{PLAYER_EXE}'\" | "
+                   "ForEach-Object { $title=''; if (-not $_.CommandLine) { "
+                   "$title=(Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue).MainWindowTitle }; "
+                   "\"$($_.ProcessId)`t$($_.CommandLine)`t$title\" }")
+    try:
+        result = subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True,
+                                text=True, **CONSOLE_TEXT, timeout=30, check=False, creationflags=NO_WINDOW)
+        if strict and (result.returncode or result.stderr.strip()):
+            raise DeviceError("Couldn't check BlueStacks' running instances")
+        return result.stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        if strict:
+            raise DeviceError(f"Couldn't check BlueStacks' running instances: {exc}") from exc
+        return ""
+
+
+def players(listing: str | None = None, *, strict: bool = False) -> list[tuple[int, str]]:
     """The BlueStacks windows open: (process id, the instance it shows).
     Each is an HD-Player.exe started with ``--instance <name>``; one
-    without (an old shortcut) shows the main instance, given as ""."""
+    without (an old shortcut) shows the main instance, given as "".
+    Windows can hide an elevated player's command line: its own window's
+    exact, unique configured display name then identifies the instance.
+    A starting/closing window can briefly have no title: retry the whole
+    native inventory, never mistake an unidentified player for absence.
+    """
     if listing is None:
-        if sys.platform != "win32":
-            return []
-        command = (f"Get-CimInstance Win32_Process -Filter \"Name='{PLAYER_EXE}'\" | "
-                   "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }")
-        try:
-            listing = subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True,
-                                     text=True, **CONSOLE_TEXT, timeout=30, check=False, creationflags=NO_WINDOW).stdout
-        except (OSError, subprocess.SubprocessError):
-            return []
+        for attempt in range(11):
+            try:
+                return players(_player_listing(strict), strict=strict)
+            except _InventoryChanging:
+                if attempt == 10:
+                    raise
+                time.sleep(1)
     found = []
     for line in listing.splitlines():
-        pid, _, command_line = line.strip().partition("\t")
+        pid, _, rest = line.partition("\t")
+        command_line, _, title = rest.partition("\t")
+        if strict and (not pid.isdigit() or int(pid) <= 0 or any(p == int(pid) for p, _ in found)):
+            raise DeviceError("BlueStacks' process listing is incomplete or ambiguous")
+        if strict and not command_line.strip():
+            from farmbot import ports
+
+            install = find_install()
+            if not title:
+                raise _InventoryChanging("BlueStacks' player window is still starting or closing")
+            matches = [i for i in install.instances if i.display_name == title] if install and title else []
+            if len(matches) != 1:
+                raise DeviceError("BlueStacks' hidden process command line has no unique window title")
+            image = ports.process_path(int(pid))
+            if image is None:
+                raise _InventoryChanging("BlueStacks' player process is still starting or closing")
+            if image != install.player_exe:
+                raise DeviceError("Couldn't verify BlueStacks' player executable")
+            found.append((int(pid), matches[0].name))
+            continue
+        if strict and not re.search(r'(?:^|[\\/])HD-Player\.exe(?:"|\s|$)', command_line, re.I):
+            raise DeviceError("BlueStacks' process listing is incomplete or ambiguous")
         if pid.isdigit():
             match = re.search(r"--instance[\s=]+\"?([\w.\-]+)", command_line)
-            found.append((int(pid), match.group(1) if match else ""))
+            shown = match.group(1) if match else ""
+            if strict and "--instance" in command_line:
+                options = re.findall(r"(?<!\S)--instance(?=[=\s]|$)", command_line)
+                complete = re.search(r'(?<!\S)--instance(?:\s+|=)(?:"([\w.\-]+)"|([\w.\-]+))(?=\s|$)',
+                                     command_line)
+                if len(options) != 1 or complete is None:
+                    raise DeviceError("BlueStacks' process listing has an unreadable or repeated instance")
+                shown = complete.group(1) or complete.group(2)
+            found.append((int(pid), shown))
     return found
+
+
+def emulator_identity(cfg: DeviceConfig) -> tuple[int, ...]:
+    """The native player/VM process ids, or () once positively absent.
+
+    Keep the snapshot while a slot is held: another native process must not
+    be closed just because it opened the same emulator instance afterwards.
+    """
+    if cfg.mode != "bluestacks":
+        raise DeviceError("Can't verify whether a device given by its ADB address has closed")
+    try:
+        install = find_install()
+        instance = install.instance(cfg.bluestacks_instance) if install else None
+    except OSError as exc:
+        raise DeviceError(f"Couldn't identify the BlueStacks instance to check: {exc}") from exc
+    if instance is None:
+        raise DeviceError("Couldn't identify the BlueStacks instance to check")
+    found: dict[str, int] = {}
+    for pid, shown in players(strict=True):
+        native = install.instance(shown)
+        if native is None or native.name.lower() in found:
+            raise DeviceError("BlueStacks' running instances are unknown or ambiguous")
+        found[native.name.lower()] = pid
+    pid = found.get(instance.name.lower())
+    return (pid,) if pid is not None else ()
 
 
 def _shows(shown: str, instance: str, main: str) -> bool:
@@ -186,15 +272,48 @@ def is_running(instance: str = "", main: str = "") -> bool:
     return PLAYER_EXE.lower() in out.lower() and not instance  # the listing failed: an instance's can't be told
 
 
+def _pids_running(pids: tuple[int, ...]) -> bool:
+    """Wait on verified process IDs, whose windows can vanish before exit."""
+    if not pids:
+        return False
+    where = ' OR '.join(f'ProcessId={pid}' for pid in pids)
+    command = ("$ErrorActionPreference='Stop'; "
+               f'Get-CimInstance Win32_Process -Filter "{where}" | '
+               'ForEach-Object { $_.ProcessId }')
+    try:
+        result = subprocess.run(['powershell', '-NoProfile', '-Command', command],
+                                capture_output=True, text=True, **CONSOLE_TEXT, timeout=30,
+                                check=False, creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeviceError(f"Couldn't verify BlueStacks' process exit: {exc}") from exc
+    rows = result.stdout.split()
+    if result.returncode or result.stderr.strip() or any(not row.isdigit() or int(row) not in pids for row in rows):
+        raise DeviceError("Couldn't verify BlueStacks' process exit")
+    return bool(rows)
+
+
 def stop_player(sleep: Callable[[float], None] = time.sleep, running: Callable[[], bool] | None = None,
-                instance: str = "", main: str = "") -> None:
+                instance: str = "", main: str = "", *, verify_exit: bool = False,
+                owned_pids: tuple[int, ...] | None = None) -> None:
     """Close every BlueStacks window, or just ``instance``'s, and wait for it to exit."""
+    if verify_exit and not instance:
+        raise DeviceError("Verified exit requires a specific BlueStacks instance")
+    if owned_pids is not None and not verify_exit:
+        raise DeviceError("Owned process shutdown requires verified exit")
     if instance:
-        for pid, shown in players():
-            if _shows(shown, instance, main):
+        if verify_exit:
+            # Never re-resolve an owned instance: it may now belong to a replacement.
+            pids = owned_pids if owned_pids is not None else emulator_identity(DeviceConfig(bluestacks_instance=instance))
+            for pid in pids:
                 subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, check=False,
                                creationflags=NO_WINDOW)
-        running = running or (lambda: is_running(instance, main))
+            running = lambda: _pids_running(pids)
+        else:
+            for pid, shown in players():
+                if _shows(shown, instance, main):
+                    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, check=False,
+                                   creationflags=NO_WINDOW)
+            running = running or (lambda: is_running(instance, main))
     else:
         subprocess.run(["taskkill", "/IM", PLAYER_EXE, "/F"], capture_output=True, check=False,
                        creationflags=NO_WINDOW)
@@ -347,10 +466,10 @@ def _write_conf(install: Install, instance: Instance, wanted: dict[str, int]) ->
     conf.write_bytes(data)
 
 
-def launch(install: Install, instance: Instance) -> None:
+def launch(install: Install, instance: Instance) -> int:
     log.info("Starting BlueStacks (%s)", instance.display_name)
-    subprocess.Popen([str(install.player_exe), "--instance", instance.name],
-                     creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+    return subprocess.Popen([str(install.player_exe), "--instance", instance.name],
+                            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)).pid
 
 
 def adb_program(cfg: DeviceConfig, install: Install | None) -> str:
@@ -367,7 +486,8 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
                 make: Callable[[str, str], AdbDevice] = AdbDevice,
                 enable: Callable[[Install], None] = turn_on_adb,
                 clock: Callable[[], float] = time.monotonic,
-                apply: Callable[..., None] = apply_settings) -> Device:
+                apply: Callable[..., None] = apply_settings,
+                checkpoint: Callable[[], None] | None = None) -> Device:
     """Connect to the device the config describes.
 
     In "bluestacks" mode this finds BlueStacks, starts it if allowed and
@@ -375,6 +495,8 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
     until its window opens). In "manual" mode ``serial``
     is used as given.
     """
+    check = checkpoint or (lambda: None)
+    check()
     if cfg.mode == "ldplayer":
         from farmbot import ldplayer
 
@@ -412,23 +534,28 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
                      instance.display_name, port)
             changes.update({"adb_port": port, "status.adb_port": port})
     if changes:
+        check()
         apply(install, instance, changes)
 
     if not install.adb_enabled:
         if not cfg.enable_adb:
             if not running():
+                check()
                 start(install, instance)
             return open_window(install, instance, cfg, sleep, clock)
+        check()
         enable(install)
 
     if not running():
         if not cfg.launch_emulator and install.adb_enabled:
             raise DeviceError("BlueStacks is not running. Start it, or turn on 'Open the emulator automatically' in Advanced → Emulator.")
+        check()
         start(install, instance)
 
     deadline = clock() + cfg.launch_timeout
     last_error: Exception | None = None
     while True:
+        check()
         # BlueStacks writes the port once the instance has booted, and can
         # change it between runs, so re-read it on every attempt.
         current = find() or install
@@ -438,10 +565,12 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
                 device = make(inst.serial, adb)
                 device.connect()
                 device.shell("echo", "ok")
+                check()
                 log.info("Connected to %s at %s", inst.display_name, inst.serial)
                 return device
             except DeviceError as exc:
                 last_error = exc
+        check()
         if clock() >= deadline:
             raise NoAnswer(f"BlueStacks did not accept an ADB connection within {cfg.launch_timeout:.0f}s"
                               + (f": {last_error}" if last_error else ""))
@@ -496,7 +625,8 @@ def mute(device: Device) -> None:
         log.info("Couldn't mute the emulator: %s", exc)
 
 
-def close_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep) -> None:
+def close_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep, *,
+                   verify_exit: bool = False, owned_pids: tuple[int, ...] | None = None) -> None:
     """Close the configured emulator (it is started again by ``open_device``)."""
     if cfg.mode == "ldplayer":
         from farmbot import ldplayer
@@ -511,9 +641,12 @@ def close_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.slee
         instance = install.instance(cfg.bluestacks_instance) if install else None
         log.warning("Closing BlueStacks to start it again")
         if instance is None:
+            if verify_exit:
+                raise DeviceError("Couldn't identify the BlueStacks instance to close")
             stop_player(sleep)
         else:  # just this instance: other COCFARM windows may be playing the others
-            stop_player(sleep, instance=instance.name, main=install.instances[0].name)
+            stop_player(sleep, instance=instance.name, main=install.instances[0].name,
+                        verify_exit=verify_exit, owned_pids=owned_pids)
     else:
         raise DeviceError("can't restart a device given by its ADB address")
     sleep(5)
