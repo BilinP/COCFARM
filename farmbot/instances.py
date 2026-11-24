@@ -105,6 +105,128 @@ def pick(n: int, on: bool = True, root: Path | None = None) -> None:
     path.write_text(json.dumps(sorted(now)), encoding="utf-8")
 
 
+def active_limit(root: Path | None = None) -> int:
+    """This controller's limit, not an account setting. Zero: unlimited."""
+    try:
+        value = json.loads(((root or ROOT) / FOLDER / "limit.json").read_text(encoding="utf-8"))
+        if type(value) is int and 0 <= value <= MOST:
+            return value
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def save_active_limit(value: int, root: Path | None = None) -> None:
+    if type(value) is not int or not 0 <= value <= MOST:
+        raise ValueError(f"Maximum active instances must be between 0 and {MOST}")
+    path = (root or ROOT) / FOLDER / "limit.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+
+class FarmHeld(DeviceError):
+    """The emulator's exit or ownership is unknown: keep its place."""
+
+
+class FarmQueue:
+    """One window hub's resident emulators. Workers keep their place while
+    paused or closing; only a verified exit lets another farm use it."""
+
+    def __init__(self, limit: int = 0):
+        self.limit = limit
+        self.active: dict[int, str] = {}
+        self.waiting: list[int] = []
+        self.held: dict[int, str] = {}
+        self._condition = threading.Condition()
+
+    def set_limit(self, value: int) -> None:
+        if type(value) is not int or not 0 <= value <= MOST:
+            raise ValueError(f"Maximum active instances must be between 0 and {MOST}")
+        with self._condition:
+            self.limit = value
+            self._condition.notify_all()
+
+    def acquire(self, n: int, key: str, stopped: threading.Event,
+                paused: threading.Event | None = None, waiting: Callable[[], None] | None = None,
+                on_pause: Callable[[], None] | None = None) -> bool:
+        with self._condition:
+            if n in self.held:
+                raise DeviceError(self.held[n])
+            if n in self.active:
+                return True
+            if n not in self.waiting:
+                self.waiting.append(n)
+            try:
+                said_pause = False
+                while not stopped.is_set():
+                    if paused and paused.is_set():
+                        if n in self.waiting:
+                            self.waiting.remove(n)
+                            self._condition.notify_all()
+                        if on_pause is not None and not said_pause:
+                            on_pause()
+                        said_pause = True
+                        self._condition.wait(.1)
+                        continue
+                    if n not in self.waiting:
+                        self.waiting.append(n)
+                    said_pause = False
+                    room = not self.limit or len(self.active) < self.limit
+                    unique = not self.limit or key not in self.active.values()
+                    if room and unique and self.waiting[0] == n:
+                        self.waiting.remove(n)
+                        self.active[n] = key
+                        self._condition.notify_all()
+                        return True
+                    if waiting is not None:
+                        waiting()
+                        waiting = None
+                    self._condition.wait(.1)
+                return False
+            finally:
+                if n in self.waiting:
+                    self.waiting.remove(n)
+                    self._condition.notify_all()
+
+    def should_yield(self, n: int) -> bool:
+        with self._condition:
+            return bool(self.limit and n in self.active and
+                        (self.waiting or len(self.active) > self.limit))
+
+    def identify(self, n: int, key: str) -> None:
+        """A native port move may have changed which instance opened."""
+        with self._condition:
+            if self.limit and any(other != n and value == key for other, value in self.active.items()):
+                reason = "The connected emulator is already held by another farm"
+                self.held[n] = reason
+                raise FarmHeld(reason)
+            self.active[n] = key
+
+    def release(self, n: int) -> None:
+        with self._condition:
+            self.active.pop(n, None)
+            self.held.pop(n, None)
+            self._condition.notify_all()
+
+    def hold(self, n: int, reason: str) -> None:
+        with self._condition:
+            if n in self.active:
+                self.held[n] = reason
+
+
+def instance_key(cfg: DeviceConfig) -> str:
+    """Resolve aliases before capped admission, without starting anything."""
+    from farmbot import bluestacks
+
+    if cfg.mode == "bluestacks":
+        install = bluestacks.find_install()
+        instance = install.instance(cfg.bluestacks_instance) if install else None
+        if instance is None:
+            raise DeviceError("BlueStacks instance could not be identified")
+        return f"bluestacks {install.install_dir.resolve()} {instance.name}".casefold()
+    return f"{cfg.mode} {cfg.serial}".casefold()
+
+
 def device_of(n: int, root: Path | None = None) -> DeviceConfig:
     return load_config(config_path(n, root)).device
 

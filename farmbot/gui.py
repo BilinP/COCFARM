@@ -2520,7 +2520,7 @@ class FarmRow(SimpleCardWidget):
         self.view_button.setToolTip("This window shows this farm" if here else "Show this farm in this window")
         separate = window is not None and window.separate and window.isVisible()
         self.own_button.setEnabled(not here and not separate)
-        self.remove_button.setEnabled(not running)
+        self.remove_button.setEnabled(not running and self.n not in self.hub.farm_queue.held)
         self.stop_button.setVisible(running)
         if stopping:
             self.stop_button.setText("Stop now")
@@ -2668,6 +2668,18 @@ class FarmsPage(Page):
         self.all_button.clicked.connect(self._start_or_stop_all)
         head.addWidget(self.all_button)
         self.add(top)
+        self.maximum = LineEdit()  # like number(): Fluent's SpinBox is blank on current PySide6
+        self.maximum.setFixedWidth(110)
+        self.maximum.setAlignment(Qt.AlignRight)
+        self.maximum.setPlaceholderText(f"0–{instances.MOST}")
+        self.maximum.setText(str(self.hub.farm_queue.limit))
+        self.maximum.setAccessibleName("Maximum active BlueStacks instances")
+        self.limit_card = Card(FIF.COMMAND_PROMPT, "Maximum active BlueStacks instances",
+                               "BlueStacks farms in this COCFARM window, not other programs or emulators. Extra farms "
+                               "take turns after rounds. Paused or unclosed emulators still count.",
+                               self.maximum, _muted(BodyLabel("0 = Unlimited")))
+        self.add(self.limit_card)
+        self.maximum.textChanged.connect(self._limit_changed)
         self.rows: dict[int, FarmRow] = {}
         self.spares: list[SpareRow] = []
         self.accounts = AccountsPanel(self.hub, self)  # the farms, by account
@@ -2709,6 +2721,20 @@ class FarmsPage(Page):
         self._show_all()
         self._fill_choices(numbers)
         self.accounts.refresh()
+
+    def _limit_changed(self, text: str) -> None:
+        if not text.isdecimal() or len(text) > len(str(instances.MOST)) or not 0 <= int(text) <= instances.MOST:
+            self.limit_card.show_error(f"Enter a whole number from 0 to {instances.MOST}; 0 means unlimited")
+            return
+        value = int(text)
+        try:
+            instances.save_active_limit(value)
+        except OSError as exc:
+            self.limit_card.show_error(f"Couldn't save the limit: {exc}")
+            return
+        self.limit_card.show_error(None)
+        self.hub.farm_queue.set_limit(value)
+        self.hub.refresh_farm_pages()
 
     def _fill_choices(self, numbers: list[int]) -> None:
         """The instances no farm plays yet (a row each, after the farms), and
@@ -2757,6 +2783,11 @@ class FarmsPage(Page):
                                 "needs about 2 CPU cores and 4 GB of memory.")
 
     def refresh(self) -> None:
+        if not self.maximum.hasFocus():
+            self.maximum.blockSignals(True)
+            self.maximum.setText(str(self.hub.farm_queue.limit))
+            self.maximum.blockSignals(False)
+            self.limit_card.show_error(None)
         if list(self.rows) != instances.numbers():
             self.rebuild()
             return
@@ -2786,7 +2817,11 @@ class FarmsPage(Page):
 
     def _show_all(self) -> None:
         on, picked = len(self.farming()), len([n for n in self.picked if n in self.rows])
-        if on:
+        farms = self.hub.farm_queue
+        if farms.limit and (on or farms.active):
+            self.summary.setText(f"{len(farms.active)} active · {len(farms.waiting)} queued · "
+                                 f"{len(farms.held)} held (limit {farms.limit})")
+        elif on:
             self.summary.setText(f"{on} farm{'s' * (on != 1)} farming")
         else:
             self.summary.setText(f"{picked} of {len(self.rows)} farms picked" if len(self.rows) > 1 else "")
@@ -2854,6 +2889,7 @@ class FarmbotWindow(FluentWindow):
         self.config_path = Path(config_path)
         if farm == 1:  # the other farms' folders are beside its file
             instances.ROOT = self.config_path.resolve().parent
+        self.farm_queue = hub.farm_queue if hub is not None else instances.FarmQueue(instances.active_limit())
         if farm == 1 and not self.config_path.exists():
             self._offer_carry()  # (a new folder: maybe your farms are in the one you used before)
         # A new install (nothing of an earlier COCFARM here) gets the onboarding; an update never does.
@@ -7330,7 +7366,7 @@ class FarmbotWindow(FluentWindow):
 
     def _run_bot(self, stop_event: threading.Event) -> None:
         from farmbot.bot import Bot
-        from farmbot.bluestacks import open_device_retrying, restart_emulator
+        from farmbot.bluestacks import close_emulator, emulator_identity, open_device_retrying, restart_emulator
         from farmbot.game import Game
         from farmbot.vision import TemplateLibrary, Vision
 
@@ -7339,25 +7375,149 @@ class FarmbotWindow(FluentWindow):
         from farmbot import claims
         from farmbot.device import DeviceError
 
-        instances.active[self.farm] = self.config.device  # other farms leave its emulator alone
+        farms = ((self.hub or self).farm_queue if self.config.device.mode == "bluestacks"
+                 else instances.FarmQueue())
         instance = claims.instance_name(self.config.device)
         instances.hooks[self.farm] = {"status": lambda s: self.events.put(("status", s)),
                                       "moved": lambda was, now: self.events.put(("moved", (was, now))),
                                       "stopped": stop_event.is_set}
-        device_cfg = self.config.device
+        device_cfg = (copy.deepcopy(self.config.device) if self.config.device.mode == "bluestacks"
+                      else self.config.device)
+        owned = None  # native process IDs, only when this worker opened the instance
+
+        def acquire() -> None:
+            if self.farm in farms.held:
+                held_device = instances.active.get(self.farm)
+                if held_device is not None and held_device.mode in EMULATORS and not emulator_identity(held_device):
+                    farms.release(self.farm)
+                    instances.active.pop(self.farm, None)
+                else:
+                    raise instances.FarmHeld(farms.held[self.farm])
+            key = instances.instance_key(device_cfg) if farms.limit else claims.instance_name(device_cfg)
+            if not farms.acquire(self.farm, key, stop_event, self.pause_event,
+                                 lambda: self.events.put(("status", "Queued: waiting for an active instance slot")),
+                                 lambda: self.events.put(("status", "Paused by you: press Resume to carry on"))):
+                raise Stopped()
+            instances.active[self.farm] = device_cfg
+
+        def connect():
+            nonlocal owned
+            if farms.limit and not device_cfg.launch_emulator:
+                raise DeviceError("Capped farming needs Open the emulator automatically")
+            acquire()
+            if farms.limit:
+                before = emulator_identity(device_cfg)
+                if before:
+                    reason = "This emulator was already open outside this farm; close it before starting capped farming"
+                    farms.hold(self.farm, reason)
+                    raise instances.FarmHeld(reason)
+                # Even a failed startup may have opened a player. Unknown startup ownership is retained.
+                owned = ()
+            device = open_device_retrying(device_cfg)
+            if farms.limit:
+                owned = emulator_identity(device_cfg)
+                if not owned:
+                    raise instances.FarmHeld("The opened emulator's process could not be identified")
+                farms.identify(self.farm, instances.instance_key(device_cfg))
+            instances.connected.add(self.farm)
+            return device
+
+        def close_owned() -> None:
+            nonlocal owned
+            if self.farm not in farms.active:
+                return
+            try:
+                if device_cfg.mode not in EMULATORS or owned is None:
+                    raise DeviceError("This farm's emulator is not owned: its active slot is retained")
+                now = emulator_identity(device_cfg)
+                if now:
+                    if not owned or now != owned:
+                        raise DeviceError("The emulator's process changed; it was left open")
+                    close_emulator(device_cfg, verify_exit=True)
+                    if emulator_identity(device_cfg):
+                        raise DeviceError("The emulator is still open after closing")
+            except Exception as exc:
+                reason = f"Active slot held: couldn't verify the emulator exit: {exc}"
+                farms.hold(self.farm, reason)
+                raise instances.FarmHeld(reason) from exc
+            owned = None
+            instances.connected.discard(self.farm)
+            instances.active.pop(self.farm, None)
+            farms.release(self.farm)
+
+        def resume(bot) -> None:
+            bot.game.device = connect()
+            bot.game.screen = None
+            bot._left_selected = bot._left_zoomed_in = False
+            bot._fresh_at = None
+            bot._check_display()
+            bot.ensure_game_running()
+
+        def restart():
+            nonlocal owned
+            absent = False
+            if farms.limit:
+                try:
+                    now = emulator_identity(device_cfg)
+                    if not owned or (now and now != owned):
+                        raise DeviceError("The emulator's ownership changed")
+                    absent = not now  # a confirmed crash can reopen under the retained slot
+                except DeviceError as exc:
+                    reason = f"The emulator was not restarted: {exc}"
+                    farms.hold(self.farm, reason)
+                    raise instances.FarmHeld(reason) from exc
+            if farms.limit and not absent:
+                close_emulator(device_cfg, verify_exit=True)
+                device = open_device_retrying(device_cfg)
+            else:
+                device = open_device_retrying(device_cfg) if absent else restart_emulator(device_cfg)
+            if owned is not None:
+                try:
+                    owned = emulator_identity(device_cfg)
+                    if farms.limit and not owned:
+                        raise DeviceError("The restarted emulator's process could not be identified")
+                except DeviceError as exc:
+                    if farms.limit:
+                        reason = f"Active slot held after restart: {exc}"
+                        farms.hold(self.farm, reason)
+                        raise instances.FarmHeld(reason) from exc
+                    owned = None
+            return device
+
+        def round_over(bot) -> None:
+            if (not stop_event.is_set() and not self.pause_event.is_set() and owned
+                    and farms.should_yield(self.farm)):
+                self.events.put(("status", "Queued: giving the next farm a turn"))
+                close_owned()
+                resume(bot)
+
+        def idle(bot, seconds: float) -> bool:
+            if not farms.limit or not owned:
+                return False
+            close_owned()
+            end = time.monotonic() + seconds
+            said_pause = False
+            while time.monotonic() < end or bot.pause_reason() or self.pause_event.is_set():
+                if stop_event.wait(.1):
+                    raise Stopped()
+                if self.pause_event.is_set() and not said_pause:
+                    self.events.put(("status", "Paused by you: press Resume to carry on"))
+                    said_pause = True
+            resume(bot)
+            return True
         # Close between upgrades: COCFARM's own farm only (Windows opens COCFARM with it), and with the
         # emulator opened by COCFARM (else it'd wake to no emulator); otherwise it waits with COCFARM open.
-        wakes = (self.farm == 1 and not self.separate
+        wakes = (not farms.limit and self.farm == 1 and not self.separate
                  and (device_cfg.mode not in EMULATORS or device_cfg.launch_emulator))
         if self.config.upgrade.wake_up and (self.config.upgrade.enabled or self.config.builder.upgrade) and not wakes:
             log.info("Close between upgrades: %s, so it waits with COCFARM open instead",
+                     "the active instance limit is on" if farms.limit else
                      "only farm 1 closes COCFARM" if self.farm != 1 or self.separate
                      else "Open the emulator automatically is off")
 
         def attempt() -> None:
             self.events.put(("status", "Connecting to the device…"))
-            device = open_device_retrying(self.config.device)
-            instances.connected.add(self.farm)
+            device = connect()
             vision = Vision(TemplateLibrary(self.config.bot.templates), self.config.bot.threshold)
             game = Game(device, vision, stop_event=stop_event, ui_scale=self.config.device.ui_scale,
                         window_scale=self.config.device.window_scale,
@@ -7373,9 +7533,10 @@ class FarmbotWindow(FluentWindow):
                       on_village=lambda name, v: self.events.put(("village", (name, v))),
                       village_path=self.village_file,
                       pause_event=self.pause_event,
-                      reopen_device=(lambda: restart_emulator(self.config.device))
+                      reopen_device=restart
                       if self.config.device.mode in EMULATORS else None,
-                      schedule_wake=wakeup.schedule if wakes else None)
+                      schedule_wake=(lambda when: not farms.limit and wakeup.schedule(when)) if wakes else None,
+                      on_round=lambda: round_over(bot), on_idle=lambda seconds: idle(bot, seconds))
             bot.run()
             if bot.left_until is not None:
                 self.events.put(("left", bot.left_until))
@@ -7392,6 +7553,8 @@ class FarmbotWindow(FluentWindow):
                     break
                 except Stopped:
                     raise
+                except instances.FarmHeld:
+                    raise
                 except Exception as exc:  # shown in the window instead of a silent thread death
                     log.error("Bot stopped: %s", exc)
                     log.info("Bot stopped by %s", diag.failure(exc), extra=diag.FILE_ONLY)
@@ -7400,14 +7563,15 @@ class FarmbotWindow(FluentWindow):
                     if wait is None:
                         self.events.put(("error", str(exc)))
                         break
+                    if farms.limit:
+                        close_owned()
                     if not self._wait_to_restart(stop_event, wait, exc):
                         break
                     restarts.append(time.monotonic())
                     log.warning("Starting the farm again (%d of %d)", len(restarts), RESTARTS_MOST)
                     from farmbot.bluestacks import close_emulator
 
-                    device_cfg = self.config.device
-                    if device_cfg.mode in EMULATORS and device_cfg.launch_emulator:  # (else it's yours)
+                    if not farms.limit and device_cfg.mode in EMULATORS and device_cfg.launch_emulator:  # (else it's yours)
                         try:
                             close_emulator(device_cfg)  # (a fresh start: it may be what went wrong)
                         except Exception as close:  # noqa: BLE001 - opening it again tries anyway
@@ -7420,13 +7584,22 @@ class FarmbotWindow(FluentWindow):
             diag.traceback_to_file(log, exc, "bot stopped")
             self.events.put(("error", str(exc)))
         finally:
-            instances.active.pop(self.farm, None)
+            if farms.limit and self.farm in farms.active and self.farm not in farms.held:
+                try:
+                    close_owned()
+                except instances.FarmHeld as exc:
+                    self.events.put(("error", str(exc)))
+            if not farms.limit and self.farm not in farms.held:
+                farms.release(self.farm)  # unlimited keeps its existing leave-open behavior
+            if self.farm not in farms.held:
+                instances.active.pop(self.farm, None)
             instances.connected.discard(self.farm)
             instances.hooks.pop(self.farm, None)
-            account = instances.accounts_playing.pop(self.farm, None)
-            if account:
-                claims.release(claims.account_name(account))
-            claims.release(instance)
+            if self.farm not in farms.held:
+                account = instances.accounts_playing.pop(self.farm, None)
+                if account:
+                    claims.release(claims.account_name(account))
+                claims.release(instance)
             self.events.put(("finished", None))
 
     def _wait_to_restart(self, stop_event: threading.Event, seconds: float, exc: Exception) -> bool:

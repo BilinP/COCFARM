@@ -112,10 +112,13 @@ class Bot:
         on_village: Callable[[str | None, townhall.Village], None] | None = None,
         village_path: Callable[[str | None], object] | None = None,
         schedule_wake: Callable[[datetime], bool] | None = None,
+        on_round: Callable[[], None] | None = None,
+        on_idle: Callable[[float], bool] | None = None,
     ):
         self.game = game
         game.habits = config.human.active()
         self.config = config
+        self._on_round, self._on_idle = on_round, on_idle
         self.timings = Timings()  # what the human-like habits add to a round: typical numbers
         home = getattr(config, "home", None)
         # The game's village export (what the account has unlocked), kept
@@ -336,6 +339,11 @@ class Bot:
         end = self.game.clock() + seconds
         while not self.pause_event.is_set() and self.game.clock() < end:
             self.game.wait(min(1.0, end - self.game.clock()), exact=True)
+
+    def _wait_offline(self, seconds: float) -> None:
+        """An existing offline wait: a capped GUI farm can give up its emulator."""
+        if self._on_idle is None or not self._on_idle(seconds):
+            self._rest(seconds)
 
     def _rest_after_round(self, seconds: float) -> None:
         """The rest between rounds: a little longer some times than others
@@ -583,7 +591,7 @@ class Bot:
         self.status(f"Taking a break: {minutes} min")
         self._since_break, self._break_due = 0, None
         self._go_offline("a break")
-        self._rest(minutes * 60)
+        self._wait_offline(minutes * 60)
         self._closed_for = None
         self._fresh_at = self.game.clock()  # rested
 
@@ -1797,7 +1805,7 @@ class Bot:
                                f"farm paused. It carries on at {back:%a %H:%M}, once the next upgrade is done.",
                                "on_stopped", "info")
         self.status(f"Every builder busy: paused until the next upgrade at {back:%a %H:%M}")
-        self._rest(max((back - now).total_seconds(), 0))
+        self._wait_offline(max((back - now).total_seconds(), 0))
         self.checkpoint()
         return True
 
@@ -2329,9 +2337,10 @@ class Bot:
                     self.game.habits = self.config.human.active()
                     self._go_offline(reason.split(" (")[0].split(" at ")[0])
                     self._fresh_at = None  # fresh when it plays again
-                    self._rest(IDLE_WAIT)
+                    self._wait_offline(IDLE_WAIT)
                     continue
                 attacked = False
+                completed = False
                 builder_extra = self.config.bot.mode == "auto" and self.playing() == "builder"
                 try:
                     attacked = self.cycle()
@@ -2347,7 +2356,8 @@ class Bot:
                         self._extra_fails["builder"] = 0
                     if self.storage_full or self.left_until is not None:
                         break
-                except Stopped:
+                    completed = True
+                except (Stopped, instances.FarmHeld):
                     raise
                 except search.GameRefreshed as exc:  # the game reloaded itself for new content: search again
                     log.info("%s; searching again", exc)
@@ -2372,7 +2382,7 @@ class Bot:
                                             attacks=self.attacks)
                         try:
                             self.recover()
-                        except (Stopped, GaveUp, GameNotInstalled):
+                        except (Stopped, GaveUp, GameNotInstalled, instances.FarmHeld):
                             raise
                         except Exception as again:  # noqa: BLE001 - the next round tries again
                             log.error("Recovery failed: %s", diag.failure(again))
@@ -2394,10 +2404,12 @@ class Bot:
                     self.status("Restarting the game")
                     try:
                         self.recover()
-                    except (Stopped, GaveUp, GameNotInstalled):  # GaveUp: the emulator was started 3 times, never answering
+                    except (Stopped, GaveUp, GameNotInstalled, instances.FarmHeld):  # GaveUp: the emulator never answered
                         raise
                     except Exception as exc:  # the next round tries again
                         log.error("Recovery failed: %s", diag.failure(exc))
+                if completed and self._on_round is not None and not (limit and self.attacks >= limit):
+                    self._on_round()
                 self.take_break()
                 self.status("Waiting")
                 rest = self.config.bot.loop_delay if attacked else max(self.config.bot.loop_delay, IDLE_WAIT)

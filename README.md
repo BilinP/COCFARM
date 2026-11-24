@@ -103,6 +103,15 @@ opens from the account at the bottom left of the side bar:
 square button opens a farm in a window of its own; closing that window switches the farm off. Each instance
 needs about 2 CPU cores and 4 GB of memory.
 
+**Maximum active BlueStacks instances** on Farms limits how many BlueStacks emulators this COCFARM
+window and its farms keep open at once. **0 (Unlimited)** keeps the usual behavior. LDPlayer, MuMu and
+manual devices are not capped. With a limit, extra BlueStacks farms queue and take turns after completed
+rounds; a higher limit admits more straight away, while a lower one waits for rounds to
+finish. Paused emulators still count. The farm must let COCFARM open its emulator automatically; an
+emulator already open outside the farm is left alone. A failed or uncertain close keeps its place until
+its exit can be verified. This setting stays on this PC when account settings are copied. It does not
+coordinate separate COCFARM programs. Start with one or two instances if memory is limited.
+
 ## A quick look
 
 | Farms | Home village: loot to look for |
