@@ -7433,7 +7433,7 @@ class FarmbotWindow(FluentWindow):
                 if now:
                     if not owned or now != owned:
                         raise DeviceError("The emulator's process changed; it was left open")
-                    close_emulator(device_cfg, verify_exit=True)
+                    close_emulator(device_cfg, verify_exit=True, owned_pids=owned)
                     if emulator_identity(device_cfg):
                         raise DeviceError("The emulator is still open after closing")
             except Exception as exc:
@@ -7467,7 +7467,14 @@ class FarmbotWindow(FluentWindow):
                     farms.hold(self.farm, reason)
                     raise instances.FarmHeld(reason) from exc
             if farms.limit and not absent:
-                close_emulator(device_cfg, verify_exit=True)
+                try:
+                    close_emulator(device_cfg, verify_exit=True, owned_pids=owned)
+                    if emulator_identity(device_cfg):
+                        raise DeviceError("The emulator is still open after closing")
+                except Exception as exc:
+                    reason = f"The emulator was not restarted: {exc}"
+                    farms.hold(self.farm, reason)
+                    raise instances.FarmHeld(reason) from exc
                 device = open_device_retrying(device_cfg)
             else:
                 device = open_device_retrying(device_cfg) if absent else restart_emulator(device_cfg)

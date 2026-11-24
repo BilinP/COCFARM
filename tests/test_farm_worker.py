@@ -199,6 +199,31 @@ def test_replaced_native_player_is_not_closed(world, monkeypatch):
     assert not world.closed
 
 
+@pytest.mark.parametrize('watchdog', [False, True])
+def test_worker_shutdown_passes_owned_snapshot_and_retains_replacement(world, monkeypatch, watchdog):
+    hub = SimpleNamespace(farm_queue=instances.FarmQueue(1))
+    current = [1]
+    received = []
+    monkeypatch.setattr(bluestacks, 'emulator_identity',
+                        lambda cfg: (current[0],) if cfg.bluestacks_instance in world.resident else ())
+    def close(cfg, **kwargs):
+        # Replacement happens after close_owned's comparison, at shutdown entry.
+        current[0] = 99
+        received.append(kwargs.get('owned_pids'))
+    monkeypatch.setattr(bluestacks, 'close_emulator', close)
+    if watchdog:
+        monkeypatch.setattr(world.Bot, 'run', lambda bot: bot.callbacks['reopen_device']())
+    _, _, thread = worker(1, hub, world)
+    eventually(lambda: bool(world.bots))
+    world.gate.set()
+    thread.join(3)
+    assert not thread.is_alive()
+    assert received == [(1,)]
+    assert 1 in hub.farm_queue.held
+    assert world.resident == {'instance-1'}
+    assert world.opened == ['instance-1']
+
+
 def test_retry_releases_closed_emulator_and_readmits_through_cap(world, monkeypatch):
     hub = SimpleNamespace(farm_queue=instances.FarmQueue(1))
     attempts = []

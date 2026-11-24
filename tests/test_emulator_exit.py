@@ -140,6 +140,18 @@ class EmulatorExitTests(unittest.TestCase):
                 raise AssertionError('title disappeared during shutdown')
             bluestacks.stop_player(sleep=lambda _: None, verify_exit=True, running=stale_title_check, instance='Second')
 
+    def test_owned_close_does_not_retarget_replacement_after_worker_check(self):
+        # The worker already verified 123. A new player now owns the same instance.
+        with patch.object(bluestacks, 'find_install', return_value=self.bs), \
+                patch.object(bluestacks, 'emulator_identity', return_value=(456,)) as identity, \
+                patch.object(bluestacks, '_pids_running', return_value=False) as running, \
+                patch.object(bluestacks.subprocess, 'run') as kill:
+            bluestacks.close_emulator(DeviceConfig(), sleep=lambda _: None,
+                                      verify_exit=True, owned_pids=(123,))
+            identity.assert_not_called()
+            self.assertEqual(kill.call_args.args[0], ['taskkill', '/PID', '123', '/F'])
+            running.assert_called_once_with((123,))
+
 
     def test_bluestacks_unknown_stop_never_kills_and_resident_process_does_not_pass(self):
         with patch.object(bluestacks, 'emulator_identity', side_effect=DeviceError('unknown')), \

@@ -84,6 +84,32 @@ def test_limit_saved_outside_account_config(tmp_path):
     assert not (tmp_path / 'farmbot.toml').exists()
 
 
+def test_duplicate_waiter_does_not_block_free_slot_and_keeps_its_turn():
+    farms = instances.FarmQueue(2)
+    stop = threading.Event()
+    assert farms.acquire(1, 'same', stop)  # a resident also counts while paused
+    ready = []
+    threads = []
+    try:
+        for n, key in [(2, 'same'), (3, 'other')]:
+            thread = threading.Thread(target=lambda n=n, key=key:
+                                      ready.append((n, farms.acquire(n, key, stop))))
+            threads.append(thread)
+            thread.start()
+            if n == 2:
+                wait_for(lambda: farms.waiting == [2])
+        wait_for(lambda: (3, True) in ready)
+        assert farms.active == {1: 'same', 3: 'other'}
+        assert farms.waiting == [2]
+        farms.release(1)
+        wait_for(lambda: (2, True) in ready)
+        assert farms.active == {2: 'same', 3: 'other'}
+    finally:
+        stop.set()
+        for thread in threads:
+            thread.join(3)
+
+
 def test_paused_queued_farm_resumes_without_taking_a_slot():
     farms = instances.FarmQueue(1)
     stop, pause = threading.Event(), threading.Event()

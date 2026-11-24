@@ -293,13 +293,17 @@ def _pids_running(pids: tuple[int, ...]) -> bool:
 
 
 def stop_player(sleep: Callable[[float], None] = time.sleep, running: Callable[[], bool] | None = None,
-                instance: str = "", main: str = "", *, verify_exit: bool = False) -> None:
+                instance: str = "", main: str = "", *, verify_exit: bool = False,
+                owned_pids: tuple[int, ...] | None = None) -> None:
     """Close every BlueStacks window, or just ``instance``'s, and wait for it to exit."""
     if verify_exit and not instance:
         raise DeviceError("Verified exit requires a specific BlueStacks instance")
+    if owned_pids is not None and not verify_exit:
+        raise DeviceError("Owned process shutdown requires verified exit")
     if instance:
         if verify_exit:
-            pids = emulator_identity(DeviceConfig(bluestacks_instance=instance))
+            # Never re-resolve an owned instance: it may now belong to a replacement.
+            pids = owned_pids if owned_pids is not None else emulator_identity(DeviceConfig(bluestacks_instance=instance))
             for pid in pids:
                 subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, check=False,
                                creationflags=NO_WINDOW)
@@ -612,7 +616,7 @@ def mute(device: Device) -> None:
 
 
 def close_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep, *,
-                   verify_exit: bool = False) -> None:
+                   verify_exit: bool = False, owned_pids: tuple[int, ...] | None = None) -> None:
     """Close the configured emulator (it is started again by ``open_device``)."""
     if cfg.mode == "ldplayer":
         from farmbot import ldplayer
@@ -631,7 +635,8 @@ def close_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.slee
                 raise DeviceError("Couldn't identify the BlueStacks instance to close")
             stop_player(sleep)
         else:  # just this instance: other COCFARM windows may be playing the others
-            stop_player(sleep, instance=instance.name, main=install.instances[0].name, verify_exit=verify_exit)
+            stop_player(sleep, instance=instance.name, main=install.instances[0].name,
+                        verify_exit=verify_exit, owned_pids=owned_pids)
     else:
         raise DeviceError("can't restart a device given by its ADB address")
     sleep(5)

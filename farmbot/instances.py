@@ -136,6 +136,7 @@ class FarmQueue:
         self.limit = limit
         self.active: dict[int, str] = {}
         self.waiting: list[int] = []
+        self._waiting_keys: dict[int, str] = {}
         self.held: dict[int, str] = {}
         self._condition = threading.Condition()
 
@@ -156,6 +157,7 @@ class FarmQueue:
                 return True
             if n not in self.waiting:
                 self.waiting.append(n)
+            self._waiting_keys[n] = key
             try:
                 said_pause = False
                 while not stopped.is_set():
@@ -172,8 +174,9 @@ class FarmQueue:
                         self.waiting.append(n)
                     said_pause = False
                     room = not self.limit or len(self.active) < self.limit
-                    unique = not self.limit or key not in self.active.values()
-                    if room and unique and self.waiting[0] == n:
+                    first = next((farm for farm in self.waiting
+                                  if not self.limit or self._waiting_keys[farm] not in self.active.values()), None)
+                    if room and first == n:
                         self.waiting.remove(n)
                         self.active[n] = key
                         self._condition.notify_all()
@@ -184,6 +187,7 @@ class FarmQueue:
                     self._condition.wait(.1)
                 return False
             finally:
+                self._waiting_keys.pop(n, None)
                 if n in self.waiting:
                     self.waiting.remove(n)
                     self._condition.notify_all()
