@@ -42,12 +42,12 @@ def test_gui_control_all_start_direct_wake_and_cancel(world, monkeypatch, tmp_pa
         # Observe every synthetic native launch through the real worker path.
         original_open = world.open_device
         admitted = []
-        def open_under_limit(cfg):
+        def open_under_limit(cfg, **kwargs):
             limit = window.farm_queue.limit
             admitted.append((len(world.resident), limit))
             assert not limit or len(world.resident) < limit
-            return original_open(cfg)
-        monkeypatch.setattr(bluestacks, 'open_device_retrying', open_under_limit)
+            return original_open(cfg, **kwargs)
+        monkeypatch.setattr(bluestacks, 'open_device', open_under_limit)
         page = window.farms_page
         page.rebuild()
         assert page.maximum.text() == '0'

@@ -32,10 +32,18 @@ def world(monkeypatch):
                         lambda cfg: (int(cfg.bluestacks_instance.split('-')[-1]),)
                         if cfg.bluestacks_instance in resident else ())
 
-    def open_device(cfg):
-        resident.add(cfg.bluestacks_instance)
-        opened.append(cfg.bluestacks_instance)
+    def launch(install, instance):
+        resident.add(instance.name)
+        opened.append(instance.name)
         maximum[0] = max(maximum[0], len(resident))
+        return int(instance.name.split('-')[-1])
+
+    def open_device(cfg, **kwargs):
+        native = SimpleNamespace(name=cfg.bluestacks_instance)
+        if 'start' in kwargs:
+            kwargs['start'](SimpleNamespace(adb_enabled=True), native)
+        else:
+            launch(None, native)
         return object()
 
     def close_device(cfg, **kwargs):
@@ -45,6 +53,8 @@ def world(monkeypatch):
         resident.remove(cfg.bluestacks_instance)
 
     monkeypatch.setattr(bluestacks, 'open_device_retrying', open_device)
+    monkeypatch.setattr(bluestacks, 'open_device', open_device)
+    monkeypatch.setattr(bluestacks, 'launch', launch)
     monkeypatch.setattr(bluestacks, 'close_emulator', close_device)
     monkeypatch.setattr(bluestacks, 'restart_emulator', lambda cfg: (close_device(cfg), open_device(cfg))[1])
     monkeypatch.setattr('farmbot.vision.TemplateLibrary', lambda *args: None)
@@ -276,12 +286,12 @@ def test_native_move_collision_never_closes_other_farms_player(world, monkeypatc
     first = worker(1, hub, world)
     eventually(lambda: world.resident == {'instance-1'})
     original = world.open_device
-    def moved(cfg):
+    def moved(cfg, **kwargs):
         if cfg.bluestacks_instance == 'instance-2':
             cfg.bluestacks_instance = 'instance-1'
             return object()
         return original(cfg)
-    monkeypatch.setattr(bluestacks, 'open_device_retrying', moved)
+    monkeypatch.setattr(bluestacks, 'open_device', moved)
     _, _, second = worker(2, hub, world)
     second.join(3)
     assert not second.is_alive() and 2 in hub.farm_queue.held
@@ -352,12 +362,12 @@ def test_failed_launch_releases_only_after_verified_absence(world, monkeypatch):
     hub = SimpleNamespace(farm_queue=instances.FarmQueue(1))
     original = world.open_device
     failed = threading.Event()
-    def open_device(cfg):
+    def open_device(cfg, **kwargs):
         if cfg.bluestacks_instance == 'instance-1':
             failed.set()
             raise DeviceError('simulated launch failed without a native player')
         return original(cfg)
-    monkeypatch.setattr(bluestacks, 'open_device_retrying', open_device)
+    monkeypatch.setattr(bluestacks, 'open_device', open_device)
     _, _, first = worker(1, hub, world)
     assert failed.wait(2)
     first.join(3)
@@ -373,10 +383,10 @@ def test_failed_launch_releases_only_after_verified_absence(world, monkeypatch):
 
 def test_failed_launch_with_unowned_player_holds_slot(world, monkeypatch):
     hub = SimpleNamespace(farm_queue=instances.FarmQueue(1))
-    def open_device(cfg):
+    def open_device(cfg, **kwargs):
         world.resident.add(cfg.bluestacks_instance)
         raise DeviceError('launch failed after an unidentified player appeared')
-    monkeypatch.setattr(bluestacks, 'open_device_retrying', open_device)
+    monkeypatch.setattr(bluestacks, 'open_device', open_device)
     _, _, first = worker(1, hub, world)
     first.join(3)
     assert not first.is_alive() and 1 in hub.farm_queue.held

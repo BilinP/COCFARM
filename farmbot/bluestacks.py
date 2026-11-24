@@ -466,10 +466,10 @@ def _write_conf(install: Install, instance: Instance, wanted: dict[str, int]) ->
     conf.write_bytes(data)
 
 
-def launch(install: Install, instance: Instance) -> None:
+def launch(install: Install, instance: Instance) -> int:
     log.info("Starting BlueStacks (%s)", instance.display_name)
-    subprocess.Popen([str(install.player_exe), "--instance", instance.name],
-                     creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+    return subprocess.Popen([str(install.player_exe), "--instance", instance.name],
+                            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)).pid
 
 
 def adb_program(cfg: DeviceConfig, install: Install | None) -> str:
@@ -486,7 +486,8 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
                 make: Callable[[str, str], AdbDevice] = AdbDevice,
                 enable: Callable[[Install], None] = turn_on_adb,
                 clock: Callable[[], float] = time.monotonic,
-                apply: Callable[..., None] = apply_settings) -> Device:
+                apply: Callable[..., None] = apply_settings,
+                checkpoint: Callable[[], None] | None = None) -> Device:
     """Connect to the device the config describes.
 
     In "bluestacks" mode this finds BlueStacks, starts it if allowed and
@@ -494,6 +495,8 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
     until its window opens). In "manual" mode ``serial``
     is used as given.
     """
+    check = checkpoint or (lambda: None)
+    check()
     if cfg.mode == "ldplayer":
         from farmbot import ldplayer
 
@@ -531,23 +534,28 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
                      instance.display_name, port)
             changes.update({"adb_port": port, "status.adb_port": port})
     if changes:
+        check()
         apply(install, instance, changes)
 
     if not install.adb_enabled:
         if not cfg.enable_adb:
             if not running():
+                check()
                 start(install, instance)
             return open_window(install, instance, cfg, sleep, clock)
+        check()
         enable(install)
 
     if not running():
         if not cfg.launch_emulator and install.adb_enabled:
             raise DeviceError("BlueStacks is not running. Start it, or turn on 'Open the emulator automatically' in Advanced → Emulator.")
+        check()
         start(install, instance)
 
     deadline = clock() + cfg.launch_timeout
     last_error: Exception | None = None
     while True:
+        check()
         # BlueStacks writes the port once the instance has booted, and can
         # change it between runs, so re-read it on every attempt.
         current = find() or install
@@ -557,10 +565,12 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
                 device = make(inst.serial, adb)
                 device.connect()
                 device.shell("echo", "ok")
+                check()
                 log.info("Connected to %s at %s", inst.display_name, inst.serial)
                 return device
             except DeviceError as exc:
                 last_error = exc
+        check()
         if clock() >= deadline:
             raise NoAnswer(f"BlueStacks did not accept an ADB connection within {cfg.launch_timeout:.0f}s"
                               + (f": {last_error}" if last_error else ""))

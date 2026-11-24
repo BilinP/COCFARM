@@ -7366,7 +7366,8 @@ class FarmbotWindow(FluentWindow):
 
     def _run_bot(self, stop_event: threading.Event) -> None:
         from farmbot.bot import Bot
-        from farmbot.bluestacks import close_emulator, emulator_identity, open_device_retrying, restart_emulator
+        from farmbot.bluestacks import (apply_settings, close_emulator, emulator_identity, launch,
+                                       open_device, open_device_retrying, restart_emulator)
         from farmbot.game import Game
         from farmbot.vision import TemplateLibrary, Vision
 
@@ -7384,6 +7385,45 @@ class FarmbotWindow(FluentWindow):
         device_cfg = (copy.deepcopy(self.config.device) if self.config.device.mode == "bluestacks"
                       else self.config.device)
         owned = None  # native process IDs, only when this worker opened the instance
+
+        def verify_opened() -> None:
+            if not owned or emulator_identity(device_cfg) != owned:
+                raise instances.FarmHeld("The started emulator's process changed or could not be identified")
+
+        def open_owned():
+            if not farms.limit:
+                return open_device_retrying(device_cfg)
+
+            def checkpoint() -> None:
+                if stop_event.is_set() or self.pause_event.is_set():
+                    raise Stopped()
+
+            def running() -> bool:
+                now = emulator_identity(device_cfg)
+                if now and now != owned:
+                    raise instances.FarmHeld("The startup player is not owned by this farm")
+                return bool(now)
+
+            def require_adb(install) -> None:
+                raise DeviceError("Capped farming needs BlueStacks ADB already enabled")
+
+            def start(install, instance) -> None:
+                nonlocal owned
+                checkpoint()
+                if not install.adb_enabled:
+                    require_adb(install)
+                if emulator_identity(device_cfg):
+                    raise instances.FarmHeld("An unowned player appeared before startup")
+                checkpoint()
+                pid = launch(install, instance)
+                owned = (pid,)
+                log.info("Started owned BlueStacks player %d", pid)
+
+            # One attempt: the GUI's outer retry boundary verifies owned exit
+            # and observes Stop/Pause. The legacy inner retry cannot do that.
+            return open_device(device_cfg, running=running, start=start, checkpoint=checkpoint,
+                               apply=lambda install, instance, values: apply_settings(
+                                   install, instance, values, running=running), enable=require_adb)
 
         def acquire() -> None:
             if self.farm in farms.held:
@@ -7413,11 +7453,9 @@ class FarmbotWindow(FluentWindow):
                     raise instances.FarmHeld(reason)
                 # Even a failed startup may have opened a player. Unknown startup ownership is retained.
                 owned = ()
-            device = open_device_retrying(device_cfg)
+            device = open_owned()
             if farms.limit:
-                owned = emulator_identity(device_cfg)
-                if not owned:
-                    raise instances.FarmHeld("The opened emulator's process could not be identified")
+                verify_opened()
                 farms.identify(self.farm, instances.instance_key(device_cfg))
             instances.connected.add(self.farm)
             return device
@@ -7475,14 +7513,12 @@ class FarmbotWindow(FluentWindow):
                     reason = f"The emulator was not restarted: {exc}"
                     farms.hold(self.farm, reason)
                     raise instances.FarmHeld(reason) from exc
-                device = open_device_retrying(device_cfg)
+                device = open_owned()
             else:
-                device = open_device_retrying(device_cfg) if absent else restart_emulator(device_cfg)
+                device = open_owned() if absent else restart_emulator(device_cfg)
             if owned is not None:
                 try:
-                    owned = emulator_identity(device_cfg)
-                    if farms.limit and not owned:
-                        raise DeviceError("The restarted emulator's process could not be identified")
+                    verify_opened()
                 except DeviceError as exc:
                     if farms.limit:
                         reason = f"Active slot held after restart: {exc}"
