@@ -103,13 +103,17 @@ class OrdinaryCards(unittest.TestCase):
         self.check_deploy(builder.without_hero(BuilderConfig()), [3,3], False,
                           uncertain=True, initial_unknown=True)
 
+    def test_transient_initial_unknown_count_stops_before_later_read(self):
+        self.check_deploy(builder.without_hero(BuilderConfig()), [3,3], False,
+                          uncertain=True, initial_unknown=True, transient_unknown=True)
+
     def test_normal_runner_never_recovers_or_readmits_uncertain_battle(self):
         for consume in (False, True):
             with self.subTest(first_tap_consumed=consume):
                 self.check_deploy(builder.without_hero(BuilderConfig()), [3,3], False,
                                   uncertain=True, consume=consume, run_bot=True)
 
-    def check_deploy(self, cfg, counts, hero, uncertain=False, consume=True, initial_unknown=False, run_bot=False):
+    def check_deploy(self, cfg, counts, hero, uncertain=False, consume=True, initial_unknown=False, run_bot=False, transient_unknown=False):
         class Game:
             def __init__(self):
                 self.left = counts.copy()
@@ -163,10 +167,26 @@ class OrdinaryCards(unittest.TestCase):
                 return object()
 
         game = Game()
+        reads = 0
+        def read_count(screen, slot, cfg, vision):
+            nonlocal reads
+            reads += 1
+            if initial_unknown and (not transient_unknown or reads == 1):
+                return None
+            if uncertain and not initial_unknown and game.map_inputs:
+                return None
+            return game.left[slot.index-1]
         with patch.object(builder, 'pick_corner', return_value=('left',(200,468))), \
              patch.object(builder, 'base_centre', return_value=(590,450)), \
              patch.object(builder, 'hero_out', side_effect=lambda *args: game.hero_landed), \
-             patch.object(builder, 'troop_count', side_effect=lambda s, slot, cfg, vision: None if initial_unknown or (uncertain and game.map_inputs) else game.left[slot.index-1]):
+             patch.object(builder, 'troop_count', side_effect=read_count):
+            if transient_unknown:
+                with self.assertRaisesRegex(builder.DeploymentCountError, 'count unreadable'):
+                    builder.deploy_stage(game, cfg)
+                self.assertIsNone(game.selected)
+                self.assertEqual(game.map_inputs, 0)
+                self.assertEqual(reads, 1)
+                return
             if uncertain:
                 with patch.object(builder, 'start_battle'), \
                      patch.object(builder, '_finish', side_effect=lambda *args: game.events.append('returned_home')), \

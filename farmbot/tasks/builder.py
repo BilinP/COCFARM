@@ -1408,14 +1408,16 @@ def deploy_stage(game: Game, cfg: BuilderConfig, first: bool = False) -> tuple[f
         # No hero to find a good spot with: the first troop does it.
         first = troops[0]
         count = troop_count(screen, first, cfg, game.vision)
+        if count is None:
+            raise DeploymentCountError("Builder troop count unreadable before first deployment; deployments stopped")
         def placed(s):
             if card_state(s, first.x, cfg) != "ready":
                 return True
             left = troop_count(s, first, cfg, game.vision)
             if left is None:
                 raise DeploymentCountError("Builder troop count unreadable after first deployment; effect uncertain")
-            return count is not None and left is not None and left < count
-        found = place_first(game, first, point, centre, placed, cfg) if count is not None else None
+            return left < count
+        found = place_first(game, first, point, centre, placed, cfg)
         if found is not None:
             point = found
             sent.append(first)
